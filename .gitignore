@@ -1,0 +1,9 @@
+/target
+node_modules
+/app/dist
+/app/src-tauri/gen/schemas
+*.log
+
+# Local development and session notes
+/docs/HANDOFF.md
+/docs/TEST-AUDIT-*.md

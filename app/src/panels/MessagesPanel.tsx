@@ -1,0 +1,82 @@
+import { useEffect, useRef, useState } from "react";
+import { CircleAlert, Info, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
+import { compileProject, navigateTo } from "../core/actions";
+import { useEditor, type Message } from "../core/store";
+
+type Filter = "all" | "error" | "warning";
+
+const LEVEL_ICON: Record<Message["level"], React.ReactNode> = {
+  error: <CircleAlert className="size-3.5 text-err-line" />,
+  warning: <TriangleAlert className="size-3.5 text-note-line" />,
+  info: <Info className="size-3.5 text-faint" />,
+};
+
+export function MessagesPanel() {
+  const messages = useEditor((s) => s.messages);
+  const hasProject = useEditor((s) => !!s.project);
+  const [filter, setFilter] = useState<Filter>("all");
+  const endRef = useRef<HTMLDivElement>(null);
+  const shown = filter === "all" ? messages : messages.filter((m) => m.level === filter);
+  const errors = messages.filter((m) => m.level === "error").length;
+  const warnings = messages.filter((m) => m.level === "warning").length;
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length]);
+
+  return (
+    <div className="flex h-full flex-col bg-panel text-xs">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-panel-head px-2">
+        <ToggleGroup type="single" value={filter} onValueChange={(v) => v && setFilter(v as Filter)} className="h-6">
+          <ToggleGroupItem value="all" className="h-6 px-2 text-[11px]">
+            All <span className="font-mono text-faint">{messages.length}</span>
+          </ToggleGroupItem>
+          <ToggleGroupItem value="error" className="h-6 px-2 text-[11px]">
+            Errors <span className="font-mono text-faint">{errors}</span>
+          </ToggleGroupItem>
+          <ToggleGroupItem value="warning" className="h-6 px-2 text-[11px]">
+            Warnings <span className="font-mono text-faint">{warnings}</span>
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <span className="flex-1" />
+        {hasProject && (
+          <Button variant="ghost" size="sm" onClick={() => void compileProject()}>
+            <ShieldCheck /> Run ERC
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={() => useEditor.getState().clearMessages()}>
+          <Trash2 /> Clear
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="sticky top-0 grid grid-cols-[24px_74px_64px_1fr] border-b border-line bg-panel-head px-2 py-1 text-[10.5px] font-semibold text-faint">
+          <span />
+          <span>Time</span>
+          <span>Source</span>
+          <span>Message</span>
+        </div>
+        {shown.map((m) => (
+          <div
+            key={m.id}
+            onClick={() => m.target && void navigateTo(m.target)}
+            title={m.target ? "Click to show on the sheet" : undefined}
+            className={cn(
+              "grid grid-cols-[24px_74px_64px_1fr] items-start border-b border-line/60 px-2 py-[3px]",
+              m.target && "cursor-pointer hover:bg-hover",
+              m.level === "error" && "bg-err/40",
+            )}
+          >
+            <span className="pt-px">{LEVEL_ICON[m.level]}</span>
+            <span className="font-mono text-[11px] text-faint">{m.time.toLocaleTimeString()}</span>
+            <span className="text-faint">{m.source ?? ""}</span>
+            <span className="min-w-0 break-words select-text">{m.text}</span>
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+    </div>
+  );
+}

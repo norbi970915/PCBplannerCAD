@@ -1,0 +1,22 @@
+{
+  "format": "pcbplannercad.pcb",
+  "version": 1,
+  "items": [
+    { "id": 0, "item": { "kind": "board" } },
+    { "id": 1, "item": { "kind": "rect", "a": {"x":-5000000,"y":-5000000}, "b": {"x":90000000,"y":35000000}, "width":100000, "layer":14, "fill":"none" } },
+    { "id": 2, "item": {
+      "kind":"zone", "name":"Cut and slice playground", "net":"GND", "layer":0,
+      "priority":0, "clearance":200000, "minWidth":0, "connect":"solid", "thermalGap":300000,
+      "spokeWidth":300000, "keepout":false, "removeIslands":false,
+      "outline":[{"x":0,"y":0},{"x":40000000,"y":0},{"x":40000000,"y":30000000},{"x":0,"y":30000000}],
+      "fill":[{"outer":[{"x":0,"y":0},{"x":40000000,"y":0},{"x":40000000,"y":30000000},{"x":0,"y":30000000}],"holes":[]}]
+    } },
+    { "id": 3, "item": {
+      "kind":"zone", "name":"Concave polygon playground", "net":"GND", "layer":0,
+      "priority":0, "clearance":200000, "minWidth":0, "connect":"solid", "thermalGap":300000,
+      "spokeWidth":300000, "keepout":false, "removeIslands":false,
+      "outline":[{"x":55000000,"y":0},{"x":85000000,"y":0},{"x":85000000,"y":15000000},{"x":70000000,"y":15000000},{"x":70000000,"y":30000000},{"x":55000000,"y":30000000}],
+      "fill":[{"outer":[{"x":55000000,"y":0},{"x":85000000,"y":0},{"x":85000000,"y":15000000},{"x":70000000,"y":15000000},{"x":70000000,"y":30000000},{"x":55000000,"y":30000000}],"holes":[]}]
+    } }
+  ]
+}

@@ -1,0 +1,6 @@
+packages:
+  - app
+minimumReleaseAgeExclude:
+  - dockview-core@8.6.2
+  - dockview-react@8.6.2
+  - dockview@8.6.2

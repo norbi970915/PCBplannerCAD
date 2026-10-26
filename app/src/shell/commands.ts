@@ -1,0 +1,183 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import * as actions from "../core/actions";
+import * as clipboard from "../core/clipboard";
+import { useTheme } from "../core/theme";
+import * as pcb from "../core/pcbActions";
+import { openDialog } from "../pcb/dialogs";
+import { bus } from "../core/bus";
+import { boardTabs, FOOTPRINT_TABS } from "../core/layers";
+import { activeDoc, useEditor } from "../core/store";
+import type { DocKind } from "../core/types";
+import { TOOLS } from "../editor/profiles";
+import { activateTool } from "../editor/toolActions";
+import { openWizardFor } from "../library/wizards";
+import { promptText } from "./modal";
+
+export interface AppCommand {
+  label: string;
+  /** Chord ("Ctrl+S"), single key ("Delete") or key sequence ("P L"). */
+  keys?: string[];
+  /** Shown in menus but handled elsewhere (e.g. by the canvas tool). */
+  display?: string;
+  run: () => unknown;
+  enabled?: () => boolean;
+  /** Only active for these document kinds. */
+  when?: DocKind[];
+}
+
+const ed = () => useEditor.getState();
+const kindIs = (...kinds: DocKind[]) => () => {
+  const k = activeDoc()?.info.kind;
+  return !!k && kinds.includes(k);
+};
+const hasDoc = () => !!activeDoc();
+const hasProject = () => !!ed().project;
+
+export const COMMANDS: Record<string, AppCommand> = {
+  "file.newProject": { label: "New Project…", run: actions.newProject },
+  "file.openProject": { label: "Open Project…", run: () => actions.openProject() },
+  "file.closeProject": { label: "Close Project", run: actions.closeProject, enabled: hasProject },
+  "file.newSchematic": {
+    label: "New Schematic",
+    keys: ["Ctrl+N"],
+    run: () => (ed().project ? actions.addSheet() : actions.newDocument("schematic")),
+  },
+  "file.newPcb": { label: "New PCB (free document)", run: () => actions.newDocument("pcb") },
+  "file.newLibrary": {
+    label: "New Library…",
+    run: async () => {
+      const name = await promptText("New library", "Library name", "MyLibrary");
+      if (name) await actions.newLibrary(name);
+    },
+  },
+  "file.open": { label: "Open…", keys: ["Ctrl+O"], run: () => actions.openAnyFile() },
+  "file.save": { label: "Save", keys: ["Ctrl+S"], run: () => actions.saveDoc(), enabled: hasDoc },
+  "file.saveAs": { label: "Save As…", keys: ["Ctrl+Shift+S"], run: () => actions.saveDoc(undefined, true), enabled: hasDoc },
+  "file.saveAll": { label: "Save All", keys: ["Ctrl+Alt+S"], run: actions.saveAll },
+  "file.close": {
+    label: "Close Document",
+    keys: ["Ctrl+W"],
+    run: async () => {
+      const id = ed().activeDocId;
+      if (id && (await actions.closeDoc(id))) bus.emit("docsClosed", { docIds: [id] });
+    },
+    enabled: hasDoc,
+  },
+  "import.structuredProject": { label: "structured format Project (.kicad_pro)…", run: () => actions.importDesign("structuredProject") },
+  "import.structuredSchematic": { label: "structured format Schematic (.kicad_sch)…", run: () => actions.importDesign("structuredSchematic") },
+  "import.structuredSymbols": { label: "structured format Symbol Library (.kicad_sym)…", run: () => actions.importLibrary("structuredSymbols") },
+  "import.structuredFootprints": { label: "structured format Footprint Library (.pretty)…", run: () => actions.importLibrary("structuredFootprints") },
+  "import.xmlSchematic": { label: "XML Schematic (.sch)…", run: () => actions.importDesign("xmlSchematic") },
+  "import.xmlLibrary": { label: "XML Library (.lbr)…", run: () => actions.importLibrary("xmlLibrary") },
+  "file.exit": { label: "Exit", run: () => getCurrentWindow().close() },
+
+  "edit.undo": { label: "Undo", keys: ["Ctrl+Z"], run: () => actions.undo(), enabled: () => !!activeDoc()?.info.canUndo },
+  "edit.redo": { label: "Redo", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], run: () => actions.redo(), enabled: () => !!activeDoc()?.info.canRedo },
+  "edit.cut": { label: "Cut", keys: ["Ctrl+X"], run: clipboard.cutSelection, enabled: () => !!activeDoc()?.selection.size },
+  "edit.copy": { label: "Copy", keys: ["Ctrl+C"], run: clipboard.copySelection, enabled: () => !!activeDoc()?.selection.size },
+  "edit.paste": { label: "Paste", keys: ["Ctrl+V"], run: clipboard.paste, enabled: () => hasDoc() && clipboard.hasClip() },
+  "edit.duplicate": { label: "Duplicate", keys: ["Ctrl+D"], run: clipboard.duplicateSelection, enabled: () => !!activeDoc()?.selection.size },
+  "edit.delete": { label: "Delete", keys: ["Delete", "E D"], run: actions.deleteSelection, enabled: () => !!activeDoc()?.selection.size },
+  "edit.rotate": { label: "Rotate Selection", display: "Space", run: () => actions.rotateSelection(), enabled: () => !!activeDoc()?.selection.size },
+  "edit.mirror": { label: "Mirror Selection", display: "X", run: actions.mirrorSelection, enabled: () => !!activeDoc()?.selection.size },
+  "edit.selectAll": { label: "Select All", keys: ["Ctrl+A", "S A"], run: actions.selectAll, enabled: hasDoc },
+  "edit.deselectAll": { label: "Deselect All", keys: ["X A"], run: actions.clearSelection, enabled: hasDoc },
+
+  "view.fit": { label: "Fit All Objects", keys: ["Ctrl+PageDown", "V F"], run: () => bus.emit("view", { action: "fit" }), enabled: hasDoc },
+  "view.fitSelection": { label: "Fit Selection", keys: ["V S"], run: () => bus.emit("view", { action: "fitSelection" }), enabled: hasDoc },
+  "view.zoomIn": { label: "Zoom In", keys: ["PageUp"], run: () => bus.emit("view", { action: "zoomIn" }), enabled: hasDoc },
+  "view.zoomOut": { label: "Zoom Out", keys: ["PageDown"], run: () => bus.emit("view", { action: "zoomOut" }), enabled: hasDoc },
+  "view.toggleUnits": { label: "Toggle Units (mm / mil)", keys: ["Q"], run: () => ed().toggleUnits() },
+  "view.gridNext": { label: "Next Snap Grid", keys: ["G"], run: () => ed().cycleGrid(1), enabled: hasDoc },
+  "view.gridPrev": { label: "Previous Snap Grid", keys: ["Shift+G"], run: () => ed().cycleGrid(-1), enabled: hasDoc },
+  "tools.measure": { label: "Measure Distance", keys: ["Ctrl+M"], when: ["pcb", "footprint"], run: () => activateTool("measure") },
+  "view.pourFills": { label: "Show Pour Fills", keys: ["V P"], when: ["pcb"], run: () => ed().togglePourFills() },
+  "view.singleLayer": {
+    label: "Single Layer Mode",
+    keys: ["Shift+S"],
+    when: ["pcb", "footprint"],
+    run: () => {
+      const d = activeDoc();
+      if (d) ed().patchDoc(d.info.id, { singleLayer: !d.singleLayer });
+    },
+  },
+  "view.layerNext": { label: "Next Layer", keys: ["+", "*"], when: ["pcb", "footprint"], run: () => cycleLayer(1) },
+  "view.layerPrev": { label: "Previous Layer", keys: ["-"], when: ["pcb", "footprint"], run: () => cycleLayer(-1) },
+
+  "view.theme": { label: "Toggle Light / Dark Theme", keys: ["Ctrl+Shift+T"], run: () => useTheme.getState().toggle() },
+
+  "project.compile": { label: "Compile & Run ERC", keys: ["C C"], run: () => actions.compileProject(), enabled: hasProject },
+  "project.annotate": { label: "Annotate (fill in R?, U?…)", keys: ["T A"], run: () => actions.annotate(false), enabled: hasProject },
+  "project.annotateAll": { label: "Re-annotate Everything", run: () => actions.annotate(true), enabled: hasProject },
+  "project.bom": { label: "Export BOM (CSV)…", run: actions.exportBom, enabled: hasProject },
+  "project.addSheet": { label: "Add Sheet…", run: actions.addSheet, enabled: hasProject },
+  "project.board": { label: "Open / Create Project Board", keys: ["D B"], run: pcb.openProjectBoard, enabled: hasProject },
+
+  "design.updatePcb": { label: "Update PCB from Schematic…", keys: ["D U"], when: ["pcb"], run: () => openDialog("eco") },
+  "design.layerStack": { label: "Layer Stack Manager…", keys: ["D K"], when: ["pcb"], run: () => openDialog("stack") },
+  "design.rules": { label: "Rules & Net Classes…", keys: ["D R"], when: ["pcb"], run: () => openDialog("rules") },
+  "design.impedance": { label: "Impedance Calculator…", run: () => openDialog("impedance") },
+  "tools.drc": { label: "Design Rule Check", keys: ["T D"], when: ["pcb"], run: () => pcb.runDrc() },
+  "tools.repour": { label: "Repour All Polygons", keys: ["T G"], when: ["pcb"], run: () => pcb.repour() },
+  "tools.tune": { label: "Length Tuning of Selected Tracks…", keys: ["T R"], when: ["pcb"], run: () => openDialog("tune"), enabled: () => !!activeDoc()?.selection.size },
+  "tools.clearMarks": { label: "Clear DRC Markers & Highlights", keys: ["T M"], when: ["pcb"], run: () => {
+      const d = activeDoc();
+      if (d) ed().patchDoc(d.info.id, { drc: [], marked: new Set() });
+    } },
+  "view.3d": { label: "3D View", keys: ["3"], when: ["pcb"], run: () => {
+      const d = activeDoc();
+      if (d) bus.emit("show3d", { docId: d.info.id });
+    } },
+  "file.outputs": { label: "Fabrication Outputs…", keys: ["F F"], when: ["pcb"], run: () => openDialog("outputs") },
+  "file.print": { label: "Print to PDF…", keys: ["Ctrl+P"], enabled: hasDoc, run: () => openDialog("print") },
+  "file.gerberViewer": { label: "Open Gerber Viewer…", run: () => bus.emit("showGerbers", {}) },
+  "tools.panelize": { label: "Panelize Board…", when: ["pcb"], run: () => openDialog("panelize") },
+  "tools.scripts": { label: "Script Console", run: () => bus.emit("showPanel", { id: "scripts" }) },
+  "project.variants": { label: "Variants…", run: () => openDialog("variants"), enabled: hasProject },
+
+  "tools.footprintWizard": { label: "Footprint Wizard…", run: () => openWizardFor("footprint") },
+  "tools.symbolWizard": { label: "Symbol Wizard…", run: () => openWizardFor("symbol") },
+
+  "window.resetLayout": { label: "Reset Panel Layout", run: () => bus.emit("resetLayout", {}) },
+  "window.projects": { label: "Projects Panel", run: () => bus.emit("showPanel", { id: "projects" }) },
+  "window.components": { label: "Components Panel", run: () => bus.emit("showPanel", { id: "components" }) },
+  "window.pcb": { label: "PCB Panel (Nets)", run: () => bus.emit("showPanel", { id: "pcb" }) },
+  "window.properties": { label: "Properties Panel", run: () => bus.emit("showPanel", { id: "properties" }) },
+  "window.messages": { label: "Messages Panel", run: () => bus.emit("showPanel", { id: "messages" }) },
+  "help.about": {
+    label: "About PCBPlannerCAD",
+    run: () => ed().log("info", "PCBPlannerCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, structured format & XML import."),
+  },
+};
+
+// Place commands are generated per editor from the tool profiles.
+for (const kind of Object.keys(TOOLS) as DocKind[]) {
+  for (const t of TOOLS[kind]) {
+    if (t.id === "select") continue;
+    COMMANDS[`place.${kind}.${t.id}`] = { label: t.label, keys: [t.keys], when: [kind], run: () => activateTool(t.id) };
+  }
+}
+COMMANDS["tool.select"] = { label: "Select", keys: ["S S"], run: () => activateTool("select"), enabled: hasDoc };
+
+function cycleLayer(step: 1 | -1) {
+  const d = activeDoc();
+  if (!d) return;
+  const tabs = d.info.kind === "footprint" ? FOOTPRINT_TABS : boardTabs(d.items.values()).map((t) => t.id);
+  const i = tabs.indexOf(d.activeLayer);
+  ed().patchDoc(d.info.id, { activeLayer: tabs[(i + step + tabs.length) % tabs.length] });
+}
+
+export type CommandId = string;
+
+export function commandAvailable(id: CommandId): boolean {
+  const cmd = COMMANDS[id];
+  if (!cmd) return false;
+  if (cmd.when && !kindIs(...cmd.when)()) return false;
+  return !cmd.enabled || cmd.enabled();
+}
+
+export function runCommand(id: CommandId) {
+  const cmd = COMMANDS[id];
+  if (!cmd || !commandAvailable(id)) return;
+  Promise.resolve(cmd.run()).catch((e) => ed().log("error", String(e)));
+}

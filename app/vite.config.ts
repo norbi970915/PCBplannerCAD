@@ -1,0 +1,23 @@
+import { fileURLToPath, URL } from "node:url";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
+// Tauri expects a fixed port and must not have the console cleared under it.
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  clearScreen: false,
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
+  server: {
+    port: 1420,
+    strictPort: true,
+    watch: { ignored: ["**/src-tauri/**"] },
+  },
+  build: {
+    target: "es2022",
+    // Bundles load from disk inside the desktop app, so chunk size matters little.
+    chunkSizeWarningLimit: 4000,
+  },
+});

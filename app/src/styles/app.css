@@ -1,0 +1,164 @@
+/* App chrome that isn't plain shadcn components: dock theme, canvas overlays. */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--ui-doc);
+}
+
+.dock {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- Dockview, re-themed with the app tokens ---------- */
+
+.dockview-theme-dark,
+.dockview-theme-light {
+  --dv-group-view-background-color: var(--ui-panel);
+  --dv-tabs-and-actions-container-background-color: var(--ui-chrome);
+  --dv-tabs-and-actions-container-height: 31px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--ui-panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--ui-panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-activegroup-visiblepanel-tab-color: var(--ui-ink);
+  --dv-activegroup-hiddenpanel-tab-color: var(--ui-muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--ui-ink);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--ui-muted);
+  --dv-tab-divider-color: transparent;
+  --dv-separator-border: var(--ui-line);
+  --dv-paneview-header-border-color: var(--ui-line);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--ui-accent);
+  --dv-drag-over-background-color: color-mix(in srgb, var(--ui-accent) 16%, transparent);
+  --dv-drag-over-border-color: var(--ui-accent);
+  --dv-edge-dock-indicator-color: var(--ui-accent);
+  --dv-icon-hover-background-color: var(--ui-hover);
+  --dv-floating-box-shadow: 0 10px 32px #0003;
+  --dv-floating-border: 1px solid var(--ui-line-strong);
+  --dv-tab-margin: 0 1px 0 0;
+  color-scheme: inherit;
+}
+
+.dockview-theme-dark .dv-tabs-and-actions-container,
+.dockview-theme-light .dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--ui-line);
+}
+
+.dockview-theme-dark .dv-tab,
+.dockview-theme-light .dv-tab {
+  border-radius: 5px 5px 0 0;
+  margin-top: 3px;
+}
+
+.dockview-theme-dark .dv-tab.dv-active-tab,
+.dockview-theme-light .dv-tab.dv-active-tab {
+  border: 1px solid var(--ui-line);
+  border-bottom-color: var(--ui-panel);
+  margin-bottom: -1px;
+}
+
+.dockview-theme-dark .dv-groupview.dv-active-group > .dv-tabs-and-actions-container .dv-tab.dv-active-tab,
+.dockview-theme-light .dv-groupview.dv-active-group > .dv-tabs-and-actions-container .dv-tab.dv-active-tab {
+  box-shadow: inset 0 2px 0 var(--ui-accent);
+}
+
+/* ---------- Canvas editor ---------- */
+
+.canvas-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.canvas-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  outline: none;
+  overflow: hidden;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: none;
+}
+
+.select-box {
+  position: absolute;
+  pointer-events: none;
+}
+
+.select-box.inside {
+  border: 1px solid #5b9cff;
+  background: #5b9cff1f;
+}
+
+.select-box.touching {
+  border: 1px dashed #4cc47e;
+  background: #4cc47e17;
+}
+
+.preview-canvas {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--ui-line);
+  border-radius: 5px;
+  background: var(--ui-sheet);
+}
+
+.preview-canvas canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  vertical-align: -1px;
+  box-shadow: inset 0 0 0 1px #0002;
+}
+
+.dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ui-copper);
+}
+
+/* Copper-colored accent used in titles ("PCBPlannerCAD·"). */
+.title-dot {
+  color: var(--ui-copper);
+}
+
+.eyebrow {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ui-faint);
+}
+
+.readout {
+  font-family: var(--font-readout);
+}
+
+/* Thin scrollbars for dense panels. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-line-strong) transparent;
+}

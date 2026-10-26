@@ -1,0 +1,13 @@
+[package]
+name = "pcbplannercad-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PCBPlannerCAD document model, units, commands and undo history"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rstar = "0.13"
+i_overlay = "9.1"

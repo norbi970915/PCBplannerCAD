@@ -1,0 +1,178 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Dark mode follows [data-theme="dark"] on <html> (set from Preferences). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ---------- Design tokens ----------
+   A desktop-workbench palette: neutral chrome, dense 12px Segoe UI, Consolas for
+   readouts, 5px radii, a steel-blue accent and board-material colors. */
+
+:root {
+  --ui-chrome: #f8f9fa;
+  --ui-chrome-2: #eef0f3;
+  --ui-panel: #f6f7f9;
+  --ui-panel-head: #fafbfc;
+  --ui-doc: #f0f1f3;
+  --ui-sheet: #ffffff;
+  --ui-ink: #25282e;
+  --ui-muted: #535b66;
+  --ui-faint: #616875;
+  --ui-line: #d9dce1;
+  --ui-line-strong: #c5c9d0;
+  --ui-field: #ffffff;
+  --ui-field-line: #c5c9d0;
+  --ui-accent: #38699f;
+  --ui-accent-ink: #38699f;
+  --ui-sel: #e4edf7;
+  --ui-hover: #f1f3f6;
+  --ui-tab-active: #f0f1f3;
+  --ui-btn: #f8f9fa;
+  --ui-btn-hover: #eef0f3;
+  --ui-note-bg: #fff6d6;
+  --ui-note-line: #d4a72c;
+  --ui-err-bg: #fde8e6;
+  --ui-err-line: #c0392b;
+  --ui-ok: #217a45;
+  --ui-copper: #c7782f;
+  --ui-laminate: #c9c38d;
+  --ui-mask: #3f8a5c;
+  --ui-grid: #e8ebef;
+  --ui-surface-shadow: inset 0 1px 0 #fff9, 0 2px 7px #00000009;
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Tahoma, Arial, sans-serif;
+  --font-readout: Consolas, "Cascadia Mono", ui-monospace, monospace;
+
+  /* shadcn semantic tokens */
+  --radius: 5px;
+  --background: var(--ui-doc);
+  --foreground: var(--ui-ink);
+  --card: var(--ui-sheet);
+  --card-foreground: var(--ui-ink);
+  --popover: var(--ui-sheet);
+  --popover-foreground: var(--ui-ink);
+  --primary: var(--ui-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--ui-btn);
+  --secondary-foreground: var(--ui-ink);
+  --muted: var(--ui-chrome-2);
+  --muted-foreground: var(--ui-muted);
+  --accent: var(--ui-hover);
+  --accent-foreground: var(--ui-ink);
+  --destructive: var(--ui-err-line);
+  --border: var(--ui-line);
+  --input: var(--ui-field-line);
+  --ring: var(--ui-accent);
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --ui-chrome: #26272b;
+  --ui-chrome-2: #303237;
+  --ui-panel: #222327;
+  --ui-panel-head: #2b2c30;
+  --ui-doc: #1c1d20;
+  --ui-sheet: #252629;
+  --ui-ink: #dedfe3;
+  --ui-muted: #b1b5be;
+  --ui-faint: #9da3ae;
+  --ui-line: #393b40;
+  --ui-line-strong: #4b4e56;
+  --ui-field: #202125;
+  --ui-field-line: #454850;
+  --ui-accent: #4d77a6;
+  --ui-accent-ink: #6b9bd2;
+  --ui-sel: #2a3543;
+  --ui-hover: #30343a;
+  --ui-tab-active: #1c1d20;
+  --ui-btn: #303237;
+  --ui-btn-hover: #3a3d44;
+  --ui-note-bg: #3a3320;
+  --ui-note-line: #c9a227;
+  --ui-err-bg: #3b2222;
+  --ui-err-line: #e0645a;
+  --ui-ok: #6cc28c;
+  --ui-copper: #d08a3c;
+  --ui-laminate: #6b6a3e;
+  --ui-mask: #2f7a4f;
+  --ui-grid: #2b2c30;
+  --ui-surface-shadow: inset 0 1px 0 #ffffff06, 0 2px 7px #00000012;
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-readout);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  /* App palette, usable as bg-chrome, text-faint, border-line-strong… */
+  --color-chrome: var(--ui-chrome);
+  --color-chrome-2: var(--ui-chrome-2);
+  --color-panel: var(--ui-panel);
+  --color-panel-head: var(--ui-panel-head);
+  --color-doc: var(--ui-doc);
+  --color-sheet: var(--ui-sheet);
+  --color-ink: var(--ui-ink);
+  --color-faint: var(--ui-faint);
+  --color-line: var(--ui-line);
+  --color-line-strong: var(--ui-line-strong);
+  --color-field: var(--ui-field);
+  --color-sel: var(--ui-sel);
+  --color-hover: var(--ui-hover);
+  --color-accent-ink: var(--ui-accent-ink);
+  --color-copper: var(--ui-copper);
+  --color-ok: var(--ui-ok);
+  --color-note: var(--ui-note-bg);
+  --color-note-line: var(--ui-note-line);
+  --color-err: var(--ui-err-bg);
+  --color-err-line: var(--ui-err-line);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+  body {
+    background: var(--ui-doc);
+    color: var(--ui-ink);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  input,
+  textarea,
+  [contenteditable] {
+    user-select: text;
+  }
+}

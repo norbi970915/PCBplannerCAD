@@ -1,0 +1,104 @@
+# PCBPlannerCAD
+
+PCBPlannerCAD is a desktop PCB design suite for Windows: schematic capture, component libraries, PCB layout, 3D visualization and manufacturing outputs.
+
+**Status:** v0.6.0 — Phases 0–5 implemented: libraries, schematic capture and ERC, PCB layout (routing, pours, rules, DRC), manufacturing outputs (Gerber X2, Excellon, BOM, pick-and-place, IPC-2581, PDF, panels), 3D view with STEP export, and import of schematics, boards and libraries. See [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Stack
+
+| Part | Tech |
+|---|---|
+| Desktop shell | Tauri 2 (WebView2) |
+| UI | React 19 + TypeScript, dockview panels, zustand state, shadcn/ui + Tailwind v4 |
+| 2D canvas | Custom WebGL2 renderer with a built-in stroke font (`app/src/editor`) |
+| Core engine | Rust (`crates/core`): model, commands, undo/redo, file I/O, schematic compiler, footprint wizard |
+| PCB engine | Rust (`crates/core/src/pcb`): connectivity, DRC (R-tree), pours (i_overlay), router, ECO, panelization |
+| Outputs | Rust (`crates/output`): Gerber X2 / Excellon writers and reader, assembly files, IPC-2581, STEP |
+| 3D | three.js, OpenCascade (occt-import-js, WASM) for STEP models |
+| Importers | Rust (`crates/import`): S-expression and XML design files |
+
+All geometry is integer nanometers (`i64`), world Y up. The UI never mutates documents directly: it sends `Command`s to the Rust core, which returns deltas; every change is one undo step.
+
+## Layout
+
+```
+crates/core/src/
+  item.rs, library.rs, document.rs   data model (items, symbols, footprints, components)
+  command.rs, session.rs             commands → edits, undo/redo
+  io.rs, project.rs                  .arproj / .arsch / .arlib / .arpcb formats
+  schematic/                         connectivity, netlist, ERC, annotation, BOM
+  libgen/                            footprint wizard, symbol wizard, starter library
+  pcb/                               board items, stack & rules, ratsnest, DRC, pours, router, ECO, panels
+crates/import/src/                   external project, schematic, board and library parsers
+crates/output/src/                   gerber, excellon, assembly, fab package, gerber reader, ipc2581, step
+app/src-tauri/src/                   workspace (open docs, libraries, project) + IPC commands
+app/src/
+  core/                              types, API bindings, store, actions, clipboard
+  editor/                            canvas, renderer, font, drawing, tools, editors
+  library/                           library browser, component editor, wizards
+  pcb/                               board dialogs (ECO, stack, rules, outputs, tuning, panelize…), PDF print
+  view3d/                            3D viewer, model loading, Gerber viewer
+  output/                            PDF writer
+  panels/, shell/                    dock panels, menus, shortcuts, dialogs
+```
+
+## Prerequisites (Windows)
+
+- Rust (stable, MSVC toolchain): `winget install Rustlang.Rustup`
+- Visual Studio 2022 Build Tools with the "Desktop development with C++" workload
+- Node.js 22+ and pnpm (`npm i -g pnpm`)
+- WebView2 runtime (ships with Windows 11)
+
+## Commands
+
+```sh
+pnpm install          # once, from the repo root
+pnpm dev              # run the app with hot reload
+pnpm build            # build installers -> target/release/bundle/{msi,nsis}
+pnpm test             # all Rust tests (core, importers, end-to-end on installed sample designs)
+pnpm typecheck        # TypeScript checks
+```
+
+In PowerShell use `pnpm.cmd dev`, or double-click `Start-PCBPlannerCAD.cmd` in the project folder. Keep the terminal open during development.
+
+For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/PCBPlannerCAD_0.6.0_x64-setup.exe` (or the MSI in the sibling `msi/` directory). The installed app starts from the Windows Start menu without a development server. Native `.arpcb`, `.arsch`, `.arlib` and `.arproj` extensions remain supported; existing files also load with their earlier format tags, and newly saved files use `pcbplannercad.*` tags.
+
+## Bringing designs in
+
+Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. PCBPlannerCAD stores its sheets, board and embedded libraries together.
+
+The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project.
+
+## Keyboard shortcuts
+
+| Action | Keys |
+|---|---|
+| Place part / wire / bus / net label / global label / port | `P P` / `P W` / `P B` / `P N` / `P K` / `P H` |
+| Power port VCC / GND, junction, no-connect, sheet symbol | `P V` / `P G`, `P J`, `P X`, `P S` |
+| Symbol editor: pin · Footprint editor: pad | `P P` |
+| Line, rectangle, circle, arc, polyline, text | `P L`, `P R`, `P C`, `P A`, `P Y`, `P T` |
+| Rotate / mirror (while placing, dragging or with a selection) | `Space` / `X` |
+| Finish a wire or exit a tool | right-click / `Esc` |
+| Copy, cut, paste, duplicate | `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+D` |
+| Compile & ERC, annotate | `C C`, `T A` |
+| Fit all, fit selection, zoom | `V F`, `V S`, wheel / `PgUp` / `PgDn` |
+| Units, snap grid | `Q`, `G` / `Shift+G` |
+| PCB/footprint layers, single layer mode | `+` / `-`, `Shift+S` |
+| Highlight a net | `Alt`+click a wire or pin |
+
+**Editing polygon pours:** `E C` cuts away the side you click, `E S` slices into two independent polygons, and `E R` reshapes or extends the boundary. Click the boundary, click any corners, then finish on the same boundary. Cut shows the two sides in green/red; click the red side to remove it. The tool stays active for repeated edits. Shift constrains corners to 45°, Backspace removes the last corner, and Esc cancels the current cut (Esc again exits). Outline changes and copper refill share one undo step. A mode strip and the selected polygon's context menu expose these actions too.
+
+Cut, Slice and Reshape ignore the document grid and use free angles by default; hold Shift only when you want a 45° constraint. Subsequent cuts work on the new edges without restarting the tool.
+
+Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb), which contains a rectangle and a concave pour. `pnpm -C app test:polygons` runs the frontend geometry and interaction tests.
+
+**Board**
+
+| Action | Keys |
+|---|---|
+| Route / differential pair / via | `P T` / `P I` / `P V` (while routing: `*` via + layer change, `Space` corner, `Shift+R` mode) |
+| Polygon pour / keep-out / board outline / component | `P G` / `P K` / `P O` / `P C` |
+| Flip footprint to the other side | `L` |
+| Update PCB from schematic, layer stack, rules | `D U`, `D K`, `D R` |
+| DRC, repour all, length tuning, clear markers | `T D`, `T G`, `T R`, `T M` |
+| 3D view, fabrication outputs, print to PDF | `3`, `F F`, `Ctrl+P` |

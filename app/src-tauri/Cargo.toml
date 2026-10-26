@@ -1,0 +1,28 @@
+[package]
+name = "pcbplannercad"
+default-run = "PCBPlannerCAD"
+autobins = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PCBPlannerCAD PCB design suite"
+
+[[bin]]
+name = "PCBPlannerCAD"
+path = "src/main.rs"
+
+[lib]
+name = "pcbplannercad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pcbplannercad-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+pcbplannercad-import.workspace = true
+pcbplannercad-output.workspace = true
