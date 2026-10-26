@@ -1,6 +1,7 @@
 import type { Coord, Point } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import type { Camera } from "./camera";
+import { HighlightTexture } from "./highlightTexture";
 
 export type Rgba = [number, number, number, number];
 
@@ -9,12 +10,14 @@ export interface DrawLine {
   b: Point;
   width: Coord;
   color: Rgba;
+  style?: number;
 }
 
 export interface DrawFill {
   /** Flat triangle list [x,y, x,y, x,y, …] in nanometers. */
   tris: number[];
   color: Rgba;
+  style?: number;
 }
 
 /** Primitives painted together; groups paint in ascending rank. */
@@ -35,12 +38,17 @@ export interface GridStyle {
 const FILL_VS = `#version 300 es
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
+layout(location = 2) in uint a_style;
+uniform sampler2D u_highlights;
 uniform vec2 u_center;
 uniform float u_scale;
 uniform vec2 u_res;
 out vec4 v_color;
 void main() {
-  v_color = a_color;
+  ivec2 size = textureSize(u_highlights, 0);
+  int id = int(a_style);
+  vec4 tint = texelFetch(u_highlights, ivec2(id % size.x, id / size.x), 0);
+  v_color = vec4(mix(a_color.rgb, tint.rgb, tint.a * 0.3), a_color.a);
   gl_Position = vec4((a_pos - u_center) * u_scale / (u_res * 0.5), 0.0, 1.0);
 }`;
 
@@ -89,6 +97,8 @@ layout(location = 0) in vec2 a_a;
 layout(location = 1) in vec2 a_b;
 layout(location = 2) in float a_hw;
 layout(location = 3) in vec4 a_color;
+layout(location = 4) in uint a_style;
+uniform sampler2D u_highlights;
 uniform vec2 u_center;
 uniform float u_scale;
 uniform vec2 u_res;
@@ -111,7 +121,10 @@ void main() {
   v_local = vec2(u, v);
   v_len = len;
   v_hw = hw;
-  v_color = a_color;
+  ivec2 size = textureSize(u_highlights, 0);
+  int id = int(a_style);
+  vec4 tint = texelFetch(u_highlights, ivec2(id % size.x, id / size.x), 0);
+  v_color = vec4(mix(a_color.rgb, tint.rgb, tint.a), a_color.a);
   gl_Position = vec4((A + t * u + n * v) / (u_res * 0.5), 0.0, 1.0);
 }`;
 
@@ -131,7 +144,7 @@ void main() {
 }`;
 
 const MIN_GRID_PX = 12;
-const FLOATS_PER_INSTANCE = 6; // a.xy, b.xy, halfWidth, packed rgba8
+const FLOATS_PER_INSTANCE = 7; // a.xy, b.xy, halfWidth, rgba8, item style index
 const STRIDE = FLOATS_PER_INSTANCE * 4;
 
 function compile(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram {
@@ -171,6 +184,9 @@ class LineBatch {
     attr(1, 2, 8);
     attr(2, 1, 16);
     attr(3, 4, 20, gl.UNSIGNED_BYTE, true);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribIPointer(4, 1, gl.UNSIGNED_INT, STRIDE, 24);
+    gl.vertexAttribDivisor(4, 1);
     gl.bindVertexArray(null);
   }
 
@@ -179,6 +195,7 @@ class LineBatch {
     const data = new ArrayBuffer(Math.max(1, lines.length) * STRIDE);
     const f = new Float32Array(data);
     const u8 = new Uint8Array(data);
+    const u32 = new Uint32Array(data);
     lines.forEach((l, i) => {
       const o = i * FLOATS_PER_INSTANCE;
       f[o] = l.a.x / NM_PER_MM;
@@ -186,6 +203,7 @@ class LineBatch {
       f[o + 2] = l.b.x / NM_PER_MM;
       f[o + 3] = l.b.y / NM_PER_MM;
       f[o + 4] = l.width / 2 / NM_PER_MM;
+      u32[o + 6] = l.style ?? 0;
       const c = (o + 5) * 4;
       for (let k = 0; k < 4; k++) u8[c + k] = Math.round(l.color[k] * 255);
     });
@@ -211,7 +229,7 @@ class LineBatch {
   }
 }
 
-const FILL_STRIDE = 12; // x, y as float32 + rgba8
+const FILL_STRIDE = 16; // x, y as float32 + rgba8 + item style index
 
 class FillBatch {
   private vao: WebGLVertexArrayObject;
@@ -228,6 +246,8 @@ class FillBatch {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, FILL_STRIDE, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, FILL_STRIDE, 8);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_INT, FILL_STRIDE, 12);
     gl.bindVertexArray(null);
   }
 
@@ -236,13 +256,15 @@ class FillBatch {
     const vertices = fills.reduce((n, f) => n + f.tris.length / 2, 0);
     const data = new ArrayBuffer(Math.max(1, vertices) * FILL_STRIDE);
     const f32 = new Float32Array(data);
+    const u32 = new Uint32Array(data);
     const u8 = new Uint8Array(data);
     let v = 0;
     for (const fill of fills) {
       const c = fill.color.map((x) => Math.round(x * 255));
       for (let i = 0; i < fill.tris.length; i += 2, v++) {
-        f32[v * 3] = fill.tris[i] / NM_PER_MM;
-        f32[v * 3 + 1] = fill.tris[i + 1] / NM_PER_MM;
+        f32[v * 4] = fill.tris[i] / NM_PER_MM;
+        f32[v * 4 + 1] = fill.tris[i + 1] / NM_PER_MM;
+        u32[v * 4 + 3] = fill.style ?? 0;
         const o = v * FILL_STRIDE + 8;
         u8[o] = c[0];
         u8[o + 1] = c[1];
@@ -318,11 +340,13 @@ export class Renderer {
   private gridVao: WebGLVertexArrayObject;
   private scene: GroupSet;
   private overlay: GroupSet;
+  private analysis: GroupSet;
+  private highlights: HighlightTexture;
   private dpr = 1;
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
 
   constructor(private canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext("webgl2", { antialias: true, premultipliedAlpha: true, alpha: false, preserveDrawingBuffer: true });
+    const gl = canvas.getContext("webgl2", { antialias: true, premultipliedAlpha: true, alpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error("WebGL2 is not available on this system.");
     this.gl = gl;
     this.gridProgram = compile(gl, GRID_VS, GRID_FS);
@@ -331,6 +355,9 @@ export class Renderer {
     this.gridVao = gl.createVertexArray()!;
     this.scene = new GroupSet(gl);
     this.overlay = new GroupSet(gl);
+    this.analysis = new GroupSet(gl);
+    this.highlights = new HighlightTexture(gl);
+    this.highlights.set(new Map(), 1);
   }
 
   private u(program: WebGLProgram, name: string) {
@@ -349,6 +376,10 @@ export class Renderer {
   setScene(groups: readonly DrawGroup[]) {
     this.scene.upload(groups);
   }
+
+  setHighlights(styles: ReadonlyMap<number, Rgba>, count: number) { this.highlights.set(styles, count); }
+
+  setAnalysis(groups: readonly DrawGroup[]) { this.analysis.upload(groups); }
 
   setOverlay(groups: readonly DrawGroup[]) {
     this.overlay.upload(groups);
@@ -400,11 +431,13 @@ export class Renderer {
       gl.uniform1f(this.u(p, "u_scale"), s * NM_PER_MM);
       gl.uniform2f(this.u(p, "u_res"), W, H);
     }
+    this.highlights.bind();
     let current: WebGLProgram | null = null;
     const use = (p: WebGLProgram) => () => {
       if (current !== p) gl.useProgram((current = p));
     };
     this.scene.draw(use(this.lineProgram), use(this.fillProgram));
+    this.analysis.draw(use(this.lineProgram), use(this.fillProgram));
     this.overlay.draw(use(this.lineProgram), use(this.fillProgram));
     gl.bindVertexArray(null);
   }
@@ -412,6 +445,8 @@ export class Renderer {
   dispose() {
     this.scene.dispose();
     this.overlay.dispose();
+    this.analysis.dispose();
+    this.highlights.dispose();
     this.gl.deleteVertexArray(this.gridVao);
     this.gl.deleteProgram(this.gridProgram);
     this.gl.deleteProgram(this.lineProgram);

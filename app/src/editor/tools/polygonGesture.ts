@@ -1,5 +1,6 @@
 import earcut from "earcut";
 import type { Item, ItemId, Point } from "../../core/types";
+import { layerVisible } from "../../core/view";
 import { constrain45, editableRing, nearestOnRing, pointInRing, reshape, type OutlineHit, type Reshape } from "../polyedit";
 import type { DrawFill, DrawLine, Rgba } from "../renderer";
 import { ringHandles, ringLines } from "./polygon";
@@ -18,7 +19,7 @@ function pickOutline(env: ToolEnv) {
   let best: { id: ItemId; item: Item; hit: OutlineHit; ring: Point[]; score: number } | null = null;
   for (const [id, item] of doc.items) {
     const ring = editableRing(item);
-    if (!ring || !("layer" in item)) continue;
+    if (!ring || !("layer" in item) || !layerVisible(doc.view, item.layer)) continue;
     if (item.layer !== doc.activeLayer && (!doc.selection.has(id) || doc.singleLayer)) continue;
     const hit = nearestOnRing(ring, env.raw());
     if (!hit || hit.dist > tol) continue;

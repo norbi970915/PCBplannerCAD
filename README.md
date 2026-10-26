@@ -63,6 +63,12 @@ In PowerShell use `pnpm.cmd dev`, or double-click `Start-PCBPlannerCAD.cmd` in t
 
 For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/PCBPlannerCAD_0.6.0_x64-setup.exe` (or the MSI in the sibling `msi/` directory). The installed app starts from the Windows Start menu without a development server. Native `.arpcb`, `.arsch`, `.arlib` and `.arproj` extensions remain supported; existing files also load with their earlier format tags, and newly saved files use `pcbplannercad.*` tags.
 
+## View controls
+
+With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design.
+
+For editor regressions run `pnpm.cmd -C app test:editor`. See [today's progress and remaining work](docs/PROGRESS-2026-10-26.md) for continuation on another computer.
+
 ## Bringing designs in
 
 Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. PCBPlannerCAD stores its sheets, board and embedded libraries together.

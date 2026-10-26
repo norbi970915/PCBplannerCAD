@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { readPreference } from "./preferences";
+import { normalizeView, type ViewSettings } from "./view";
 import { L } from "./layers";
 import type {
   AirWire,
@@ -44,6 +45,7 @@ export interface DocState {
   tool: string;
   activeLayer: LayerId;
   singleLayer: boolean;
+  view: ViewSettings;
   grid: Coord;
   /** Bumped when the whole document is (re)loaded, so views refit. */
   epoch: number;
@@ -176,6 +178,7 @@ interface AppState {
   setInfo: (info: DocInfo) => void;
   removeDoc: (id: string) => void;
   patchDoc: (id: string, patch: Partial<DocState>) => void;
+  setView: (id: string, patch: Partial<ViewSettings>) => void;
   setActiveDoc: (id: string | null) => void;
   setCache: (id: string, key: string, part: CachedPart) => void;
   setFootprint: (id: string, key: string, fp: Footprint) => void;
@@ -196,6 +199,8 @@ interface AppState {
 }
 
 const FILLS_KEY = "pcbplannercad.pourFills";
+const VIEW_KEY = "pcbplannercad.view";
+function loadView() { try { return normalizeView(JSON.parse(readPreference(VIEW_KEY) ?? "null")); } catch { return normalizeView(null); } }
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -245,6 +250,7 @@ export const useEditor = create<AppState>()((set, get) => ({
       tool: prev?.tool ?? "select",
       activeLayer: prev?.activeLayer ?? (kind === "schematic" || kind === "symbol" ? L.schematic : L.topCopper),
       singleLayer: prev?.singleLayer ?? false,
+      view: prev?.view ?? loadView(),
       grid: prev?.grid ?? DEFAULT_GRID[kind],
       epoch: (prev?.epoch ?? 0) + 1,
       focus: null,
@@ -271,6 +277,14 @@ export const useEditor = create<AppState>()((set, get) => ({
     const docs = { ...get().docs };
     delete docs[id];
     set({ docs, activeDocId: get().activeDocId === id ? null : get().activeDocId });
+  },
+
+  setView: (id, patch) => {
+    const doc = get().docs[id];
+    if (!doc) return;
+    const view = normalizeView({ ...doc.view, ...patch });
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(view)); } catch { /* View preferences are optional. */ }
+    get().patchDoc(id, { view });
   },
 
   patchDoc: (id, patch) => {

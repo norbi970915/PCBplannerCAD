@@ -1,5 +1,6 @@
 import { highlightNet, navigateTo } from "../../core/actions";
 import { selectable } from "../../core/selectFilter";
+import { cursorPoint } from "../../core/view";
 import { useEditor } from "../../core/store";
 import type { IdItem, Item, ItemId, ItemOf, Point } from "../../core/types";
 import { connectionPoints } from "../draw";
@@ -9,6 +10,7 @@ import type { PointerInfo, Tool, ToolEnv } from "./types";
 
 const DRAG_PX = 4;
 const PICK_PX = 5;
+const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.doc().view?.snapToGrid !== false);
 
 type State =
   | { kind: "idle" }
@@ -125,7 +127,7 @@ export function selectTool(): Tool {
             const ring = insertVertex(poly.ring, hit.edge, hit.point);
             s = { kind: "vertex", ...poly, ring, index: hit.edge + 1, ring2: ring, sx: e.sx, sy: e.sy, moved: false };
           } else {
-            s = { kind: "edge", ...poly, edge: hit.edge, origin: env.cursor(), ring2: poly.ring, sx: e.sx, sy: e.sy, moved: false };
+            s = { kind: "edge", ...poly, edge: hit.edge, origin: editCursor(env), ring2: poly.ring, sx: e.sx, sy: e.sy, moved: false };
           }
           excluded = new Set([poly.id]);
           return;
@@ -149,7 +151,7 @@ export function selectTool(): Tool {
         return;
       }
       if (!doc.selection.has(hit)) env.select([hit]);
-      s = { kind: "drag", sx: e.sx, sy: e.sy, origin: env.cursor(), ids: [...env.doc().selection], delta: { x: 0, y: 0 }, moved: false, attach: null };
+      s = { kind: "drag", sx: e.sx, sy: e.sy, origin: editCursor(env), ids: [...env.doc().selection], delta: { x: 0, y: 0 }, moved: false, attach: null };
     },
     move(env, e) {
       if (s.kind === "vertex") {
@@ -308,6 +310,7 @@ export function selectTool(): Tool {
     excluded: () => excluded,
     // Corner and edge drags of a polygon snap to pads, track ends and corners.
     snaps: () => s.kind === "vertex" || s.kind === "edge",
+    gridSnap: () => s.kind === "drag" || s.kind === "vertex" || s.kind === "edge",
     overlay(env) {
       const px = 1 / env.scale();
       if (s.kind === "vertex" || s.kind === "edge") return ringHandles(s.ring2, px);

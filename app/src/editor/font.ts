@@ -5,7 +5,7 @@
 
 import type { HAlign, Point, VAlign } from "../core/types";
 // Shared with the Rust core (crates/core/src/font.rs) so Gerber text matches the screen.
-import glyphData from "./glyphs.json";
+import glyphData from "./glyphs.json" with { type: "json" };
 
 const RAW: Record<string, string> = glyphData;
 

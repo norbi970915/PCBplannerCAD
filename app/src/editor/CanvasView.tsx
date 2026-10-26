@@ -10,6 +10,8 @@ import type { ItemId, LibSymbol, Point } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import { ActiveBar, PolygonEditBar } from "./ActiveBar";
 import { Camera } from "./camera";
+import { InteractionFrame } from "./interactionFrame";
+import { cursorPoint } from "../core/view";
 import { connectionPoints, snapPoints, type DrawContext } from "./draw";
 import { LayerTabs } from "./LayerTabs";
 import { toolButton } from "./profiles";
@@ -61,21 +63,33 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     let raw: Point = { x: 0, y: 0 };
     let snapMark: Point | null = null;
     let pan: { x: number; y: number; sx: number; sy: number; moved: boolean; button: number } | null = null;
-    let frame = 0;
+    let overlayDirty = true;
+    let analysisDirty = true;
     let fitted = false;
     let theme: Theme = themeFor("schematic", 0, false);
 
     const doc = () => st().docs[docId];
-    const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills });
+    const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
     const isActive = () => st().activeDocId === docId;
 
-    const requestRender = () => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+    const frames = new InteractionFrame<{ point: { x: number; y: number }; event: PointerInfo }>(
+      ({ point, event }) => processPointerMove(point, event),
+      () => {
         if (!doc()) return;
-        renderer.render(cam, { step: doc().grid, background: theme.background, ...theme.grid });
-      });
+        if (analysisDirty) uploadAnalysis();
+        if (overlayDirty) uploadOverlay();
+        const grid = doc().view.grid;
+        const hidden = [0, 0, 0, 0] as [number, number, number, number];
+        renderer.render(cam, { step: doc().grid, background: theme.background,
+          dot: grid ? theme.grid.dot : hidden, major: grid ? theme.grid.major : hidden, axis: grid ? theme.grid.axis : hidden });
+      },
+    );
+    const requestRender = () => frames.invalidate();
+    const rebuildHighlights = () => {
+      const d = doc();
+      if (!d) return;
+      renderer.setHighlights(scene.highlights(theme, { selection: d.selection, marked: d.marked, hover, excluded: tool.excluded?.() }), scene.styleCount);
+      requestRender();
     };
 
     const rebuildScene = () => {
@@ -83,7 +97,9 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (!d) return;
       theme = themeFor(d.info.kind, d.activeLayer, d.singleLayer, useTheme.getState().resolved);
       scene.update(d.items, ctx());
-      renderer.setScene(scene.build(theme, { selection: d.selection, hover, excluded: tool.excluded?.(), marked: d.marked }));
+      renderer.setScene(scene.build(theme, { selection: new Set(), hover: null, excluded: tool.excluded?.() }));
+      rebuildHighlights();
+      analysisDirty = true;
       requestRender();
     };
     rebuildRef.current = () => {
@@ -91,22 +107,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       rebuildOverlay();
     };
 
-    const rebuildOverlay = () => {
+    const rebuildOverlay = () => { overlayDirty = true; requestRender(); };
+
+    const uploadOverlay = () => {
+      overlayDirty = false;
       const d = doc();
       if (!d) return;
       const groups: DrawGroup[] = buildPreview(tool.preview?.(env) ?? [], ctx(), theme, toolId === "select" ? 0.5 : 0.25);
       const lines: DrawLine[] = [...(tool.overlay?.(env) ?? [])];
-      if (d.info.kind === "pcb") {
-        const px = 1 / cam.scale;
-        const rat = theme.color("ratsnest");
-        for (const w of d.airwires) lines.push({ a: w.a, b: w.b, width: px, color: rat });
-        const r = 6 * px;
-        for (const v of d.drc) {
-          const c: [number, number, number, number] = v.severity === "error" ? [1, 0.25, 0.25, 1] : theme.color("drc");
-          lines.push({ a: { x: v.pos.x - r, y: v.pos.y - r }, b: { x: v.pos.x + r, y: v.pos.y + r }, width: 2 * px, color: c });
-          lines.push({ a: { x: v.pos.x - r, y: v.pos.y + r }, b: { x: v.pos.x + r, y: v.pos.y - r }, width: 2 * px, color: c });
-        }
-      }
       if (cursorScreen) {
         const arm = CURSOR_ARM_PX / cam.scale;
         const w = 1 / cam.scale;
@@ -126,7 +134,24 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       }
       groups.push({ rank: 1e6, lines, fills: tool.overlayFills?.(env) ?? [] });
       renderer.setOverlay(groups);
-      requestRender();
+    };
+
+    const uploadAnalysis = () => {
+      analysisDirty = false;
+      const d = doc();
+      const lines: DrawLine[] = [];
+      if (d.info.kind === "pcb") {
+        const px = 1 / cam.scale;
+        const rat = theme.color("ratsnest");
+        if (d.view.airwires) for (const w of d.airwires) lines.push({ a: w.a, b: w.b, width: px, color: rat });
+        const r = 6 * px;
+        if (d.view.drc) for (const v of d.drc) {
+          const c: [number, number, number, number] = v.severity === "error" ? [1, 0.25, 0.25, 1] : theme.color("drc");
+          lines.push({ a: { x: v.pos.x - r, y: v.pos.y - r }, b: { x: v.pos.x + r, y: v.pos.y + r }, width: 2 * px, color: c });
+          lines.push({ a: { x: v.pos.x - r, y: v.pos.y + r }, b: { x: v.pos.x + r, y: v.pos.y - r }, width: 2 * px, color: c });
+        }
+      }
+      renderer.setAnalysis([{ rank: 1e6, lines, fills: [] }]);
     };
 
     const updateHint = () => {
@@ -153,12 +178,12 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     const computeCursor = (sx: number, sy: number) => {
       raw = cam.screenToWorld(sx, sy);
       const g = doc().grid;
-      cursor = tool.gridSnap?.() === false
-        ? { x: Math.round(raw.x), y: Math.round(raw.y) }
-        : { x: Math.round(raw.x / g) * g, y: Math.round(raw.y / g) * g };
+      const useGrid = doc().view.snapToGrid && tool.gridSnap?.() !== false;
+      cursor = cursorPoint(raw, g, useGrid);
       snapMark = null;
       const k = doc().info.kind;
-      if (k === "schematic" || (tool.snaps ? tool.snaps() : toolId !== "select")) {
+      const idleSelection = toolId === "select" && tool.gridSnap?.() === false;
+      if (!idleSelection && (k === "schematic" || (tool.snaps ? tool.snaps() : toolId !== "select"))) {
         const tol = CONNECT_SNAP_PX / cam.scale;
         let best = tol;
         const c = ctx();
@@ -225,7 +250,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const next = toolId === "select" ? scene.pick(raw, 5 / cam.scale, (i) => selectable(kind, i)) : null;
       if (next !== hover) {
         hover = next;
-        rebuildScene();
+        rebuildHighlights();
       }
     };
 
@@ -244,6 +269,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const fit = () => {
+      analysisDirty = true;
       const b = scene.bounds();
       if (b) cam.fit(b);
       else {
@@ -256,6 +282,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      frames.flush();
       canvas.setPointerCapture(e.pointerId);
       host.focus({ preventScroll: true });
       if (!isActive()) st().setActiveDoc(docId);
@@ -264,6 +291,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       computeCursor(p.x, p.y);
       if (e.button === 1 || e.button === 2) {
         pan = { x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false, button: e.button };
+        if (hover !== null) { hover = null; rebuildHighlights(); }
         return;
       }
       if (e.button !== 0) return;
@@ -272,36 +300,44 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       updateHint();
     };
 
+    const processPointerMove = (p: { x: number; y: number }, event: PointerInfo) => {
+      cursorScreen = p;
+      computeCursor(p.x, p.y);
+      if (!pan) { tool.move?.(env, event); updateHover(); }
+      rebuildOverlay();
+      updateHint();
+    };
+
     const onPointerMove = (e: PointerEvent) => {
       const p = local(e);
-      cursorScreen = p;
       if (pan) {
         cam.panBy(p.x - pan.x, p.y - pan.y);
         pan.x = p.x;
         pan.y = p.y;
         pan.moved ||= Math.hypot(p.x - pan.sx, p.y - pan.sy) > DRAG_PX;
       }
-      computeCursor(p.x, p.y);
-      if (!pan) {
-        tool.move?.(env, info(e));
-        updateHover();
-      }
-      rebuildOverlay();
-      updateHint();
+      frames.queue({ point: p, event: { sx: p.x, sy: p.y, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey } });
     };
 
     const onPointerUp = (e: PointerEvent) => {
+      frames.flush();
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       if (pan) {
         const done = pan;
         pan = null;
+        updateHover();
         if (!done.moved && done.button === 2) {
           if (toolId === "select" && !tool.cancel(env)) openContextMenu(e);
           else exitOrCancel();
         }
         return;
       }
-      if (e.button === 0) tool.up?.(env, info(e));
+      if (e.button === 0) {
+        tool.up?.(env, info(e));
+        const p = local(e);
+        computeCursor(p.x, p.y);
+        updateHover();
+      }
       rebuildOverlay();
       updateHint();
     };
@@ -315,13 +351,17 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const onDblClick = (e: MouseEvent) => {
+      frames.flush();
       tool.dblclick?.(env, info(e));
       rebuildOverlay();
     };
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      frames.flush();
       const p = local(e);
+      cursorScreen = p;
+      if (!e.shiftKey) analysisDirty = true;
       if (e.shiftKey) cam.panBy(-e.deltaY, 0);
       else cam.zoomAt(p.x, p.y, Math.pow(1.0015, -e.deltaY));
       computeCursor(p.x, p.y);
@@ -330,18 +370,20 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const onPointerLeave = () => {
       if (pan) return;
+      frames.flush();
       cursorScreen = null;
       snapMark = null;
       if (isActive()) st().setCursor(null);
       if (hover !== null) {
         hover = null;
-        rebuildScene();
+        rebuildHighlights();
       }
       rebuildOverlay();
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isActive()) return;
+      frames.flush();
       // The key menu (P, T, V…) or a context menu is open: keys belong to it.
       if (st().pendingKeys || useContextMenu.getState().at) return;
       const t = e.target as HTMLElement | null;
@@ -361,6 +403,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const zoomBy = (factor: number) => {
+      frames.flush();
+      analysisDirty = true;
       const p = cursorScreen ?? { x: cam.width / 2, y: cam.height / 2 };
       cam.zoomAt(p.x, p.y, factor);
       if (cursorScreen) computeCursor(p.x, p.y);
@@ -373,6 +417,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       cam.width = r.width;
       cam.height = r.height;
       renderer.resize(r.width, r.height, window.devicePixelRatio || 1);
+      analysisDirty = true;
+      rebuildOverlay();
       if (!fitted) {
         fitted = true;
         fit();
@@ -389,8 +435,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (s.showPourFills !== prev.showPourFills) rebuildScene();
       if (
         d.items !== p?.items ||
-        d.selection !== p?.selection ||
-        d.marked !== p?.marked ||
+        d.view !== p?.view ||
         d.activeLayer !== p?.activeLayer ||
         d.singleLayer !== p?.singleLayer ||
         d.cache !== p?.cache ||
@@ -398,6 +443,9 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       ) {
         rebuildScene();
       }
+      if (d.selection !== p?.selection || d.marked !== p?.marked) rebuildHighlights();
+      if (d.view !== p?.view && cursorScreen) computeCursor(cursorScreen.x, cursorScreen.y);
+      if (d.airwires !== p?.airwires || d.drc !== p?.drc) { analysisDirty = true; requestRender(); }
       if (d.epoch !== p?.epoch) {
         scene.update(d.items, ctx());
         fit();
@@ -406,10 +454,11 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         cam.cx = d.focus.pos.x;
         cam.cy = d.focus.pos.y;
         cam.scale = Math.max(cam.scale, 12 / NM_PER_MM);
+        analysisDirty = true;
         rebuildOverlay();
       }
       if (d.grid !== p?.grid) requestRender();
-      if (s.placement !== prev.placement || d.items !== p?.items || d.selection !== p?.selection || d.airwires !== p?.airwires || d.drc !== p?.drc) rebuildOverlay();
+      if (s.placement !== prev.placement || d.items !== p?.items || d.selection !== p?.selection || d.view !== p?.view) rebuildOverlay();
       if (s.activeDocId !== prev.activeDocId && s.activeDocId === docId) updateHint();
     });
 
@@ -424,6 +473,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       else if (action === "zoomIn") zoomBy(1.5);
       else if (action === "zoomOut") zoomBy(1 / 1.5);
       else if (action === "fitSelection") {
+        analysisDirty = true;
         const b = scene.bounds(doc().selection);
         if (b) cam.fit(b, 80);
         rebuildOverlay();
@@ -446,7 +496,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     updateHint();
 
     return () => {
-      cancelAnimationFrame(frame);
+      frames.dispose();
       resize.disconnect();
       unsubscribe();
       offView();

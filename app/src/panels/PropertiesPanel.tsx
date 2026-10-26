@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { ViewPanel } from "./ViewPanel";
 import { api } from "../core/api";
 import { deleteSelection, execute, mirrorSelection, report, rotateSelection } from "../core/actions";
 import { boardTabs, FOOTPRINT_TABS, L, layer } from "../core/layers";
@@ -658,6 +659,9 @@ function DocumentOptions({ doc }: { doc: DocState }) {
         <Row label="Units">
           <Select value={units} options={[["mm", "Metric (mm)"], ["mil", "Imperial (mil)"]]} onChange={(u) => u !== units && useEditor.getState().toggleUnits()} />
         </Row>
+        <Row label="Snap to grid">
+          <Check value={doc.view.snapToGrid} onChange={(snapToGrid) => useEditor.getState().setView(doc.info.id, { snapToGrid })} />
+        </Row>
         <Row label="Snap grid">
           <LengthInput value={doc.grid} units={units} min={1000} onCommit={(grid) => useEditor.getState().patchDoc(doc.info.id, { grid })} />
         </Row>
@@ -670,6 +674,7 @@ function DocumentOptions({ doc }: { doc: DocState }) {
 }
 
 export function PropertiesPanel() {
+  const [emptyTab, setEmptyTab] = useState<"properties" | "view">("properties");
   const doc = useEditor((s) => (s.activeDocId ? s.docs[s.activeDocId] : undefined));
   const units = useEditor((s) => s.units);
   if (!doc)
@@ -682,6 +687,7 @@ export function PropertiesPanel() {
       </Panel>
     );
 
+  const canView = doc.tool === "select" && doc.selection.size === 0 && (doc.info.kind === "pcb" || doc.info.kind === "footprint");
   let body: ReactNode;
   if (doc.tool !== "select") {
     body = <PlacementEditor tool={doc.tool} kind={doc.info.kind} units={units} />;
@@ -714,7 +720,7 @@ export function PropertiesPanel() {
       </Section>
     );
   } else {
-    body = <DocumentOptions doc={doc} />;
+    body = canView && emptyTab === "view" ? <ViewPanel doc={doc} /> : <DocumentOptions doc={doc} />;
   }
   const context =
     doc.tool !== "select" ? "Placement" : doc.selection.size === 1 ? (doc.items.get([...doc.selection][0])?.kind ?? "") : doc.selection.size > 1 ? "Selection" : doc.info.title;
@@ -723,6 +729,9 @@ export function PropertiesPanel() {
       <PanelHeading title="Properties">
         <span className="max-w-40 truncate text-[11px] text-faint capitalize">{context}</span>
       </PanelHeading>
+      {canView && <div className="flex gap-1 border-b border-line bg-panel-head px-2 py-1.5" role="tablist" aria-label="Panel mode">
+        {(["properties", "view"] as const).map(tab => <button key={tab} role="tab" aria-selected={emptyTab === tab} onClick={() => setEmptyTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${emptyTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab}</button>)}
+      </div>}
       <div className="min-h-0 flex-1 overflow-auto">{body}</div>
     </Panel>
   );

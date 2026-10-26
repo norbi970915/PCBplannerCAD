@@ -17,6 +17,7 @@ import type {
   VAlign,
 } from "../core/types";
 import { NM_PER_MM } from "../core/units";
+import { layerVisible, type ViewSettings } from "../core/view";
 import { textSegments, textStroke, textWidth } from "./font";
 import {
   arcPoints,
@@ -57,6 +58,7 @@ export interface DrawContext {
   footprints?: Record<string, Footprint>;
   /** PCB: false draws pours as outlines only. */
   pourFills?: boolean;
+  view?: ViewSettings;
 }
 
 const mm = (v: number) => v * NM_PER_MM;
@@ -446,7 +448,8 @@ export function sheetEntryPoint(s: ItemOf<"sheet">, e: ItemOf<"sheet">["entries"
 
 // ---------- pads ----------
 
-function drawPad(out: Out, p: ItemOf<"pad">) {
+function drawPad(out: Out, p: ItemOf<"pad">, view?: ViewSettings, netName = "") {
+  if (view?.pads === false || !layerVisible(view, p.layer)) return;
   const role = `L${p.layer}`;
   const c = p.pos;
   switch (p.shape) {
@@ -478,7 +481,9 @@ function drawPad(out: Out, p: ItemOf<"pad">) {
       out.seg(polar(c, half, along + 180), polar(c, half, along), Math.min(width, height), "hole");
     }
   }
-  if (p.number) {
+  const showNumber = !!p.number && view?.padNumbers !== false;
+  const showNet = !!netName && view?.padNetNames === true;
+  if (showNumber || showNet) {
     // Fit the (horizontal) number inside the pad's horizontal/vertical extent.
     const r = (p.rotation * Math.PI) / 180;
     const w = p.width;
@@ -486,7 +491,11 @@ function drawPad(out: Out, p: ItemOf<"pad">) {
     const across = Math.abs(w * Math.cos(r)) + Math.abs(ht * Math.sin(r));
     const tall = Math.abs(w * Math.sin(r)) + Math.abs(ht * Math.cos(r));
     const h = Math.min(mm(1.2), tall * 0.55, (across * 0.8) / Math.max(1, p.number.length * 0.85));
-    if (h > 0) out.text(p.number, c, h, 0, "center", "middle", "padNum");
+    if (showNumber && h > 0) out.text(p.number, showNet ? { x: c.x, y: c.y + tall * 0.2 } : c, showNet ? h * 0.65 : h, 0, "center", "middle", "padNum");
+    if (showNet) {
+      const nh = Math.min(mm(0.8), tall * (showNumber ? 0.3 : 0.5), across * 0.8 / Math.max(1, netName.length * 0.85));
+      out.text(netName, showNumber ? { x: c.x, y: c.y - tall * 0.2 } : c, nh, 0, "center", "middle", "padNum");
+    }
   }
 }
 
@@ -495,6 +504,14 @@ function drawPad(out: Out, p: ItemOf<"pad">) {
 export function drawItem(item: Item, ctx: DrawContext): Prims {
   const out = new Out();
   const sch = ctx.kind === "schematic" || ctx.kind === "symbol";
+  if (!sch) {
+    if ("layer" in item && !layerVisible(ctx.view, item.layer)) return out;
+    if ((item.kind === "track" || item.kind === "arcTrack") && ctx.view?.tracks === false) return out;
+    if (item.kind === "via" && (ctx.view?.vias === false || !layerVisible(ctx.view, 15))) return out;
+    if (item.kind === "text" && ctx.view?.text === false) return out;
+    if (["line", "arc", "circle", "rect", "polyline"].includes(item.kind) && ctx.view?.graphics === false) return out;
+    if (item.kind === "zone" && item.keepout && !layerVisible(ctx.view, 5)) return out;
+  }
   switch (item.kind) {
     case "line":
     case "arc":
@@ -510,7 +527,7 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
       drawPin(out, item, ctx.symbol, true);
       break;
     case "pad":
-      drawPad(out, item);
+      drawPad(out, item, ctx.view);
       break;
     case "wire":
       out.seg(item.a, item.b, SCH.wire, "wire");
@@ -580,17 +597,21 @@ function drawFootprint(out: Out, fp: ItemOf<"footprint">, ctx: DrawContext) {
   if (!geom) {
     const s = mm(1.5);
     out.path([{ x: -s, y: -s }, { x: s, y: -s }, { x: s, y: s }, { x: -s, y: s }].map((p) => place(p, pl)), mm(0.1), "error", true);
-    out.text(fp.designator, fp.pos, mm(1), 0, "center", "middle", "error");
+    if (ctx.view?.references !== false) out.text(fp.designator, fp.pos, mm(1), 0, "center", "middle", "error");
     return;
   }
   for (const it of geom.items) {
     let w = placeItem(it, pl);
     if (pl.mirror) w = withLayer(w, flipLayer);
-    if (w.kind === "pad") drawPad(out, w);
+    if ("layer" in w && !layerVisible(ctx.view, w.layer)) continue;
+    if (w.kind === "pad") drawPad(out, w, ctx.view, fp.padNets[w.number] ?? "");
     else if (w.kind === "text") {
+      const ref = w.text === ".Designator" || w.text === fp.designator;
+      const value = w.text === ".Value" || w.text === fp.value;
+      if (ref ? ctx.view?.references === false : value ? ctx.view?.values === false : ctx.view?.text === false) continue;
       const text = w.text === ".Designator" ? fp.designator : w.text === ".Value" ? fp.value : w.text;
       out.text(text, w.pos, w.height, w.rotation, w.hAlign, w.vAlign, `L${w.layer}`, pl.mirror !== w.mirrored);
-    } else drawGraphic(out, w, ctx, `L${(w as { layer: number }).layer}`, `L${(w as { layer: number }).layer}`);
+    } else if (ctx.view?.graphics !== false) drawGraphic(out, w, ctx, `L${(w as { layer: number }).layer}`, `L${(w as { layer: number }).layer}`);
   }
 }
 
@@ -666,7 +687,7 @@ export function connectionPoints(item: Item, ctx: DrawContext): Point[] {
       const geom = ctx.footprints?.[item.footprint];
       if (!geom) return [];
       const pl = { pos: item.pos, rotation: item.rotation, mirror: item.side === "bottom" };
-      return geom.items.filter((i) => i.kind === "pad").map((p) => place((p as ItemOf<"pad">).pos, pl));
+      return geom.items.filter((i) => i.kind === "pad" && ctx.view?.pads !== false && layerVisible(ctx.view, pl.mirror ? flipLayer(i.layer) : i.layer)).map((p) => place((p as ItemOf<"pad">).pos, pl));
     }
     case "part": {
       const cached = ctx.cache[item.libRef];

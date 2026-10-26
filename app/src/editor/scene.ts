@@ -11,6 +11,7 @@ interface Entry {
   item: Item;
   prims: Prims;
   bounds: Bounds;
+  style: number;
 }
 
 function primBounds(p: Prims): Bounds {
@@ -72,12 +73,15 @@ export interface HighlightState {
 export class Scene {
   private entries = new Map<ItemId, Entry>();
   private ctxSignature: unknown[] = [];
+  private nextStyle = 1;
+  get styleCount() { return this.nextStyle; }
 
   /** Syncs with the document; only changed items are redrawn. */
   update(items: ReadonlyMap<ItemId, Item>, ctx: DrawContext) {
-    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.pourFills];
+    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.pourFills, ctx.view];
     if (sig.some((v, i) => v !== this.ctxSignature[i])) {
       this.entries.clear();
+      this.nextStyle = 1;
       this.ctxSignature = sig;
     }
     for (const id of this.entries.keys()) if (!items.has(id)) this.entries.delete(id);
@@ -85,7 +89,7 @@ export class Scene {
       const e = this.entries.get(id);
       if (e && e.item === item) continue;
       const prims = drawItem(item, ctx);
-      this.entries.set(id, { item, prims, bounds: primBounds(prims) });
+      this.entries.set(id, { item, prims, bounds: primBounds(prims), style: e?.style ?? this.nextStyle++ });
     }
   }
 
@@ -165,6 +169,19 @@ export class Scene {
     return out;
   }
 
+  /** Sparse highlight changes leave the board vertex buffers untouched. */
+  highlights(theme: Theme, hl: HighlightState): Map<number, Rgba> {
+    const out = new Map<number, Rgba>();
+    const add = (id: ItemId, amount: number, tint: Rgba) => {
+      const e = this.entries.get(id);
+      if (e && !hl.excluded?.has(id)) out.set(e.style, [tint[0], tint[1], tint[2], amount]);
+    };
+    if (hl.hover !== null) add(hl.hover, 0.3, [1, 1, 1, 1]);
+    for (const id of hl.marked ?? []) add(id, 0.4, theme.selectTint);
+    for (const id of hl.selection) add(id, 0.55, theme.selectTint);
+    return out;
+  }
+
   /** Builds render groups ordered by theme rank. */
   build(theme: Theme, hl: HighlightState): DrawGroup[] {
     const groups = new Map<number, DrawGroup>();
@@ -177,19 +194,19 @@ export class Scene {
       if (hl.excluded?.has(id)) continue;
       const k = hl.selection.has(id) ? 0.55 : hl.marked?.has(id) ? 0.4 : id === hl.hover ? 0.3 : 0;
       const tint = hl.selection.has(id) || hl.marked?.has(id) ? theme.selectTint : ([1, 1, 1, 1] as Rgba);
-      pushPrims(e.prims, theme, group, k, tint);
+      pushPrims(e.prims, theme, group, k, tint, e.style);
     }
     return [...groups.values()].sort((a, b) => a.rank - b.rank);
   }
 }
 
-export function pushPrims(prims: Prims, theme: Theme, group: (rank: number) => DrawGroup, k: number, tint: Rgba) {
+export function pushPrims(prims: Prims, theme: Theme, group: (rank: number) => DrawGroup, k: number, tint: Rgba, style = 0) {
   const color = (role: string) => {
     const c = theme.color(role);
     return k ? mix(c, tint, k) : c;
   };
   for (const s of prims.segs) {
-    const line: DrawLine = { a: s.a, b: s.b, width: s.w, color: color(s.role) };
+    const line: DrawLine = { a: s.a, b: s.b, width: s.w, color: color(s.role), style };
     group(theme.rank(s.role)).lines.push(line);
   }
   // Fills (symbol bodies, pads) get a much lighter tint so highlighted
@@ -198,7 +215,7 @@ export function pushPrims(prims: Prims, theme: Theme, group: (rank: number) => D
     const c = theme.color(role);
     return k ? mix(c, tint, k * 0.3) : c;
   };
-  for (const f of prims.fills) group(theme.rank(f.role)).fills.push({ tris: f.tris, color: fillColor(f.role) });
+  for (const f of prims.fills) group(theme.rank(f.role)).fills.push({ tris: f.tris, color: fillColor(f.role), style });
 }
 
 /** Draws free-standing items (tool previews) into a single overlay group list. */
