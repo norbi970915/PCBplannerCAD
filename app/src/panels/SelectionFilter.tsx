@@ -50,6 +50,15 @@ export function SelectionFilter({ doc, compact = false }: { doc: DocState; compa
   const known = layers.map(x => x.id);
   const off = new Set(filter.offLayers);
   return <div>
+    <div className="flex flex-wrap gap-1 pb-1" role="group" aria-label="Selection presets">
+      {([
+        ['Components', ['components']],
+        ['Copper', ['tracks', 'vias']],
+        ['Vias', ['vias']],
+      ] as const).map(([label, kinds]) => <button key={label} className="rounded border border-line px-2 py-1 text-[11px] hover:bg-hover" aria-pressed={FILTER_KINDS.every(([key]) => filter.on[key] === kinds.some(kind => kind === key))} title={label + ' only; keeps the current layer filter'} onClick={() => filter.onlyTypes(kinds)}>{label}</button>)}
+      <button className="rounded border border-line px-2 py-1 text-[11px] hover:bg-hover" title="Enable all types on every layer" onClick={filter.reset}>Everything</button>
+    </div>
+    <label className="flex min-h-7 items-center gap-2 border-b border-line py-1 text-[11px]"><Check value={filter.excludeLocked} onChange={filter.setExcludeLocked}/>Exclude locked objects</label>
     <Group title="Types" all={Object.values(filter.on).every(Boolean)} onAll={v => (v ? filter.all() : filter.none())}>
       {FILTER_KINDS.map(([key, label]) => <Row key={key} label={label} value={filter.on[key]} onChange={v => filter.set(key, v)} onOnly={() => filter.only(key)} />)}
     </Group>

@@ -32,3 +32,14 @@ export const DEFAULT_GRID: Record<Units, Coord> = {
   mm: fromUnits(0.1, "mm"),
   mil: fromUnits(5, "mil"),
 };
+
+/** Grid steps can be finer than ordinary dimension readouts. */
+export const validGrid = (value:number) => Number.isSafeInteger(value) && value > 0 && value <= 1e9;
+export function formatGrid(value:number,units:Units):string {
+  return toUnits(value,units).toFixed(6).replace(/\.?0+$/,'')+units;
+}
+export function adjacentGrid(current:number,presets:readonly number[],step:1|-1):number {
+  const sorted=[...new Set(presets)].filter(validGrid).sort((a,b)=>a-b);
+  if(!sorted.length)return current;
+  return step===1 ? sorted.find(v=>v>current)??current : sorted.reverse().find(v=>v<current)??current;
+}

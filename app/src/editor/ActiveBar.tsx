@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Funnel, ShieldCheck, ShieldOff } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -11,6 +11,8 @@ import { useEditor } from "../core/store";
 import { SelectionFilter } from "../panels/SelectionFilter";
 import { Icons } from "../shell/icons";
 import { TOOLS } from "./profiles";
+import { copperLayers, routeWidths } from "./tools/route";
+import { layer } from "../core/layers";
 import { LAYER_MODES } from "../core/view";
 import { activateTool, cycleLayerMode } from "./toolActions";
 
@@ -68,9 +70,42 @@ export function PolygonEditBar({ docId }: { docId: string }) {
 export function RoutingBar({ docId }: { docId: string }) {
   const tool = useEditor(s => s.docs[docId]?.tool);
   const hint = useEditor(s => s.hint);
+  const placement = useEditor(s => s.placement);
+  const enforce = useEditor(s => s.drcEnforce);
+  const items = useEditor(s => s.docs[docId]?.items);
+  const board=useMemo(()=>{if(items)for(const item of items.values())if(item.kind==='board')return item;return undefined;},[items]);
+  const copper=useMemo(()=>copperLayers(board),[board]);
+  const widths=useMemo(()=>{
+    const presets=routeWidths(board);
+    return placement.trackWidth===null?presets:[...new Set([...presets,placement.trackWidth])].sort((a,b)=>a-b);
+  },[board,placement.trackWidth]);
   if (tool !== "route" && tool !== "diffPair") return null;
+  const modes = ["walkaround", "shove", "ignore"] as const;
+  const corners = ["diagonal45", "orthogonal90", "any"] as const;
+  const set = useEditor.getState().setPlacement;
+  const modeLabel = {walkaround:"Walkaround", shove:"Push", ignore:"Ignore"};
+  const cornerLabel = {diagonal45:"45°", arc45:"45° arcs", orthogonal90:"90°", any:"Free angle"};
   return <div className="absolute top-12 left-3 right-3 flex w-fit max-w-[calc(100%-24px)] items-start gap-3 rounded border border-line-strong bg-card/95 px-3 py-2 text-xs shadow-md" onPointerDown={e => e.stopPropagation()}>
-    <div><div className="font-semibold text-ink">Interactive routing</div><div className="max-w-[720px] pt-1 text-[11px] text-muted-foreground" aria-live="polite">{hint}</div></div>
+    <div className="min-w-0">
+      <div className="font-semibold text-ink">Interactive routing</div>
+      <div className="mt-1 flex flex-wrap gap-1" role="toolbar" aria-label="Routing settings">
+        <button className="rounded bg-sel px-2 py-1 hover:bg-hover disabled:opacity-60" disabled={!enforce} title="Cycle obstacle mode (Shift+R)" onClick={() => set({routeMode:modes[(modes.indexOf(placement.routeMode)+1)%modes.length]})}>Mode: {enforce ? modeLabel[placement.routeMode] : 'Rules off'}</button>
+        <button className="rounded bg-sel px-2 py-1 hover:bg-hover" title="Cycle corner style (Shift+Space)" onClick={() => set({cornerStyle:corners[(corners.indexOf(placement.cornerStyle as typeof corners[number])+1)%corners.length]})}>Corners: {cornerLabel[placement.cornerStyle]}</button>
+        <label className="flex items-center gap-1 rounded bg-sel px-2 py-1">Width:
+          <select aria-label="Routing width" className="bg-card text-ink" value={placement.trackWidth ?? 'rules'} title="0 restores rule width; W / Shift+W steps through widths" onChange={e => set({trackWidth:e.target.value === 'rules' ? null : Number(e.target.value)})}>
+            <option value="rules">From rules</option>
+            {widths.map(width => <option key={width} value={width}>{(width/1e6).toFixed(3)} mm</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1 rounded bg-sel px-2 py-1">Via to:
+          <select disabled={tool === "diffPair"} aria-label="Routing via target layer" className="bg-card text-ink" value={placement.routeViaLayer !== null && copper.includes(placement.routeViaLayer) ? placement.routeViaLayer : 'next'} title="V adds a via; Shift+V reverses automatic stack order" onChange={e=>set({routeViaLayer:e.target.value==='next'?null:Number(e.target.value)})}>
+            <option value="next">Next copper layer</option>
+            {copper.map(id=><option key={id} value={id}>{board?.stackup.layers.find(entry=>entry.layer===id)?.name || layer(id).name}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="max-w-[720px] pt-1 text-[11px] text-muted-foreground" aria-live="polite">{hint}</div>
+    </div>
     <button className="shrink-0 rounded bg-sel px-2 py-1 text-accent-ink hover:bg-hover" onClick={() => activateTool("select", docId)}>Select / move <span className="font-mono">Esc</span></button>
   </div>;
 }
@@ -127,6 +162,7 @@ export function ActiveBar({ docId }: { docId: string }) {
   const kind = useEditor((s) => s.docs[docId]?.info.kind);
   const tool = useEditor((s) => s.docs[docId]?.tool);
   const layerMode = useEditor((s) => s.docs[docId]?.layerMode);
+  const selectionSize = useEditor((s) => s.docs[docId]?.selection.size ?? 0);
   if (!kind) return null;
   const boardLike = kind === "pcb" || kind === "footprint";
 
@@ -162,6 +198,13 @@ export function ActiveBar({ docId }: { docId: string }) {
       )}
       {kind === "pcb" && <SelectionFilterButton docId={docId} />}
       {kind === "pcb" && <RulesButton />}
+      {tool === "select" && selectionSize > 0 && <Popover>
+        <PopoverTrigger asChild><button className="h-7 shrink-0 rounded px-2 text-[11px] text-accent-ink hover:bg-hover" aria-label={selectionSize + ' selected objects; selection actions'}>{selectionSize} selected</button></PopoverTrigger>
+        <PopoverContent align="end" className="w-44 p-2" onPointerDown={e => e.stopPropagation()}>
+          <button className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-hover" onClick={() => { useEditor.getState().setActiveDoc(docId); bus.emit("view", {action:"fitSelection"}); }}>Zoom to selection <span className="text-faint">V S</span></button>
+          <button className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-hover" onClick={() => useEditor.getState().patchDoc(docId, {selection:new Set()})}>Clear selection</button>
+        </PopoverContent>
+      </Popover>}
     </div>
   );
 }

@@ -357,7 +357,7 @@ export function boardPlacementRows(impl: string, pl: Placement, set: (p: Partial
           </div>
         </Row>,
         <Row key="h" label="">
-          <span className="text-[11px] leading-snug text-faint">Click a pad or track to start. Space flips the corner, * adds a via and switches layers, Shift+R cycles the mode, Esc finishes.</span>
+          <span className="text-[11px] leading-snug text-faint">Click a pad or track to start. Space chooses the via layer; / flips the corner; Shift+Space cycles corner styles. W / Shift+W changes width, 0 restores rule width, V or * adds a via and switches layers, Shift+R cycles the mode, Esc finishes.</span>
         </Row>,
       ];
     case "zone":

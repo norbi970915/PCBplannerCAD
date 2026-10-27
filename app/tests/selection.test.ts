@@ -290,3 +290,23 @@ test('Tab cycles the move mode; disconnect falls back to a plain move', () => {
   assert.deepEqual(h.commands, [{ op: 'move', ids: [4], dx: p(3, 0).x, dy: p(0, 2).y }]);
   useEditor.getState().setPlacement({ moveMode: 'preserveAngles', moveViolators: 'shove' } as never);
 });
+
+
+test('exclude locked objects affects selection, preserves layer exclusions and resets with Everything',()=>{
+  const h=harness();const f=useSelectFilter.getState();
+  const locked={...track,locked:true}as Item;
+  assert.equal(selectable('pcb',locked),true);
+  f.setLayer(1,false);f.setExcludeLocked(true);
+  assert.equal(selectable('pcb',locked),false);
+  assert.equal(selectable('pcb',track),true);
+  f.onlyTypes(['tracks','vias']);assert.equal(useSelectFilter.getState().excludeLocked,true);assert.deepEqual(useSelectFilter.getState().offLayers,[1]);
+  f.reset();assert.equal(useSelectFilter.getState().excludeLocked,false);assert.equal(selectable('pcb',locked),true);
+});
+
+test('selection helpers respect hidden layers and hidden object types in the target document',()=>{
+  const h=harness();const doc=useEditor.getState().docs.test;
+  assert.equal(selectable('pcb',track,{...doc,view:{...doc.view,tracks:false}}),false);
+  assert.equal(selectable('pcb',via(0,0),{...doc,view:{...doc.view,vias:false}}),false);
+  assert.equal(selectable('pcb',track,{...doc,view:{...doc.view,hiddenLayers:[0]}}),false);
+  assert.equal(selectable('pcb',track,doc),true);
+});

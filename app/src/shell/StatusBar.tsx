@@ -1,6 +1,7 @@
+import { openDialog } from "../pcb/dialogs";
 import { layer } from "../core/layers";
 import { useEditor } from "../core/store";
-import { formatLength } from "../core/units";
+import { formatGrid, formatLength } from "../core/units";
 
 function Cell({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <span className={`flex items-center gap-1.5 border-r border-line px-2.5 last:border-r-0 ${className}`}>{children}</span>;
@@ -11,6 +12,8 @@ function DrcCells({ docId }: { docId: string }) {
   const enforce = useEditor((s) => s.drcEnforce);
   const onlineDrc = useEditor((s) => s.onlineDrc);
   const drc = useEditor((s) => s.docs[docId]?.drc);
+  const status = useEditor(s => s.docs[docId]?.drcStatus ?? "unchecked");
+  const ruleErrors = useEditor(s => s.docs[docId]?.drcRuleErrors?.length ?? 0);
   const errors = drc?.filter((v) => v.severity === "error").length ?? 0;
   const warnings = (drc?.length ?? 0) - errors;
   return (
@@ -25,10 +28,11 @@ function DrcCells({ docId }: { docId: string }) {
       <button
         title={onlineDrc ? "Online DRC: checked after every change · click to turn off (T D runs a full check)" : "Online DRC off · click to check after every change"}
         onClick={() => useEditor.getState().toggleOnlineDrc()}
-        className={`flex h-full items-center gap-1 border-r border-line px-2.5 hover:bg-hover ${!onlineDrc ? "text-faint" : errors ? "font-semibold text-err-line" : warnings ? "text-note-line" : "text-ok"}`}
+        className={`flex h-full items-center gap-1 border-r border-line px-2.5 hover:bg-hover ${!onlineDrc ? "text-faint" : status !== "current" || ruleErrors ? "text-note-line" : errors ? "font-semibold text-err-line" : warnings ? "text-note-line" : "text-ok"}`}
       >
-        {!onlineDrc ? "DRC off" : errors || warnings ? `DRC ${errors} error${errors === 1 ? "" : "s"}${warnings ? ` · ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}` : "DRC ✓"}
+        {!onlineDrc ? "DRC off" : status === "checking" ? "DRC checking…" : status === "error" ? "DRC failed" : status === "stale" ? "DRC stale" : status === "unchecked" ? "DRC not checked" : ruleErrors ? "DRC rule errors" : errors || warnings ? `DRC ${errors} error${errors === 1 ? "" : "s"}${warnings ? ` · ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}` : "DRC ✓"}
       </button>
+      <button className="flex h-full items-center border-r border-line px-2 hover:bg-hover" title="Browse and filter DRC results" onClick={() => { useEditor.getState().setActiveDoc(docId); openDialog("drcResults"); }}>Issues</button>
     </>
   );
 }
@@ -47,7 +51,7 @@ export function StatusBar() {
       <Cell className="min-w-56 font-mono text-ink">
         X {coord(cursor?.x)} <span className="text-faint">·</span> Y {coord(cursor?.y)}
       </Cell>
-      {doc && <Cell>Grid {formatLength(doc.grid, units)}</Cell>}
+      {doc && <button className="flex h-full items-center border-r border-line px-2.5 hover:bg-hover" title="Grid and snapping settings" onClick={()=>openDialog("grid")}>Grid {formatGrid(doc.grid, units)}{doc.view.snapToGrid ? "" : " · snap off"}</button>}
       {board && (
         <Cell>
           <span className="swatch" style={{ background: layer(doc.activeLayer).color }} /> {layer(doc.activeLayer).name}

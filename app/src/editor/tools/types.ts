@@ -33,6 +33,10 @@ export interface ToolEnv {
   scene: Scene;
   ctx(): DrawContext;
   exec(cmd: Command): Promise<boolean>;
+  /** Undo the latest document transaction; false when no undo is available. */
+  undo(): Promise<boolean>;
+  chooseRouteLayer(options:{layers:{id:number;name:string;color:string}[];current:number;suggested:number}):Promise<number|null>;
+  dismissRouteLayer():void;
   placement(): Placement;
   setPlacement(p: Partial<Placement>): void;
   select(ids: Iterable<ItemId>): void;

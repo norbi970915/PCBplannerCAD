@@ -34,3 +34,20 @@ Open a board, choose Tools → Pour Manager, or select copper and use Copper pro
 The older native checklist (DRC marker appearance, Update PCB cursor placement, board Find, rules-off differential pairs, and sustained online-DRC/teardrop performance on the largest boards) is not claimed complete by command-line tests. Rule enforcement defaults to on; verify the visible rules switch before normal editing because saved local preferences can disable it.
 
 Future projects from the broader roadmap remain: fully recursive via shoving, automatic pad/track conflict relocation, custom pads and per-pad overrides, persistent groups/arrays, pair tuning, radial/leader dimensions, ODB++ and exact B-rep STEP. The installed executable must be rebuilt when source changes; this update includes fresh local build outputs, which remain Git-ignored.
+
+## Small routing usability update
+
+- The on-canvas routing bar now offers obstacle mode, corner style and rule-width reset controls. Settings changes refresh an active routing preview immediately.
+- Shift+Space cycles 45°, 90° and free-angle corners; plain Space still flips the corner posture. Press 0 to restore width from board rules. W / Shift+W continues to change width.
+- Identical routing requests at the same snapped position reuse the preview. Changes to routing settings or board geometry invalidate that reuse; failed requests can retry. Returning to an in-flight endpoint cancels an obsolete queued endpoint.
+- Focused validation: 110 editor tests passed and TypeScript checking passed. This update does not claim measured frame-rate gains on large boards.
+
+## Additional workflow controls for the next layout session
+
+- Routing width dropdown: choose standard widths, widths from board net classes, or From rules. Existing custom width values remain available in the list.
+- Selection presets: Components, Copper (tracks/arcs and vias), and Vias preserve current layer exclusions. Everything resets both types and layers. Presets appear in the View panel and selection-filter popup.
+- Selection count: while using Select, click the selected-object count in the toolbar for Zoom to selection or Clear selection.
+
+Live validation is deferred to the next full layout workflow. Check preset selection with click/Ctrl-click and both box directions; verify that layer exclusions remain active; try width changes mid-route and rule-width reset; check selection count, zoom and clear after moving or rotating parts. Record each issue with the action, expected result, actual result and a screenshot or saved board where useful.
+
+Further routing, arrays, selection, browsing and diagnostics work is recorded in [the workflow update](PROGRESS-2026-10-27-WORKFLOW.md).

@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { L } from "./layers";
 import { readPreference } from "./preferences";
-import { activeDoc } from "./store";
+import { activeDoc, type DocState } from "./store";
 import type { DocKind, Item, LayerId } from "./types";
 
 export const FILTER_KINDS = [
@@ -20,6 +20,7 @@ export const FILTER_KINDS = [
 export type FilterKind = (typeof FILTER_KINDS)[number][0];
 
 const KEY = "pcbplannercad.selectFilter";
+const LOCKED_KEY = "pcbplannercad.selectFilterLocked";
 const LAYERS_KEY = "pcbplannercad.selectFilterLayers";
 const ALL: Record<FilterKind, boolean> = { components: true, tracks: true, vias: true, pours: true, keepouts: true, graphics: true, text: true };
 
@@ -52,10 +53,14 @@ function save(key: string, value: unknown) {
 interface FilterState {
   on: Record<FilterKind, boolean>;
   offLayers: LayerId[];
+  excludeLocked: boolean;
+  setExcludeLocked: (exclude:boolean) => void;
   set: (k: FilterKind, v: boolean) => void;
   all: () => void;
   none: () => void;
   only: (k: FilterKind) => void;
+  /** Enable a preset of object types without changing layer exclusions. */
+  onlyTypes: (kinds: readonly FilterKind[]) => void;
   setLayer: (id: LayerId, v: boolean) => void;
   /** Enables exactly `ids` out of `known`. */
   onlyLayers: (ids: LayerId[], known: LayerId[]) => void;
@@ -76,17 +81,20 @@ const setLayers = (offLayers: LayerId[]) => {
 export const useSelectFilter = create<FilterState>()((set, get) => ({
   on: load(),
   offLayers: loadLayers(),
+  excludeLocked: (()=>{try{return readPreference(LOCKED_KEY)==="true";}catch{return false;}})(),
+  setExcludeLocked: (excludeLocked) => { save(LOCKED_KEY,excludeLocked); set({excludeLocked}); },
   set: (k, v) => set(setTypes({ ...get().on, [k]: v })),
   all: () => set(setTypes({ ...ALL })),
   none: () => set(setTypes(Object.fromEntries(FILTER_KINDS.map(([k]) => [k, false])) as Record<FilterKind, boolean>)),
   only: (k) => set(setTypes(Object.fromEntries(FILTER_KINDS.map(([key]) => [key, key === k])) as Record<FilterKind, boolean>)),
+  onlyTypes: (kinds) => set(setTypes(Object.fromEntries(FILTER_KINDS.map(([key]) => [key, kinds.includes(key)])) as Record<FilterKind, boolean>)),
   setLayer: (id, v) => {
     const off = get().offLayers.filter((x) => x !== id);
     set(setLayers(v ? off : [...off, id]));
   },
   onlyLayers: (ids, known) => set(setLayers(known.filter((id) => !ids.includes(id)))),
   allLayers: () => set(setLayers([])),
-  reset: () => set({ ...setTypes({ ...ALL }), ...setLayers([]) }),
+  reset: () => { save(LOCKED_KEY,false); set({ ...setTypes({ ...ALL }), ...setLayers([]), excludeLocked:false }); },
 }));
 
 export function filterKindOf(item: Item): FilterKind | null {
@@ -144,17 +152,25 @@ export function onSelectableLayer(item: Item, offLayers: readonly LayerId[]): bo
 const ALL_LAYERS: LayerId[] = Array.from({ length: 63 }, (_, i) => i);
 
 /** True when the item may be picked in the given editor (filter applies to boards only). */
-export function selectable(kind: DocKind, item: Item): boolean {
+export function selectable(kind: DocKind, item: Item, targetDoc:DocState|undefined = activeDoc()): boolean {
   if (kind !== "pcb") return true;
   // Teardrops belong to their joints; Tools ▸ Teardrops manages them.
   if (item.kind === "zone" && item.teardrop) return false;
-  const { on, offLayers } = useSelectFilter.getState();
+  const { on, offLayers, excludeLocked } = useSelectFilter.getState();
+  if (excludeLocked && "locked" in item && item.locked) return false;
   const k = filterKindOf(item);
   if ((k && !on[k]) || !onSelectableLayer(item, offLayers)) return false;
   // "Active layer only" hides the other layers, so their objects cannot be picked either.
-  const doc = activeDoc();
+  const doc = targetDoc;
+  if (!onSelectableLayer(item, doc?.view?.hiddenLayers ?? [])) return false;
+  if (doc?.view) {
+    if ((item.kind === 'track' || item.kind === 'arcTrack') && !doc.view.tracks) return false;
+    if (item.kind === 'via' && !doc.view.vias) return false;
+    if (item.kind === 'text' && !doc.view.text) return false;
+    if (filterKindOf(item) === 'graphics' && !doc.view.graphics) return false;
+  }
   return doc?.layerMode !== "only" || onSelectableLayer(item, ALL_LAYERS.filter((id) => id !== doc.activeLayer));
 }
 
 export const typesFiltered = (on: Record<FilterKind, boolean>) => Object.values(on).some((v) => !v);
-export const filterActive = (s: Pick<FilterState, "on" | "offLayers">) => typesFiltered(s.on) || s.offLayers.length > 0;
+export const filterActive = (s: Pick<FilterState, "on" | "offLayers"> & {excludeLocked?:boolean}) => typesFiltered(s.on) || s.offLayers.length > 0 || s.excludeLocked === true;

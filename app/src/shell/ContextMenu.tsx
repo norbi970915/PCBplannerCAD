@@ -50,6 +50,8 @@ function entriesFor(docId: string): Entry[] {
     return out;
   }
 
+  if (board && one) out.push(cmd("edit.selectSimilar"));
+  if (board) out.push(cmd("edit.array"));
   const net = netOf(one);
   if (board && net) out.push({ label: `Highlight Net "${net}"`, run: () => highlightNetOnBoard(docId, net) });
   if (board && (one?.kind === "track" || one?.kind === "arcTrack" || one?.kind === "via")) out.push(cmd("edit.selectConnection", "Select Connection"));

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { api } from "../core/api";
@@ -31,7 +32,10 @@ export function FindDialog({ docId }: { docId: string }) {
   const doc = useEditor((s) => s.docs[docId]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const matches = useMemo(() => (doc ? findMatches(doc.items, query) : []), [doc?.items, query]);
+  const [kind,setKind] = useState<FindKind | "all">("all");
+  const listRef=useRef<HTMLDivElement>(null);
+  useEffect(()=>{listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({block:"nearest"});},[active,query,kind]);
+  const matches = useMemo(() => (doc ? findMatches(doc.items, query, 200, kind) : []), [doc?.items, query, kind]);
   const close = () => useModal.getState().close();
   const choose = (m: FindMatch | undefined) => {
     if (!m) return;
@@ -41,6 +45,7 @@ export function FindDialog({ docId }: { docId: string }) {
   return (
     <Dialog title="Find" description={doc?.info.kind === "pcb" ? "Footprints by designator, value or footprint; nets; texts. * and ? are wildcards." : "Parts by designator or value; nets, labels and power ports; texts. * and ? are wildcards."}>
       <div className="grid gap-2">
+        <NativeSelect aria-label="Find object type" value={kind} onChange={e=>{setKind(e.target.value as FindKind | "all");setActive(0);}}><NativeSelectOption value="all">All object types</NativeSelectOption>{(doc?.info.kind === "pcb" ? ["footprint","net","text"] : ["part","label","text"]).map(k=><NativeSelectOption key={k} value={k}>{KIND_LABEL[k as FindKind]}</NativeSelectOption>)}</NativeSelect>
         <Input
           autoFocus
           placeholder="R12, 10k, GND, U*…"
@@ -59,9 +64,10 @@ export function FindDialog({ docId }: { docId: string }) {
             }
           }}
         />
-        <div className="max-h-[50vh] min-h-24 overflow-auto rounded-[5px] border border-line">
+        <div ref={listRef} role="listbox" aria-label="Search results" className="max-h-[50vh] min-h-24 overflow-auto rounded-[5px] border border-line">
           {matches.map((m, i) => (
             <div
+              role="option" aria-selected={i === active}
               key={`${m.kind}:${m.ids[0]}:${m.label}`}
               onMouseEnter={() => setActive(i)}
               onClick={() => choose(m)}

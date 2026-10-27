@@ -425,3 +425,14 @@ export function netRows(items: Items, airwires: readonly AirWire[]): { rows: Net
   for (const w of airwires) if (w.net) row(w.net).unrouted++;
   return { rows: [...rows.values()].sort((a, b) => natural.compare(a.name, b.name)), classes: classes.map((c) => c.name) };
 }
+
+
+export type NetSort='name'|'pads'|'vias'|'length'|'unrouted';
+/** Stable numeric sorts with natural net names as the tie-breaker. */
+export function sortNetRows(rows:readonly NetRow[],field:NetSort,descending=false):NetRow[]{
+  const natural=new Intl.Collator(undefined,{numeric:true,sensitivity:'base'});
+  return [...rows].sort((a,b)=>{
+    const order=field==='name'?natural.compare(a.name,b.name):a[field]-b[field];
+    return (descending?-order:order)||natural.compare(a.name,b.name);
+  });
+}

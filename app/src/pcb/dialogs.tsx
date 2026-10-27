@@ -1,3 +1,6 @@
+import { GridDialog } from "../shell/GridDialog";
+import { DrcBrowser } from "./DrcBrowser";
+import { ArrayDialog, SelectSimilarDialog } from "./SelectionToolsDialogs";
 import { PourManager } from "./PourManager";
 import { useEffect, useMemo, useState } from "react";
 import { open as openDialogPicker, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -29,11 +32,11 @@ const mm = (v: number) => Math.round(v * NM_PER_MM);
 const toMm = (nm: number) => nm / NM_PER_MM;
 const close = () => useModal.getState().close();
 
-type DialogName = "pours" | "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants" | "cleanup" | "stitch" | "stats" | "teardrops";
+type DialogName = "grid" | "drcResults" | "array" | "similar" | "pours" | "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants" | "cleanup" | "stitch" | "stats" | "teardrops";
 
 export function openDialog(name: DialogName) {
   const doc = activeDoc();
-  const needsBoard = name !== "impedance" && name !== "print" && name !== "variants";
+  const needsBoard = name !== "grid" && name !== "impedance" && name !== "print" && name !== "variants";
   if (needsBoard && doc?.info.kind !== "pcb") {
     useEditor.getState().log("warning", "Open a board (PCB document) first.");
     return;
@@ -41,6 +44,10 @@ export function openDialog(name: DialogName) {
   const id = doc?.info.id ?? "";
   const show = useModal.getState().show;
   switch (name) {
+    case "grid": return doc ? show(<GridDialog docId={id}/>) : undefined;
+    case "drcResults": return show(<DrcBrowser docId={id}/>);
+    case "array": return show(<ArrayDialog docId={id}/>);
+    case "similar": return show(<SelectSimilarDialog docId={id}/>);
     case "pours": return show(<PourManager docId={id}/>);
     case "eco":
       return show(<EcoDialog docId={id} />);

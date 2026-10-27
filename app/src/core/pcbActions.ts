@@ -3,24 +3,29 @@ import { api } from "./api";
 import { report } from "./actions";
 import { bus } from "./bus";
 import { useEditor } from "./store";
-import type { ItemId, Point } from "./types";
+import type { DrcViolation, ItemId, Point } from "./types";
 import { NM_PER_MM } from "./units";
 import { mergeViolations, ONLINE_SKIP, touchedBetween, type Touched } from "../pcb/drcMerge";
 
 const st = () => useEditor.getState();
 const timers = new Map<string, number>();
+const analysisVersions = new Map<string,number>();
 
 /** Refreshes the ratsnest (and online DRC) shortly after board edits. */
 export function scheduleAnalysis(docId: string, delay = 200) {
+  const version=(analysisVersions.get(docId)??0)+1;analysisVersions.set(docId,version);
   window.clearTimeout(timers.get(docId));
   timers.set(
     docId,
     window.setTimeout(async () => {
+      const snapshot=st().docs[docId];if(!snapshot)return;
       try {
         const a = await api.pcbAnalysis(docId);
+        const current=st().docs[docId];
+        if(version!==analysisVersions.get(docId)||!current||current.items!==snapshot.items||current.epoch!==snapshot.epoch)return;
         st().patchDoc(docId, { airwires: a.airwires });
         const unrouted = a.stats.unrouted;
-        st().setHint(unrouted ? `${unrouted} of ${a.stats.connections} connections unrouted` : st().hint);
+        if(st().activeDocId===docId&&current.tool==="select")st().setHint(unrouted ? `${unrouted} of ${a.stats.connections} connections unrouted` : st().hint);
       } catch {
         // Analysis is advisory; ignore transient errors (e.g. doc closed).
       }
@@ -28,21 +33,40 @@ export function scheduleAnalysis(docId: string, delay = 200) {
   );
 }
 
+const drcVersions = new Map<string, number>();
+const manualDrc = new Set<string>();
+function beginDrc(docId:string) {
+  const doc=st().docs[docId];if(!doc)return null;
+  const version=(drcVersions.get(docId)??0)+1;drcVersions.set(docId,version);
+  st().patchDoc(docId,{drcStatus:'checking',drcError:null});
+  return {items:doc.items,footprints:doc.footprints,epoch:doc.epoch,version};
+}
+function sameDrcBoard(docId:string,token:NonNullable<ReturnType<typeof beginDrc>>) {
+  const doc=st().docs[docId];return !!doc&&doc.items===token.items&&doc.footprints===token.footprints&&doc.epoch===token.epoch;
+}
 export async function runDrc(docId = st().activeDocId) {
-  if (!docId) return;
+  if (!docId || manualDrc.has(docId)) return;
+  const token=beginDrc(docId);if(!token)return;
+  manualDrc.add(docId);let failed=false;
   try {
     const r = await api.pcbDrc(docId);
-    st().patchDoc(docId, { drc: r.violations });
+    if(drcVersions.get(docId)!==token.version)return;
+    if(!sameDrcBoard(docId,token)) { if(st().onlineDrc)onlineJob(docId).full=true;st().patchDoc(docId,{drcStatus:'stale'});st().log('info','The board changed during DRC. Run the check again for current results.');return; }
+    st().patchDoc(docId, { drc:r.violations, drcStatus:'current', drcCheckedAt:Date.now(), drcRuleErrors:r.ruleErrors, drcError:null });
     st().clearMessages("drc");
-    for (const e of r.ruleErrors) st().log("warning", `Rule: ${e}`, { source: "drc" });
-    for (const v of r.violations) st().log(v.severity, v.message, { source: "drc", target: { docId, items: v.items, pos: v.pos } });
-    const errors = r.violations.filter((v) => v.severity === "error").length;
-    st().log(errors ? "error" : "info", `DRC: ${errors} errors, ${r.violations.length - errors} warnings · ${r.stats.unrouted} of ${r.stats.connections} connections unrouted.`, {
-      source: "drc",
-    });
-    bus.emit("showPanel", { id: "messages" });
-  } catch (e) {
+    for (const e of r.ruleErrors) st().log("warning", 'Rule: '+e, { source:"drc" });
+    for (const v of r.violations) st().log(v.severity, v.message, { source:"drc", target:{ docId,items:v.items,pos:v.pos } });
+    const errors=r.violations.filter(v=>v.severity==='error').length;
+    st().log(errors?'error':'info', 'DRC: '+errors+' errors, '+(r.violations.length-errors)+' warnings · '+r.stats.unrouted+' of '+r.stats.connections+' connections unrouted.', {source:'drc'});
+    bus.emit('showPanel',{id:'messages'});
+  } catch(e) {
+    failed=true;
+    if(st().onlineDrc)onlineJob(docId).full=true;
+    if(drcVersions.get(docId)===token.version)st().patchDoc(docId,{drcStatus:'error',drcError:String(e)});
     report(e);
+  } finally {
+    manualDrc.delete(docId);const job=online.get(docId);
+    if(!failed&&st().onlineDrc&&job&&(job.full||job.touched.drop.size))scheduleOnline(docId,0);
   }
 }
 
@@ -177,39 +201,43 @@ function onlineJob(docId: string): OnlineJob {
 function scheduleOnline(docId: string, delay = 250) {
   const j = onlineJob(docId);
   window.clearTimeout(j.timer);
+  st().patchDoc(docId,{drcStatus:'checking',drcError:null});
   j.timer = window.setTimeout(() => void runOnline(docId), delay);
 }
 
-/** One request at a time per board; changes arriving meanwhile run right after. */
+/** One request at a time per board; stale results never replace newer geometry. */
 async function runOnline(docId: string) {
-  const j = onlineJob(docId);
-  if (j.running) return;
-  if (!st().onlineDrc || st().docs[docId]?.info.kind !== "pcb") {
-    online.delete(docId);
-    return;
-  }
-  const full = j.full;
-  const touched = j.touched;
-  if (!full && !touched.drop.size) return;
-  j.full = false;
-  j.touched = { check: new Set(), drop: new Set() };
-  j.running = true;
+  const j=onlineJob(docId);
+  if(j.running||manualDrc.has(docId))return;
+  if(!st().onlineDrc||st().docs[docId]?.info.kind!=='pcb'){online.delete(docId);return;}
+  const full=j.full,touched=j.touched;
+  if(!full&&!touched.drop.size){if(st().docs[docId]?.drcStatus==='checking')st().patchDoc(docId,{drcStatus:st().docs[docId].drcCheckedAt?'current':'unchecked'});return;}
+  j.full=false;j.touched={check:new Set(),drop:new Set()};j.running=true;
+  const token=beginDrc(docId);if(!token){j.running=false;return;}
+  let failed=false;
   try {
-    if (full) {
-      const r = await api.pcbDrc(docId);
-      st().patchDoc(docId, { drc: r.violations.filter((v) => !ONLINE_SKIP.has(v.code)) });
-    } else {
-      const items = st().docs[docId]?.items;
-      const ids = [...touched.check].filter((id) => items?.has(id));
-      const fresh = ids.length ? await api.pcbDrcNear(docId, ids) : [];
-      const doc = st().docs[docId];
-      if (doc) st().patchDoc(docId, { drc: mergeViolations(doc.drc, touched.drop, fresh) });
+    let violations:DrcViolation[],ruleErrors=st().docs[docId]?.drcRuleErrors??[];
+    if(full){const r=await api.pcbDrc(docId);violations=r.violations.filter(v=>!ONLINE_SKIP.has(v.code));ruleErrors=r.ruleErrors;}
+    else {
+      const ids=[...touched.check].filter(id=>token.items.has(id));
+      const fresh=ids.length?await api.pcbDrcNear(docId,ids):[];
+      violations=mergeViolations(st().docs[docId]?.drc??[],touched.drop,fresh);
     }
-  } catch {
-    // Advisory, like the ratsnest: a closed document or a transient error just skips this round.
-  } finally {
-    j.running = false;
-    if (j.full || j.touched.drop.size) scheduleOnline(docId, 0);
+    if(!st().onlineDrc||drcVersions.get(docId)!==token.version)return;
+    if(!sameDrcBoard(docId,token)) {
+      // Requeue the in-flight batch too: the next near-check must cover both sets of edits.
+      j.full ||= full || st().docs[docId]?.epoch!==token.epoch;
+      for(const id of touched.check)j.touched.check.add(id);
+      for(const id of touched.drop)j.touched.drop.add(id);
+      return;
+    }
+    st().patchDoc(docId,{drc:violations,drcStatus:'current',drcCheckedAt:Date.now(),drcRuleErrors:ruleErrors,drcError:null});
+  }catch(e){
+    failed=true;j.full=true;
+    if(st().onlineDrc&&drcVersions.get(docId)===token.version)st().patchDoc(docId,{drcStatus:'error',drcError:String(e)});
+  }finally{
+    j.running=false;
+    if(!failed&&online.get(docId)===j&&st().onlineDrc&&st().docs[docId]&&(j.full||j.touched.drop.size))scheduleOnline(docId,0);
   }
 }
 
@@ -225,29 +253,32 @@ export function drcCounts(docId: string): { errors: number; warnings: number } {
  * re-checked with the near-DRC and their markers replaced. Opening a board or switching it on runs one full check.
  */
 export function installOnlineDrc(): () => void {
-  const baseline = () => {
-    for (const [id, d] of Object.entries(st().docs)) {
-      if (d.info.kind === "pcb") {
-        onlineJob(id).full = true;
-        scheduleOnline(id, 0);
-      }
-    }
+  const stop=()=>{
+    for(const [id,j]of online){window.clearTimeout(j.timer);if(!manualDrc.has(id)){drcVersions.set(id,(drcVersions.get(id)??0)+1);if(st().docs[id]?.drcStatus==='checking')st().patchDoc(id,{drcStatus:'stale'});}}
+    online.clear();
   };
-  if (st().onlineDrc) baseline();
-  return useEditor.subscribe((s, prev) => {
-    if (!s.onlineDrc) return;
-    if (!prev.onlineDrc) return baseline();
-    if (s.docs === prev.docs) return;
-    for (const [id, d] of Object.entries(s.docs)) {
-      if (d.info.kind !== "pcb") continue;
-      const old = prev.docs[id];
-      if (old?.items === d.items && old?.epoch === d.epoch) continue;
-      const j = onlineJob(id);
-      if (!old || old.epoch !== d.epoch) j.full = true;
-      else touchedBetween(old.items, d.items, j.touched);
-      scheduleOnline(id);
+  const baseline=()=>{for(const[id,d]of Object.entries(st().docs))if(d.info.kind==='pcb'){onlineJob(id).full=true;scheduleOnline(id,0);}};
+  if(st().onlineDrc)baseline();
+  const unsubscribe=useEditor.subscribe((s,prev)=>{
+    if(!s.onlineDrc){if(prev.onlineDrc)stop();return;}
+    if(!prev.onlineDrc){baseline();return;}
+    if(s.docs===prev.docs)return;
+    for(const[id,d]of Object.entries(s.docs)){
+      if(d.info.kind!=='pcb')continue;
+      const old=prev.docs[id];
+      if(old?.items===d.items&&old?.epoch===d.epoch&&old?.footprints===d.footprints)continue;
+      const j=onlineJob(id);
+      let rulesChanged=false;
+      if(old){for(const[key,item]of d.items)if(item.kind==='board'&&old.items.get(key)!==item){rulesChanged=true;break;}
+        if(!rulesChanged)for(const[key,item]of old.items)if(item.kind==='board'&&!d.items.has(key)){rulesChanged=true;break;}}
+      if(!old||old.epoch!==d.epoch||old.footprints!==d.footprints||rulesChanged)j.full=true;
+      else touchedBetween(old.items,d.items,j.touched);
+      if(j.full||j.touched.drop.size)scheduleOnline(id);
+      else if(d.drcStatus==='stale'&&old?.drcStatus==='current')st().patchDoc(id,{drcStatus:'current'});
     }
+    for(const[id,j]of online)if(!s.docs[id]){window.clearTimeout(j.timer);online.delete(id);drcVersions.set(id,(drcVersions.get(id)??0)+1);}
   });
+  return()=>{unsubscribe();stop();};
 }
 
 // ---------- cross-probing ----------

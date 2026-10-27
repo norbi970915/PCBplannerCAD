@@ -370,3 +370,182 @@ test('a rejected atomic via commit keeps routing on the previous layer',async()=
     assert.match(h.tool.hint(h.env),/on bottom/);
   });
 });
+
+
+test('unchanged snapped positions reuse the preview but settings and geometry invalidate it',async()=>{
+  const h=toolHarness();let calls=0;
+  useEditor.getState().setPlacement({trackWidth:null});
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route');calls++;const r=args!.req as RouteRequest;
+    return{...result(),tracks:[{...track,a:r.start,b:r.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    for(let i=0;i<100;i++)h.tool.move!(h.env,{}as never);await tick();
+    assert.equal(calls,1,'100 duplicate pointer samples must not make 100 native requests');
+    useEditor.getState().setPlacement({trackWidth:400000});h.tool.move!(h.env,{}as never);await tick();assert.equal(calls,2);
+    h.env.doc().items=new Map(h.env.doc().items);h.tool.move!(h.env,{}as never);await tick();assert.equal(calls,3);
+    h.env.doc().footprints={...h.env.doc().footprints};h.tool.move!(h.env,{}as never);await tick();assert.equal(calls,4);
+  });
+  useEditor.getState().setPlacement({trackWidth:null});
+});
+
+test('returning to the in-flight endpoint discards an obsolete queued endpoint',async()=>{
+  const h=toolHarness();let calls=0,settle!:(v:unknown)=>void,request!:RouteRequest;
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route');calls++;request=args!.req as RouteRequest;
+    return new Promise(resolve=>{settle=resolve;});
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(14000000,9000000);h.tool.move!(h.env,{}as never);
+    h.move(10200000,10000000);h.tool.move!(h.env,{}as never);
+    settle({...result(),tracks:[{...track,a:request.start,b:request.end}]});await tick();
+    assert.equal(calls,1);assert.deepEqual((h.tool.preview!(h.env)[0] as typeof track).b,request.end);
+  });
+});
+
+test('Shift+Space cycles corner styles and 0 restores the rule width',async()=>{
+  const h=toolHarness();let last!:RouteRequest;
+  h.env.setPlacement=patch=>useEditor.getState().setPlacement(patch);
+  useEditor.getState().setPlacement({cornerStyle:'diagonal45',trackWidth:400000});
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    last=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:last.start,b:last.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    for(const style of ['orthogonal90','any','diagonal45']){
+      assert.equal(h.tool.key!(h.env,' ',{shiftKey:true}as KeyboardEvent),true);await tick();
+      assert.equal(last.corner,style);assert.equal(last.postureFlip,false);
+    }
+    h.tool.key!(h.env,'/',{shiftKey:false}as KeyboardEvent);await tick();assert.equal(last.postureFlip,true);
+    h.tool.key!(h.env,'0',{shiftKey:false}as KeyboardEvent);await tick();
+    assert.equal(useEditor.getState().placement.trackWidth,null);assert.equal(last.width,250000);
+  });
+});
+
+test('a transient preview failure can be retried at the same position',async()=>{
+  const h=toolHarness();let calls=0;
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    if(++calls===1)throw new Error('Temporary routing failure');
+    const r=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:r.start,b:r.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();assert.match(h.tool.hint(h.env),/Temporary routing failure/);
+    h.tool.move!(h.env,{}as never);await tick();assert.equal(calls,2);assert.equal(h.tool.preview!(h.env).length,1);
+  });
+});
+
+
+test('via routing targets follow stack order, reverse order and explicit copper choices',async()=>{
+  const {routeViaLayer}=await import('../src/editor/tools/route.ts');
+  const copper=[0,33,34,1];
+  assert.equal(routeViaLayer(copper,0,null),33);
+  assert.equal(routeViaLayer(copper,0,null,true),1);
+  assert.equal(routeViaLayer(copper,33,1),1);
+  assert.equal(routeViaLayer(copper,33,33),34,'current layer falls back to the next');
+  assert.equal(routeViaLayer(copper,33,999),34,'stale target from another board is ignored');
+  assert.equal(routeViaLayer([0],0,null),null);
+});
+
+test('Backspace removes a committed routing step and resumes from its previous anchor',async()=>{
+  const h=toolHarness();let last!:RouteRequest,undos=0;
+  const before=h.env.doc().items;
+  h.env.exec=async cmd=>{h.commands.push(cmd);h.env.doc().items=new Map(h.env.doc().items);return true;};
+  h.env.undo=async()=>{undos++;h.env.doc().items=new Map(before);return true;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route');last=args!.req as RouteRequest;
+    return{...result(),tracks:[{...track,a:last.start,b:last.end,layer:last.layer}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(14000000,9000000);h.tool.down!(h.env,{}as never);await tick();await tick();
+    assert.equal(h.commands.length,1);
+    assert.equal(h.tool.key!(h.env,'Backspace',{}as never),true);await tick();await tick();
+    assert.equal(undos,1);assert.deepEqual(last.start,h.center);
+    h.tool.key!(h.env,'Backspace',{}as never);await tick();assert.equal(undos,1,'never undo beyond this route session');
+  });
+});
+
+test('route Backspace refuses to undo a board change outside this route',async()=>{
+  const h=toolHarness();let undos=0;
+  h.env.undo=async()=>{undos++;return true;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    const req=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:req.start,b:req.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(14000000,9000000);h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.env.doc().items=new Map(h.env.doc().items);
+    h.tool.key!(h.env,'Backspace',{}as never);await tick();
+    assert.equal(undos,0);assert.match(h.tool.hint(h.env),/Board changed outside this route/);
+  });
+});
+
+test('Backspace after a routing via restores its source layer and anchor',async()=>{
+  const h=toolHarness();let last!:RouteRequest,undos=0;
+  const from=h.env.doc().activeLayer;
+  useEditor.getState().setPlacement({routeViaLayer:0});
+  h.env.undo=async()=>{undos++;h.env.doc().items=new Map(h.env.doc().items);return true;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via')return{...via,pos:args!.pos,fromLayer:args!.from,toLayer:args!.to};
+    last=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:last.start,b:last.end,layer:last.layer}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(14000000,9000000);h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.equal(h.commands.length,1);
+    h.tool.key!(h.env,'Backspace',{}as never);await tick();await tick();
+    assert.equal(undos,1);assert.equal(last.layer,from);assert.deepEqual(last.start,h.center);
+  });
+  useEditor.getState().setPlacement({routeViaLayer:null});
+});
+
+
+test('pair continuation uses the active-net endpoint even when pair segment counts differ',async()=>{
+  const {routeEnd}=await import('../src/editor/tools/route.ts');
+  const tracks=[{...track,kind:'track' as const,net:'P',b:{x:1,y:0}},{...track,kind:'track' as const,net:'P',b:{x:2,y:0}},{...track,kind:'track' as const,net:'P',b:{x:3,y:0}},{...track,kind:'track' as const,net:'N',b:{x:3,y:1}}];
+  assert.deepEqual(routeEnd(tracks,'P'),{x:3,y:0});assert.deepEqual(routeEnd(tracks,'N'),{x:3,y:1});
+});
+
+
+test('Space opens the copper layer picker and places the via at the captured endpoint',async()=>{
+  const h=toolHarness();let pickerCalls=0,viaArgs:Record<string,unknown>|undefined;
+  const to={x:14000000,y:9000000};
+  h.env.chooseRouteLayer=async options=>{pickerCalls++;assert.equal(options.current,1);assert.deepEqual(options.layers.map(layer=>layer.id),[0,1]);h.move(99000000,99000000);return 0;};
+  h.env.dismissRouteLayer=()=>{};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via'){viaArgs=args;return{...via,pos:args!.pos,fromLayer:1,toLayer:0};}
+    const request=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:request.start,b:request.end,layer:request.layer}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();h.move(to.x,to.y);
+    h.tool.key!(h.env,' ',{}as never);await tick();await tick();
+    assert.equal(pickerCalls,1);assert.deepEqual(viaArgs!.pos,to);assert.equal(viaArgs!.to,0);
+    assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'route');if(command.op==='route'){const placed=command.add.find(item=>item.kind==='via');assert.deepEqual(placed?.kind==='via'&&placed.pos,to);}
+  });
+});
+
+test('cancelling the Space layer picker keeps routing active without adding copper or a via',async()=>{
+  const h=toolHarness();let vias=0;
+  h.env.chooseRouteLayer=async()=>null;h.env.dismissRouteLayer=()=>{};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];if(cmd==='pcb_via'){vias++;return via;}
+    const request=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:request.start,b:request.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();h.tool.key!(h.env,' ',{}as never);await tick();
+    assert.equal(vias,0);assert.equal(h.commands.length,0);assert.match(h.tool.hint(h.env),/Routing SIGNAL/);
+  });
+});
+
+test('ending the route closes a pending layer picker and ignores its late choice',async()=>{
+  const h=toolHarness();let settle!:(layer:number|null)=>void,dismissed=0,vias=0;
+  h.env.chooseRouteLayer=()=>new Promise(resolve=>settle=resolve);h.env.dismissRouteLayer=()=>{dismissed++;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];if(cmd==='pcb_via'){vias++;return via;}
+    const request=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:request.start,b:request.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();h.tool.key!(h.env,' ',{}as never);
+    h.tool.cancel(h.env);settle(0);await tick();assert.equal(dismissed,1);assert.equal(vias,0);assert.equal(h.commands.length,0);
+  });
+});

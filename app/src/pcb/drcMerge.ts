@@ -38,7 +38,7 @@ export function touchedBetween(prev: ReadonlyMap<ItemId, Item>, next: ReadonlyMa
 
 /** Current markers minus those about changed objects, plus the fresh near-DRC results (deduplicated). */
 export function mergeViolations(current: readonly DrcViolation[], drop: ReadonlySet<ItemId>, fresh: readonly DrcViolation[]): DrcViolation[] {
-  const kept = current.filter((v) => !v.items.some((id) => drop.has(id)));
+  const kept = current.filter((v) => !ONLINE_SKIP.has(v.code) && !v.items.some((id) => drop.has(id)));
   const key = (v: DrcViolation) => `${v.code}|${[...v.items].sort((a, b) => a - b).join(",")}|${v.layer ?? ""}`;
   const seen = new Set(kept.map(key));
   for (const v of fresh) {

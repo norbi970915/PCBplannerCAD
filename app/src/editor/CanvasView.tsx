@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { execute } from "../core/actions";
+import { execute, undo } from "../core/actions";
 import { bus } from "../core/bus";
 import { L } from "../core/layers";
 import { useEditor } from "../core/store";
@@ -8,6 +8,7 @@ import { selectable, useSelectFilter } from "../core/selectFilter";
 import { useContextMenu } from "../shell/ContextMenu";
 import type { ItemId, LibSymbol, Point } from "../core/types";
 import { NM_PER_MM } from "../core/units";
+import { ViaLayerPicker, type ViaLayerRequest } from "./ViaLayerPicker";
 import { ActiveBar, PolygonEditBar, RoutingBar } from "./ActiveBar";
 import { Camera } from "./camera";
 import { InteractionFrame } from "./interactionFrame";
@@ -30,6 +31,9 @@ const st = () => useEditor.getState();
 
 export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbol | null }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const [viaPicker,setViaPicker]=useState<ViaLayerRequest|null>(null);
+  const viaChoice=useRef<((layer:number|null)=>void)|null>(null);
+  const finishViaChoice=(layer:number|null)=>{const resolve=viaChoice.current;viaChoice.current=null;setViaPicker(null);resolve?.(layer);};
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const symbolRef = useRef(symbol);
   const rebuildRef = useRef<() => void>(() => {});
@@ -235,6 +239,12 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       scene,
       ctx,
       exec: (cmd) => execute(docId, cmd),
+      undo: async () => { if (!doc().info.canUndo) return false; await undo(docId, true); return true; },
+      chooseRouteLayer: options=>new Promise(resolve=>{
+        finishViaChoice(null);viaChoice.current=resolve;
+        setViaPicker({...options,x:Math.max(8,Math.min((cursorScreen?.x??cam.width/2)+12,cam.width-220)),y:Math.max(8,Math.min((cursorScreen?.y??cam.height/2)+12,cam.height-300))});
+      }),
+      dismissRouteLayer:()=>finishViaChoice(null),
       placement: () => st().placement,
       setPlacement: (p) => st().setPlacement(p),
       select: (ids) => st().patchDoc(docId, { selection: new Set(ids) }),
@@ -412,7 +422,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!isActive()) return;
+      if (!isActive() || viaChoice.current) return;
       frames.flush();
       // The key menu (P, T, V…) or a context menu is open: keys belong to it.
       if (st().pendingKeys || useContextMenu.getState().at) return;
@@ -469,6 +479,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const d = s.docs[docId];
       const p = prev.docs[docId];
       if (!d) return;
+      if(s.activeDocId!==prev.activeDocId&&s.activeDocId!==docId)finishViaChoice(null);
       if (d.tool !== p?.tool) ensureTool();
       if (s.showPourFills !== prev.showPourFills) rebuildScene();
       if (
@@ -496,6 +507,11 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         rebuildOverlay();
       }
       if (d.grid !== p?.grid) requestRender();
+      if (isActive() && (toolId === "route" || toolId === "diffPair") &&
+          (s.placement !== prev.placement || s.drcEnforce !== prev.drcEnforce)) {
+        tool.move?.(env, { sx: cursorScreen?.x ?? 0, sy: cursorScreen?.y ?? 0, shift: false, ctrl: false, alt: false });
+        updateHint();
+      }
       if (s.placement !== prev.placement || d.items !== p?.items || d.selection !== p?.selection || d.view !== p?.view) rebuildOverlay();
       if (s.activeDocId !== prev.activeDocId && s.activeDocId === docId) updateHint();
     });
@@ -506,9 +522,9 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     });
 
     const offFilter = useSelectFilter.subscribe((filter, previous) => {
-      if ((filter.on === previous.on && filter.offLayers === previous.offLayers) || doc().info.kind !== "pcb") return;
+      if ((filter.on === previous.on && filter.offLayers === previous.offLayers && filter.excludeLocked === previous.excludeLocked) || doc().info.kind !== "pcb") return;
       const d = doc();
-      const selection = [...d.selection].filter(id => { const item = d.items.get(id); return item && selectable(d.info.kind, item); });
+      const selection = [...d.selection].filter(id => { const item = d.items.get(id); return item && selectable(d.info.kind, item, d); });
       if (selection.length !== d.selection.size) st().patchDoc(docId, { selection: new Set(selection) });
       updateHover();
       updateHint();
@@ -552,6 +568,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     updateHint();
 
     return () => {
+      const pendingChoice=viaChoice.current;viaChoice.current=null;pendingChoice?.(null);
       frames.dispose();
       resize.disconnect();
       unsubscribe();
@@ -581,6 +598,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         <ActiveBar docId={docId} />
         <PolygonEditBar docId={docId} />
         <RoutingBar docId={docId} />
+        {viaPicker&&<ViaLayerPicker request={viaPicker} onChoose={finishViaChoice}/>}
         {error && <div className="canvas-error">{error}</div>}
       </div>
       {boardLike && <LayerTabs docId={docId} />}

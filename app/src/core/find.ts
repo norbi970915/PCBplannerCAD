@@ -34,7 +34,7 @@ export function matcher(query: string): ((s: string) => number | null) | null {
 
 const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
-export function findMatches(items: ReadonlyMap<ItemId, Item>, query: string, limit = 200): FindMatch[] {
+export function findMatches(items: ReadonlyMap<ItemId, Item>, query: string, limit = 200, kind: FindKind | "all" = "all"): FindMatch[] {
   const m = matcher(query);
   if (!m) return [];
   const out: FindMatch[] = [];
@@ -94,5 +94,5 @@ export function findMatches(items: ReadonlyMap<ItemId, Item>, query: string, lim
     const r = m(name);
     if (r !== null) out.push({ kind: "net", label: name, detail: `net · ${ids.length} objects`, ids, pos: null, rank: r + 0.25 });
   }
-  return out.sort((a, b) => a.rank - b.rank || natural.compare(a.label, b.label)).slice(0, limit);
+  return out.filter(match => kind === "all" || match.kind === kind).sort((a, b) => a.rank - b.rank || natural.compare(a.label, b.label)).slice(0, limit);
 }

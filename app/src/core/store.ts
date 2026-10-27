@@ -28,7 +28,7 @@ import type {
   Snapshot,
   Update,
 } from "./types";
-import { fromUnits, GRID_PRESETS, NM_PER_MIL, type Units } from "./units";
+import { adjacentGrid, fromUnits, GRID_PRESETS, NM_PER_MIL, validGrid, type Units } from "./units";
 
 export interface DocState {
   info: DocInfo;
@@ -39,6 +39,10 @@ export interface DocState {
   /** PCB: unrouted connections and the latest DRC result. */
   airwires: AirWire[];
   drc: DrcViolation[];
+  drcStatus: "unchecked" | "checking" | "current" | "stale" | "error";
+  drcCheckedAt: number | null;
+  drcRuleErrors: string[];
+  drcError: string | null;
   selection: ReadonlySet<ItemId>;
   /** Highlighted items (net highlight, ERC navigation). */
   marked: ReadonlySet<ItemId>;
@@ -86,6 +90,8 @@ export interface Placement {
   routeMode: "ignore" | "walkaround" | "shove";
   cornerStyle: "diagonal45" | "orthogonal90" | "any";
   trackWidth: Coord | null;
+  /** Target copper for routing vias; null follows stack order. */
+  routeViaLayer: number | null;
   /** Moving routed parts: tracks stay connected (free / preserve angles) or are left behind. */
   moveMode: "disconnect" | "free" | "preserveAngles";
   /** Other nets' copper in the way of re-routed tracks: ignore, avoid (walk around) or push (shove). */
@@ -122,6 +128,11 @@ const DEFAULT_GRID: Record<DocKind, Coord> = {
   pcb: mm(0.1),
 };
 
+function loadGrid(kind:DocKind):Coord {
+  try { const value=Number(readPreference('pcbplannercad.grid.'+kind)); if(validGrid(value))return value; } catch { /* Storage is optional. */ }
+  return DEFAULT_GRID[kind];
+}
+
 const DEFAULT_PLACEMENT: Placement = {
   rotation: 0,
   mirror: false,
@@ -153,6 +164,7 @@ const DEFAULT_PLACEMENT: Placement = {
   routeMode: "walkaround",
   cornerStyle: "diagonal45",
   trackWidth: null,
+  routeViaLayer: null,
   moveMode: "preserveAngles",
   moveViolators: "shove",
   zonePriority: 0,
@@ -202,6 +214,7 @@ interface AppState {
   toggleDrcEnforce: () => void;
   toggleOnlineDrc: () => void;
   cycleGrid: (step: 1 | -1) => void;
+  setGrid: (docId:string, grid:Coord) => void;
   setCursor: (p: Point | null) => void;
   setPendingKeys: (k: string | null) => void;
   setHint: (h: string) => void;
@@ -267,13 +280,17 @@ export const useEditor = create<AppState>()((set, get) => ({
       footprints: s.footprints ?? {},
       airwires: prev?.airwires ?? [],
       drc: prev?.drc ?? [],
+      drcStatus: "unchecked",
+      drcCheckedAt: null,
+      drcRuleErrors: [],
+      drcError: null,
       selection: new Set(),
       marked: new Set(),
       tool: prev?.tool ?? "select",
       activeLayer: prev?.activeLayer ?? (kind === "schematic" || kind === "symbol" ? L.schematic : L.topCopper),
       layerMode: prev?.layerMode ?? "all",
       view: prev?.view ?? loadView(),
-      grid: prev?.grid ?? DEFAULT_GRID[kind],
+      grid: prev?.grid ?? loadGrid(kind),
       epoch: (prev?.epoch ?? 0) + 1,
       focus: null,
     };
@@ -287,7 +304,7 @@ export const useEditor = create<AppState>()((set, get) => ({
     for (const id of delta.removed) items.delete(id);
     for (const u of delta.upserted) items.set(u.id, u.item);
     const selection = new Set([...doc.selection].filter((id) => items.has(id)));
-    set({ docs: { ...get().docs, [info.id]: { ...doc, items, info, selection } } });
+    set({ docs: { ...get().docs, [info.id]: { ...doc, items, info, selection, drcStatus: "stale" } } });
   },
 
   setInfo: (info) => {
@@ -348,14 +365,17 @@ export const useEditor = create<AppState>()((set, get) => ({
     set({ onlineDrc });
   },
 
+  setGrid: (docId,grid) => {
+    const doc=get().docs[docId];if(!doc||!validGrid(grid))return;
+    try { localStorage.setItem('pcbplannercad.grid.'+doc.info.kind,String(grid)); } catch { /* Optional view preference. */ }
+    get().patchDoc(docId,{grid});
+  },
   cycleGrid: (step) => {
     const id = get().activeDocId;
     const doc = id ? get().docs[id] : undefined;
     if (!doc || !id) return;
     const presets = [...new Set([...GRID_PRESETS.mm, ...GRID_PRESETS.mil, mm(1.27), mm(2.54)])].sort((a, b) => a - b);
-    const i = presets.findIndex((g) => g >= doc.grid);
-    const next = presets[Math.min(presets.length - 1, Math.max(0, (i < 0 ? presets.length - 1 : i) + step))];
-    get().patchDoc(id, { grid: next });
+    get().setGrid(id, adjacentGrid(doc.grid,presets,step));
   },
 
   setCursor: (cursor) => set({ cursor }),

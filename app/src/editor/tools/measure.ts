@@ -1,6 +1,7 @@
 // Measure distance: click two points (snapping to pads, track ends and
 // corners); shows the distance and ΔX / ΔY on the canvas until Esc.
 
+import { report } from "../../core/actions";
 import { useEditor } from "../../core/store";
 import type { Point } from "../../core/types";
 import { formatLength } from "../../core/units";
@@ -34,7 +35,7 @@ export function measureTool(): Tool {
       const e = ends(env);
       if (!e) return "Measure: click the first point (snaps to pads, track ends and corners)";
       const [l1, l2] = label(e[0], e[1]);
-      return `${l1} · ${l2} · ${b ? "click to measure again" : "click the second point"} · Esc to finish`;
+      return `${l1} · ${l2} · ${b ? "click to measure again" : "click the second point"} · C copies · Enter records · Tab reverses · Backspace edits · Esc to finish`;
     },
     reset() {
       a = b = null;
@@ -45,6 +46,19 @@ export function measureTool(): Tool {
         a = c;
         b = null;
       } else b = c;
+    },
+    key(env,key) {
+      if(!a)return false;
+      if(key==='Backspace') { if(b)b=null;else a=null;env.redraw();return true; }
+      if(key==='Tab'&&b) { [a,b]=[b,a];env.redraw();return true; }
+      if(key.toLowerCase()==='c'||key==='Enter') {
+        const end=b??env.cursor(),u=useEditor.getState().units;
+        const text=label(a,end).join(' · ')+' · A ('+formatLength(a.x,u)+', '+formatLength(a.y,u)+') · B ('+formatLength(end.x,u)+', '+formatLength(end.y,u)+')';
+        if(key==='Enter') { b={...end};useEditor.getState().log('info',text,{source:'measure',target:{docId:env.docId,pos:a}});env.redraw(); }
+        else void navigator.clipboard.writeText(text).catch(report);
+        return true;
+      }
+      return false;
     },
     cancel() {
       if (!a) return false;

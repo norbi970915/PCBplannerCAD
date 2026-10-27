@@ -55,9 +55,10 @@ function libraryTouched(libId: string) {
   }, 250);
 }
 
-export async function undo(docId = st().activeDocId) {
+export async function undo(docId = st().activeDocId, preserveRouting = false) {
   const doc = docId ? st().docs[docId] : undefined;
   if (!doc?.info.canUndo || !docId) return;
+  if (!preserveRouting && ["route","diffPair"].includes(doc.tool)) st().patchDoc(docId,{tool:"select"});
   const u = await api.undo(docId);
   st().applyUpdate(u);
   if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
@@ -67,6 +68,7 @@ export async function undo(docId = st().activeDocId) {
 export async function redo(docId = st().activeDocId) {
   const doc = docId ? st().docs[docId] : undefined;
   if (!doc?.info.canRedo || !docId) return;
+  if (["route","diffPair"].includes(doc.tool)) st().patchDoc(docId,{tool:"select"});
   const u = await api.redo(docId);
   st().applyUpdate(u);
   if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
