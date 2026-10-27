@@ -83,7 +83,7 @@ The Components panel can import installed symbol and footprint libraries. Save i
 | Power port VCC / GND, junction, no-connect, sheet symbol | `P V` / `P G`, `P J`, `P X`, `P S` |
 | Symbol editor: pin · Footprint editor: pad | `P P` |
 | Line, rectangle, circle, arc, polyline, text | `P L`, `P R`, `P C`, `P A`, `P Y`, `P T` |
-| Rotate / mirror (while placing, dragging or with a selection) | `Space` / `X` |
+| Schematic rotate / mirror (placing, dragging or selection) | `Space` / `X` |
 | Finish a wire or exit a tool | right-click / `Esc` |
 | Copy, cut, paste, duplicate | `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+D` |
 | Compile & ERC, annotate | `C C`, `T A` |
@@ -102,9 +102,12 @@ Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb)
 
 | Action | Keys |
 |---|---|
-| Route / differential pair / via | `P T` / `P I` / `P V` (while routing: `*` via + layer change, `Space` corner, `Shift+R` mode) |
+| Interactive route / differential pair / via | `X` at a pad or track, or `P T` / `P I` / `P V` (routing: `V` or `*` via + layer, `/` or `Space` corner, `Shift+R` mode) |
 | Polygon pour / keep-out / board outline / component | `P G` / `P K` / `P O` / `P C` |
-| Flip footprint to the other side | `L` |
+| Move / rotate footprint | `M` / `R` (`Shift+R` reverses rotation; click places, `Esc` cancels a move and its preview rotation) |
+| Flip footprint to the other side | `F` or `L` |
 | Update PCB from schematic, layer stack, rules | `D U`, `D K`, `D R` |
 | DRC, repour all, length tuning, clear markers | `T D`, `T G`, `T R`, `T M` |
 | 3D view, fabrication outputs, print to PDF | `3`, `F F`, `Ctrl+P` |
+
+Board selection filters are in the right **View** tab and stay available with an active selection. Drag empty space left to right to select enclosed objects, or right to left to select touching objects. Ctrl+click toggles individual objects; Shift adds, Ctrl toggles, and Ctrl+Shift subtracts box selections.

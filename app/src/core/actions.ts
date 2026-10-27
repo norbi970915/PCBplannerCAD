@@ -1,6 +1,7 @@
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api, type DesignSource, type LibrarySource } from "./api";
 import { bus } from "./bus";
+import { selectable } from "./selectFilter";
 import { scheduleAnalysis } from "./pcbActions";
 import { activeDoc, useEditor, type MessageTarget } from "./store";
 import type { Command, DocKind, ItemId, Point } from "./types";
@@ -79,7 +80,7 @@ export async function deleteSelection() {
 
 export function selectAll() {
   const doc = activeDoc();
-  if (doc) st().patchDoc(doc.info.id, { selection: new Set(doc.items.keys()) });
+  if (doc) st().patchDoc(doc.info.id, { selection: new Set([...doc.items].filter(([, item]) => item.kind !== "board" && selectable(doc.info.kind, item)).map(([id]) => id)) });
 }
 
 export function clearSelection() {

@@ -59,6 +59,17 @@ export function PolygonEditBar({ docId }: { docId: string }) {
   );
 }
 
+/** A visible way out of routing, so pad clicks are not mistaken for selection. */
+export function RoutingBar({ docId }: { docId: string }) {
+  const tool = useEditor(s => s.docs[docId]?.tool);
+  const hint = useEditor(s => s.hint);
+  if (tool !== "route" && tool !== "diffPair") return null;
+  return <div className="absolute top-12 left-3 right-3 flex w-fit max-w-[calc(100%-24px)] items-start gap-3 rounded border border-line-strong bg-card/95 px-3 py-2 text-xs shadow-md" onPointerDown={e => e.stopPropagation()}>
+    <div><div className="font-semibold text-ink">Interactive routing</div><div className="max-w-[720px] pt-1 text-[11px] text-muted-foreground" aria-live="polite">{hint}</div></div>
+    <button className="shrink-0 rounded bg-sel px-2 py-1 text-accent-ink hover:bg-hover" onClick={() => activateTool("select", docId)}>Select / move <span className="font-mono">Esc</span></button>
+  </div>;
+}
+
 /** Floating tool strip at the top of the editor. */
 export function ActiveBar({ docId }: { docId: string }) {
   const kind = useEditor((s) => s.docs[docId]?.info.kind);

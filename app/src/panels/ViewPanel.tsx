@@ -4,8 +4,10 @@ import { Section } from '@/components/app/panel';
 import { boardCopper, LAYERS, layer } from '../core/layers';
 import { useEditor, type DocState } from '../core/store';
 import { DEFAULT_VIEW, type ViewSettings } from '../core/view';
+import { FILTER_KINDS, filterActive, useSelectFilter } from '../core/selectFilter';
 
 export function ViewPanel({ doc }: { doc: DocState }) {
+  const filter = useSelectFilter();
   const view = doc.view;
   const set = (patch: Partial<ViewSettings>) => useEditor.getState().setView(doc.info.id, patch);
   const copper = boardCopper(doc.items.values());
@@ -20,6 +22,21 @@ export function ViewPanel({ doc }: { doc: DocState }) {
     </label>
   );
   return <>
+    {doc.info.kind === 'pcb' && <Section title="Selection filter" actions={<span className="text-[10px] text-faint">{filterActive(filter.on) ? 'Filtered' : 'All types'}</span>}>
+      <div className="flex flex-wrap gap-1.5 pb-1.5 pt-1">
+        <Button variant="outline" size="sm" onClick={filter.all}>All</Button>
+        <Button variant="outline" size="sm" onClick={filter.none}>None</Button>
+        <Button variant="outline" size="sm" onClick={() => filter.only('vias')}>Vias only</Button>
+      </div>
+      {FILTER_KINDS.map(([key, label]) => <div key={key} className="flex items-center gap-2 py-0.5">
+        <label className="flex min-h-7 flex-1 cursor-pointer items-center justify-between gap-2 text-[11px] text-ink">
+          <span>{label}</span><Check value={filter.on[key]} onChange={value => filter.set(key, value)} />
+        </label>
+        <button className="rounded px-1.5 py-1 text-[10px] text-accent-ink hover:bg-hover" onClick={() => filter.only(key)} aria-label={`Select only ${label.toLowerCase()}`}>Only</button>
+      </div>)}
+      <Button className="mt-2" variant="outline" size="sm" onClick={() => useEditor.getState().patchDoc(doc.info.id, { tool: 'select' })}>Select objects</Button>
+      <p className="pt-2 text-[11px] text-muted-foreground">Drag from empty space to box-select. Left to right selects fully enclosed objects; right to left includes objects the box touches. Ctrl+click adds or removes objects. Shift+drag adds a box selection; Ctrl+drag toggles it. Ctrl+Shift removes objects from the selection.</p>
+    </Section>}
     <Section title="Navigation">
       {toggle('snapToGrid', 'Snap to grid')}
       {toggle('grid', 'Show grid')}

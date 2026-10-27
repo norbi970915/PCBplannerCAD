@@ -10,6 +10,7 @@ import type {
   Point,
   RouteRequest,
   RouteResult,
+  TrackItem,
   RoutingStats,
   ViaItem,
   CachedPart,
@@ -51,6 +52,12 @@ export interface FootprintMeta {
   description: string;
   model: Model3d | null;
 }
+
+// Routing endpoints return Rust structs; document commands require tagged Item values.
+type RouteResponse = Omit<RouteResult, "tracks"> & { tracks: Omit<TrackItem, "kind">[] };
+const routeItems = (result: RouteResponse): RouteResult => ({
+  ...result, tracks: result.tracks.map(track => ({ ...track, kind: "track" })),
+});
 
 export const api = {
   // documents
@@ -120,12 +127,17 @@ export const api = {
   pcbDrc: (id: string) => invoke<DrcReport>("pcb_drc", { id }),
   pcbDrcNear: (id: string, items: ItemId[]) => invoke<DrcViolation[]>("pcb_drc_near", { id, items }),
   pcbRepour: (id: string, zone: ItemId | null) => invoke<Update>("pcb_repour", { id, zone }),
-  pcbRoute: (id: string, req: RouteRequest) => invoke<RouteResult>("pcb_route", { id, req }),
-  pcbRoutePair: (id: string, req: RouteRequest, negNet: string, gap: number) => invoke<[RouteResult, RouteResult]>("pcb_route_pair", { id, req, negNet, gap }),
+  pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
+  pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number): Promise<[RouteResult, RouteResult]> => {
+    const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap });
+    return [routeItems(positive), routeItems(negative)];
+  },
   pcbTune: (id: string, req: { tracks: ItemId[]; targetLength: number; amplitude: number; spacing: number; style?: "trombone" | "accordion" }) =>
     invoke<Update>("pcb_tune", { id, req }),
   pcbNetLength: (id: string, net: string) => invoke<number>("pcb_net_length", { id, net }),
-  pcbVia: (id: string, net: string, pos: Point) => invoke<ViaItem>("pcb_via", { id, net, pos }),
+  pcbVia: async (id: string, net: string, pos: Point): Promise<ViaItem> => ({
+    ...await invoke<Omit<ViaItem, "kind">>("pcb_via", { id, net, pos }), kind: "via",
+  }),
   pcbObjectAt: (id: string, pos: Point, layer: number) => invoke<[ItemId, string] | null>("pcb_object_at", { id, pos, layer }),
   pcbNetItems: (id: string, net: string) => invoke<ItemId[]>("pcb_net_items", { id, net }),
   pcbNets: (id: string) => invoke<string[]>("pcb_nets", { id }),

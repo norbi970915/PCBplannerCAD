@@ -10,6 +10,7 @@ import type { BoardItem, Item, ItemOf, Point, RouteMode, TrackItem } from "../..
 import { NM_PER_MM } from "../../core/units";
 import { constrain45 } from "../polyedit";
 import { samePoint } from "../shapes";
+import { place } from "../draw";
 import { ringHandles, ringLines } from "./polygon";
 import type { Tool, ToolEnv } from "./types";
 
@@ -44,6 +45,26 @@ interface Session {
   reached: boolean;
   /** Footprint pad / copper end points of the net (route ends there automatically). */
   targets: Point[];
+  message: string;
+  blockedAt: Point | null;
+}
+
+export function routingAnchor(env: ToolEnv, point: Point, hit: [number, string] | null): Point {
+  const item = hit ? env.doc().items.get(hit[0]) : undefined;
+  if (item?.kind === "via" || item?.kind === "pad") return item.pos;
+  if (item?.kind === "footprint") {
+    const fp = env.doc().footprints[item.footprint];
+    const pads = fp?.items.filter((p): p is ItemOf<"pad"> => p.kind === "pad" && (item.padNets[p.number] ?? "") === hit![1]);
+    const centers = pads?.map(p => place(p.pos, { pos: item.pos, rotation: item.rotation, mirror: item.side === "bottom" })) ?? [];
+    const center = centers.sort((a,b) => Math.hypot(a.x-point.x,a.y-point.y)-Math.hypot(b.x-point.x,b.y-point.y))[0] ?? point;
+    return {x:Math.round(center.x),y:Math.round(center.y)};
+  }
+  if (item?.kind === "track") {
+    const dx=item.b.x-item.a.x, dy=item.b.y-item.a.y;
+    const t=Math.max(0,Math.min(1,((point.x-item.a.x)*dx+(point.y-item.a.y)*dy)/(dx*dx+dy*dy || 1)));
+    return {x:Math.round(item.a.x+t*dx),y:Math.round(item.a.y+t*dy)};
+  }
+  return point;
 }
 
 export function routeTool(pair = false): Tool {
@@ -52,6 +73,9 @@ export function routeTool(pair = false): Tool {
   let seq = 0;
   let inflight = false;
   let pending: Point | null = null;
+  let starting = false;
+  let committing = false;
+  let previewSettled: Promise<void> = Promise.resolve();
 
   const requestPreview = (env: ToolEnv, to: Point) => {
     if (!s) return;
@@ -82,16 +106,25 @@ export function routeTool(pair = false): Tool {
       }
     };
     const run = pair ? api.pcbRoutePair(env.docId, req, negativeOf(env, session.net), diffGap(env, session.net)).then(([pos, neg]) => ({ ...pos, tracks: [...pos.tracks, ...neg.tracks] })) : api.pcbRoute(env.docId, req);
-    run
+    previewSettled = run
       .then((r) => {
         if (my !== seq || s !== session) return;
         const hadMoved = session.moved.length > 0;
         session.preview = r.tracks;
         session.moved = r.moved;
         session.reached = r.reached;
+        session.message = r.message;
+        session.blockedAt = r.blockedAt;
         env.redraw(hadMoved || r.moved.length > 0);
       })
-      .catch(() => {})
+      .catch((error) => {
+        if (s !== session || my !== seq) return;
+        session.preview = [];
+        session.message = String(error);
+        session.reached = false;
+        report(error);
+        env.redraw();
+      })
       .finally(done);
   };
 
@@ -115,23 +148,34 @@ export function routeTool(pair = false): Tool {
   };
 
   const commit = async (env: ToolEnv): Promise<boolean> => {
-    if (!s || !s.preview.length) return false;
-    const tracks = s.preview;
-    const moved = s.moved;
-    const ok = moved.length
-      ? await env.exec({ op: "change", delete: [...new Set(moved.map((m) => m.id))], add: [...moved.map((m) => m.item), ...tracks] })
-      : await env.exec({ op: "add", items: tracks });
-    if (!ok) return false;
-    const last = tracks[pair ? Math.floor(tracks.length / 2) - 1 : tracks.length - 1] ?? tracks[tracks.length - 1];
-    s.from = last.b;
-    s.preview = [];
-    s.moved = [];
-    return true;
+    if (!s || committing) return false;
+    const session = s;
+    committing = true;
+    try {
+      requestPreview(env, env.cursor());
+      // Commit the clicked endpoint, never an older asynchronous mouse preview.
+      while (inflight || pending) await previewSettled;
+      if (s !== session || !session.preview.length) return false;
+      const tracks = session.preview;
+      const moved = session.moved;
+      seq++;
+      pending = null;
+      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks] });
+      if (!ok || s !== session) return false;
+      const last = tracks[pair ? Math.floor(tracks.length / 2) - 1 : tracks.length - 1] ?? tracks[tracks.length - 1];
+      session.from = last.b;
+      session.preview = [];
+      session.moved = [];
+      session.message = "";
+      session.blockedAt = null;
+      return true;
+    } finally { committing = false; }
   };
 
   const finish = () => {
     s = null;
     pending = null;
+    starting = false;
     seq++;
   };
 
@@ -139,23 +183,32 @@ export function routeTool(pair = false): Tool {
     id: pair ? "diffPair" : "route",
     hint: () =>
       s
-        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"} · click to commit · * via + layer · Space flip corner · Shift+R mode (${useEditor.getState().placement.routeMode}) · Esc to finish`
+        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"} · click to commit · * via + layer · / flip corner · Shift+R mode (${useEditor.getState().placement.routeMode}) · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
         : `Click a pad or track to start ${pair ? "a differential pair" : "routing"}`,
     reset: finish,
     down(env) {
       const p = env.cursor();
       if (!s) {
+        if (starting) return;
+        starting = true;
+        const generation = ++seq;
         const layer = env.doc().activeLayer;
         const copper = copperLayers(boardSettings(env));
         const routeLayer = copper.includes(layer) ? layer : L.topCopper;
-        void api
-          .pcbObjectAt(env.docId, p, routeLayer)
-          .then((hit) => {
+        const mouse = env.raw();
+        const raw = {x:Math.round(mouse.x),y:Math.round(mouse.y)};
+        void api.pcbObjectAt(env.docId, raw, routeLayer)
+          .then(async hit => hit ?? (samePoint(raw, p) ? null : await api.pcbObjectAt(env.docId, p, routeLayer)))
+          .then(hit => {
+            if (generation !== seq) return;
+            starting = false;
             const net = hit?.[1] ?? useEditor.getState().placement.net;
-            s = { net, layer: routeLayer, from: p, preview: [], moved: [], reached: true, targets: netTargets(env, net) };
+            const from = routingAnchor(env, p, hit);
+            s = { net, layer: routeLayer, from, preview: [], moved: [], reached: true, targets: netTargets(env, net), message: "", blockedAt: null };
+            requestPreview(env, env.cursor());
             env.redraw();
           })
-          .catch(report);
+          .catch(error => { if (generation === seq) { starting = false; report(error); } });
         return;
       }
       void commit(env).then((ok) => {
@@ -164,7 +217,7 @@ export function routeTool(pair = false): Tool {
       });
     },
     move(env) {
-      if (s) requestPreview(env, env.cursor());
+      if (s && !committing) requestPreview(env, env.cursor());
     },
     dblclick(env) {
       void commit(env).then(() => {
@@ -174,7 +227,7 @@ export function routeTool(pair = false): Tool {
     },
     key(env, key, e) {
       if (!s) return false;
-      if (key === " ") {
+      if (key === " " || key === "/") {
         flip = !flip;
         requestPreview(env, env.cursor());
         return true;
@@ -185,12 +238,14 @@ export function routeTool(pair = false): Tool {
         requestPreview(env, env.cursor());
         return true;
       }
-      if (key === "*" || key === "/") {
+      if (key === "*" || key === "v" || key === "V") {
         const session = s;
         void (async () => {
           await commit(env);
+          if (s !== session) return;
           const via = await api.pcbVia(env.docId, session.net, session.from);
-          await env.exec({ op: "add", items: [via] });
+          if (s !== session) return;
+          if (!await env.exec({ op: "route", delete: [], add: [via] }) || s !== session) return;
           const cu = copperLayers(boardSettings(env));
           const i = cu.indexOf(session.layer);
           session.layer = cu[(i + 1) % cu.length];
@@ -202,12 +257,25 @@ export function routeTool(pair = false): Tool {
       return false;
     },
     cancel() {
-      if (!s) return false;
+      if (!s && !starting) return false;
       finish();
       return true;
     },
     preview: () => (s ? [...s.moved.map((m) => m.item), ...s.preview] : []),
     excluded: () => new Set(s?.moved.map((m) => m.id) ?? []),
+    overlay: env => {
+      if (!s) return [];
+      const width = 1.5 / env.scale();
+      const lines = s.preview.map(t => ({ a: t.a, b: t.b, width: t.width, color: [1, 0.85, 0.3, 0.95] as [number, number, number, number] }));
+      const mark = (p: Point, color: [number,number,number,number]) => {
+        const r=5/env.scale();
+        lines.push({a:{x:p.x-r,y:p.y},b:{x:p.x+r,y:p.y},width,color});
+        lines.push({a:{x:p.x,y:p.y-r},b:{x:p.x,y:p.y+r},width,color});
+      };
+      mark(s.from,[0.3,1,0.65,1]);
+      if (!s.reached && s.blockedAt) mark(s.blockedAt,[1,0.3,0.25,1]);
+      return lines;
+    },
   };
 }
 

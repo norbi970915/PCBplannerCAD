@@ -570,6 +570,7 @@ export type Command =
   | { op: "replace"; id: ItemId; item: Item }
   | { op: "replaceMany"; items: IdItem[] }
   | { op: "change"; delete: ItemId[]; add: Item[] }
+  | { op: "route"; delete: ItemId[]; add: Item[] }
   | { op: "editPolygon"; id: ItemId; original: Point[]; outlines: Point[][] };
 
 export interface LibInfo {

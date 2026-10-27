@@ -674,7 +674,7 @@ function DocumentOptions({ doc }: { doc: DocState }) {
 }
 
 export function PropertiesPanel() {
-  const [emptyTab, setEmptyTab] = useState<"properties" | "view">("properties");
+  const [panelTab, setPanelTab] = useState<"properties" | "view">("properties");
   const doc = useEditor((s) => (s.activeDocId ? s.docs[s.activeDocId] : undefined));
   const units = useEditor((s) => s.units);
   if (!doc)
@@ -687,9 +687,11 @@ export function PropertiesPanel() {
       </Panel>
     );
 
-  const canView = doc.tool === "select" && doc.selection.size === 0 && (doc.info.kind === "pcb" || doc.info.kind === "footprint");
+  const canView = doc.info.kind === "pcb" || doc.info.kind === "footprint";
   let body: ReactNode;
-  if (doc.tool !== "select") {
+  if (canView && panelTab === "view") {
+    body = <ViewPanel doc={doc} />;
+  } else if (doc.tool !== "select") {
     body = <PlacementEditor tool={doc.tool} kind={doc.info.kind} units={units} />;
   } else if (doc.selection.size === 1) {
     const id = [...doc.selection][0];
@@ -720,17 +722,17 @@ export function PropertiesPanel() {
       </Section>
     );
   } else {
-    body = canView && emptyTab === "view" ? <ViewPanel doc={doc} /> : <DocumentOptions doc={doc} />;
+    body = <DocumentOptions doc={doc} />;
   }
   const context =
-    doc.tool !== "select" ? "Placement" : doc.selection.size === 1 ? (doc.items.get([...doc.selection][0])?.kind ?? "") : doc.selection.size > 1 ? "Selection" : doc.info.title;
+    canView && panelTab === "view" ? "View" : doc.tool !== "select" ? "Placement" : doc.selection.size === 1 ? (doc.items.get([...doc.selection][0])?.kind ?? "") : doc.selection.size > 1 ? "Selection" : doc.info.title;
   return (
     <Panel>
       <PanelHeading title="Properties">
         <span className="max-w-40 truncate text-[11px] text-faint capitalize">{context}</span>
       </PanelHeading>
       {canView && <div className="flex gap-1 border-b border-line bg-panel-head px-2 py-1.5" role="tablist" aria-label="Panel mode">
-        {(["properties", "view"] as const).map(tab => <button key={tab} role="tab" aria-selected={emptyTab === tab} onClick={() => setEmptyTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${emptyTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab}</button>)}
+        {(["properties", "view"] as const).map(tab => <button key={tab} role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${panelTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab}</button>)}
       </div>}
       <div className="min-h-0 flex-1 overflow-auto">{body}</div>
     </Panel>

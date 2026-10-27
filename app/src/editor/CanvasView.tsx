@@ -4,11 +4,11 @@ import { bus } from "../core/bus";
 import { L } from "../core/layers";
 import { useEditor } from "../core/store";
 import { useTheme } from "../core/theme";
-import { selectable } from "../core/selectFilter";
+import { selectable, useSelectFilter } from "../core/selectFilter";
 import { useContextMenu } from "../shell/ContextMenu";
 import type { ItemId, LibSymbol, Point } from "../core/types";
 import { NM_PER_MM } from "../core/units";
-import { ActiveBar, PolygonEditBar } from "./ActiveBar";
+import { ActiveBar, PolygonEditBar, RoutingBar } from "./ActiveBar";
 import { Camera } from "./camera";
 import { InteractionFrame } from "./interactionFrame";
 import { cursorPoint } from "../core/view";
@@ -201,7 +201,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
             }
           }
         }
-        if (snapMark) cursor = snapMark;
+        if (snapMark) cursor = { x: Math.round(snapMark.x), y: Math.round(snapMark.y) };
       }
       const prev = st().cursor;
       if (isActive() && (!prev || prev.x !== cursor.x || prev.y !== cursor.y)) st().setCursor(cursor);
@@ -256,6 +256,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const exitOrCancel = () => {
       if (tool.cancel(env)) {
+        if (toolId === "route" || toolId === "diffPair") st().patchDoc(docId, { tool: "select" });
         rebuildOverlay();
         updateHint();
         return;
@@ -394,6 +395,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         e.preventDefault();
         return;
       }
+      if (doc().info.kind === "pcb" && toolId === "select" && e.key.toLowerCase() === "x") {
+        st().patchDoc(docId, { tool: "route" });
+        ensureTool();
+        if (cursorScreen) computeCursor(cursorScreen.x, cursorScreen.y);
+        tool.down?.(env, { sx: cursorScreen?.x ?? 0, sy: cursorScreen?.y ?? 0, ctrl: false, shift: e.shiftKey, alt: false });
+        e.preventDefault(); e.stopImmediatePropagation();
+        rebuildOverlay(); updateHint(); return;
+      }
       if (tool.key?.(env, e.key, e)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -467,6 +476,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       rebuildOverlay();
     });
 
+    const offFilter = useSelectFilter.subscribe((filter, previous) => {
+      if (filter.on === previous.on || doc().info.kind !== "pcb") return;
+      const d = doc();
+      const selection = [...d.selection].filter(id => { const item = d.items.get(id); return item && selectable(d.info.kind, item); });
+      if (selection.length !== d.selection.size) st().patchDoc(docId, { selection: new Set(selection) });
+      updateHover();
+      updateHint();
+    });
     const offView = bus.on("view", ({ action }) => {
       if (!isActive()) return;
       if (action === "fit") fit();
@@ -500,6 +517,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       resize.disconnect();
       unsubscribe();
       offView();
+      offFilter();
       offTheme();
       rebuildRef.current = () => {};
       canvas.removeEventListener("pointerdown", onPointerDown);
@@ -522,6 +540,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         {box && <div className={`select-box ${box.touching ? "touching" : "inside"}`} style={{ left: box.x, top: box.y, width: box.w, height: box.h }} />}
         <ActiveBar docId={docId} />
         <PolygonEditBar docId={docId} />
+        <RoutingBar docId={docId} />
         {error && <div className="canvas-error">{error}</div>}
       </div>
       {boardLike && <LayerTabs docId={docId} />}

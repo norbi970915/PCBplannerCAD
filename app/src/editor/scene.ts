@@ -126,20 +126,21 @@ export class Scene {
 
   /** Topmost item near `p`. Parts/sheets also hit anywhere inside their outline box. */
   pick(p: Point, tol: number, accept: (item: Item) => boolean = () => true): ItemId | null {
-    let best: { id: ItemId; score: number } | null = null;
+    let best: { id: ItemId; score: number; background: boolean } | null = null;
     const probe: Bounds = { minX: p.x - tol, minY: p.y - tol, maxX: p.x + tol, maxY: p.y + tol };
     for (const [id, e] of this.entries) {
       if (!overlaps(e.bounds, probe) || !accept(e.item)) continue;
       let score = this.distance(id, p);
       if (score > tol) {
-        const boxy = e.item.kind === "part" || e.item.kind === "sheet";
+        const boxy = e.item.kind === "part" || e.item.kind === "sheet" || e.item.kind === "footprint";
         if (boxy && contains(e.bounds, { minX: p.x, minY: p.y, maxX: p.x, maxY: p.y })) score = tol * 0.9;
         else continue;
       }
       // Small things win over big ones at equal distance.
       const size = (e.bounds.maxX - e.bounds.minX) * (e.bounds.maxY - e.bounds.minY);
       const s = score + Math.min(tol * 0.1, Math.sqrt(size) * 1e-4);
-      if (!best || s <= best.score) best = { id, score: s };
+      const background = e.item.kind === "zone";
+      if (!best || (best.background && !background) || (best.background === background && s <= best.score)) best = { id, score: s, background };
     }
     return best?.id ?? null;
   }

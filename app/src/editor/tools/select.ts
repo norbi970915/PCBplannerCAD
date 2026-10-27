@@ -4,6 +4,7 @@ import { cursorPoint } from "../../core/view";
 import { useEditor } from "../../core/store";
 import type { IdItem, Item, ItemId, ItemOf, Point } from "../../core/types";
 import { connectionPoints } from "../draw";
+import { rotatePoint } from "../shapes";
 import { constrain45, deleteVertex, editableRing, insertVertex, isValidRing, moveEdge, moveVertex, nearestOnRing, vertexAt, withRing } from "../polyedit";
 import { commitRing, HANDLE_PX, ringHandles } from "./polygon";
 import type { PointerInfo, Tool, ToolEnv } from "./types";
@@ -12,10 +13,21 @@ const DRAG_PX = 4;
 const PICK_PX = 5;
 const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.doc().view?.snapToGrid !== false);
 
+type SelectionMode = "replace" | "add" | "toggle" | "subtract";
+const selectionMode = (e: PointerInfo): SelectionMode => e.ctrl && e.shift ? "subtract" : e.ctrl ? "toggle" : e.shift ? "add" : "replace";
+function combineSelection(current: ReadonlySet<ItemId>, ids: Iterable<ItemId>, mode: SelectionMode): Set<ItemId> {
+  const next = new Set(mode === "replace" ? [] : current);
+  for (const id of ids) {
+    if (mode === "subtract" || (mode === "toggle" && next.has(id))) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}
+
 type State =
   | { kind: "idle" }
-  | { kind: "box"; sx: number; sy: number; additive: boolean; shown: boolean }
-  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null }
+  | { kind: "box"; sx: number; sy: number; mode: SelectionMode; shown: boolean }
+  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; angle?: number }
   /** Dragging one outline vertex (also a freshly inserted one). */
   | { kind: "vertex"; id: ItemId; item: Item; ring: Point[]; index: number; ring2: Point[]; sx: number; sy: number; moved: boolean }
   /** Dragging an outline edge parallel to itself. */
@@ -82,17 +94,21 @@ export function selectTool(): Tool {
 
   const far = (e: PointerInfo, sx: number, sy: number) => Math.hypot(e.sx - sx, e.sy - sy) > DRAG_PX;
 
-  return {
+  const tool: Tool = {
     id: "select",
     hint: (env) =>
       editedPolygon(env)
         ? "Polygon: drag a corner · drag a mid-point to add a corner · drag an edge to move it · Ctrl+click or Backspace removes a corner · Shift: 45° · E R reshapes"
-        : "Click to select · Drag to move · Space rotate · X mirror · Alt+click highlights a net · Drag empty space to area-select",
+        : "Click to select · Ctrl+click adds/removes · Drag empty space to box-select (→ inside, ← touching) · M move · R rotate · X route · Esc cancel",
     reset() {
       s = { kind: "idle" };
       excluded = new Set();
     },
     down(env, e) {
+      if (s.kind === "drag" && s.floating) {
+        tool.up?.(env, e);
+        return;
+      }
       const doc = env.doc();
       const p = env.raw();
       // Outline handles of the selected pour / keep-out / board outline.
@@ -136,7 +152,7 @@ export function selectTool(): Tool {
       const kind = doc.info.kind;
       const hit = env.scene.pick(p, PICK_PX / env.scale(), (i) => selectable(kind, i));
       if (hit === null) {
-        s = { kind: "box", sx: e.sx, sy: e.sy, additive: e.shift, shown: false };
+        s = { kind: "box", sx: e.sx, sy: e.sy, mode: selectionMode(e), shown: false };
         return;
       }
       if (e.alt && doc.info.kind === "schematic") {
@@ -144,10 +160,7 @@ export function selectTool(): Tool {
         return;
       }
       if (e.shift || e.ctrl) {
-        const next = new Set(doc.selection);
-        if (next.has(hit)) next.delete(hit);
-        else next.add(hit);
-        env.select(next);
+        env.select(combineSelection(doc.selection, [hit], selectionMode(e)));
         return;
       }
       if (!doc.selection.has(hit)) env.select([hit]);
@@ -200,7 +213,7 @@ export function selectTool(): Tool {
       if (done.kind === "box") {
         env.setBox(null);
         if (!done.shown) {
-          if (!done.additive) {
+          if (done.mode === "replace") {
             env.select([]);
             useEditor.getState().patchDoc(env.docId, { marked: new Set() });
           }
@@ -214,15 +227,20 @@ export function selectTool(): Tool {
           e.sx < done.sx,
           (i) => selectable(kind, i),
         );
-        env.select(done.additive ? [...env.doc().selection, ...ids] : ids);
+        env.select(combineSelection(env.doc().selection, ids, done.mode));
       } else if (done.kind === "drag") {
-        const moved = done.moved && (done.delta.x || done.delta.y);
+        const moved = done.moved && (done.delta.x || done.delta.y || done.angle);
         const finish = () => {
           excluded = new Set();
           env.redraw(true);
         };
         if (!moved) return finish();
         const { x: dx, y: dy } = done.delta;
+        if (done.angle) {
+          const items = done.ids.flatMap(id => { const item=env.doc().items.get(id); return item ? [{id,item:translate(rotatePreview(item,done.origin,done.angle!),dx,dy)}] : []; });
+          void env.exec({op:"replaceMany",items}).then(finish);
+          return;
+        }
         const attach = done.attach ?? { stretch: [], follow: [] };
         if (!attach.stretch.length && !attach.follow.length) {
           // Moved pours keep their old copper until refilled at the new place.
@@ -256,8 +274,28 @@ export function selectTool(): Tool {
       const item = hit !== null ? env.doc().items.get(hit) : undefined;
       if (item?.kind === "sheet") void navigateTo({ sheet: item.file });
     },
-    key(env, key) {
+    key(env, key, event) {
       const doc = env.doc();
+      const board = doc.info.kind === "pcb" || doc.info.kind === "footprint";
+      if (board && s.kind === "idle" && ["m", "r"].includes(key.toLowerCase())) {
+        if (!doc.selection.size) {
+          const hit = env.scene.pick(env.raw(), PICK_PX / env.scale(), item => selectable(doc.info.kind, item));
+          if (hit === null) return false;
+          env.select([hit]);
+        }
+        const ids = [...env.doc().selection];
+        const item = ids.length === 1 ? doc.items.get(ids[0]) : undefined;
+        const origin = item?.kind === "footprint" ? item.pos : editCursor(env);
+        if (key.toLowerCase() === "r") {
+          void env.exec({ op: "rotate", ids, center: origin, angle: event.shiftKey ? -90 : 90 });
+        } else {
+          const c = editCursor(env);
+          s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x-origin.x, y: c.y-origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
+          excluded = new Set(ids);
+          env.redraw(true);
+        }
+        return true;
+      }
       const poly = s.kind === "idle" ? editedPolygon(env) : null;
       if (poly && key === "Backspace") {
         const vi = vertexAt(poly.ring, env.raw(), HANDLE_PX / env.scale());
@@ -266,11 +304,16 @@ export function selectTool(): Tool {
           return true;
         }
       }
-      if (s.kind === "drag" && s.moved && (key === " " || key === "x" || key === "X")) {
+      if (s.kind === "drag" && s.moved && (key === " " || key.toLowerCase() === "r" || key === "x" || key === "X")) {
+        if (board && (key === " " || key.toLowerCase() === "r")) {
+          s.angle = ((s.angle ?? 0) + (event.shiftKey ? -90 : 90) + 360) % 360;
+          env.redraw();
+          return true;
+        }
         // Rotate/mirror the dragged items in place around the grab point.
         const center = { x: s.origin.x, y: s.origin.y };
         const ids = s.ids;
-        if (key === " ") void env.exec({ op: "rotate", ids, center, angle: 90 });
+        if (key === " " || key.toLowerCase() === "r") void env.exec({ op: "rotate", ids, center, angle: event.shiftKey ? -90 : 90 });
         else void env.exec({ op: "mirror", ids, center });
         // Pins moved: work out attached wires again on the next pointer move.
         s.attach = null;
@@ -281,7 +324,7 @@ export function selectTool(): Tool {
         void env.exec({ op: "rotate", ids: [...doc.selection], center: env.cursor(), angle: 90 });
         return true;
       }
-      if (key === "x" || key === "X" || ((key === "l" || key === "L") && doc.info.kind === "pcb")) {
+      if (key === "x" || key === "X" || ((key === "l" || key === "L" || key.toLowerCase() === "f") && doc.info.kind === "pcb")) {
         void env.exec({ op: "mirror", ids: [...doc.selection], center: env.cursor() });
         return true;
       }
@@ -300,11 +343,12 @@ export function selectTool(): Tool {
       if (s.kind !== "drag" || !s.moved) return [];
       const items = env.doc().items;
       const { x: dx, y: dy } = s.delta;
+      const origin = s.origin, angle = s.angle ?? 0;
       const attach = s.attach ?? { stretch: [], follow: [] };
       const moved = [...s.ids, ...attach.follow]
         .map((id) => items.get(id))
         .filter((i): i is Item => !!i)
-        .map((i) => translate(i, dx, dy));
+        .map((i) => translate(angle ? rotatePreview(i, origin, angle) : i, dx, dy));
       return [...moved, ...attach.stretch.map((r) => stretched(r, dx, dy))];
     },
     excluded: () => excluded,
@@ -319,6 +363,7 @@ export function selectTool(): Tool {
       return poly ? ringHandles(poly.ring, px) : [];
     },
   };
+  return tool;
 }
 
 /** Client-side translate for previews (mirrors Item::translated in Rust). */
@@ -343,5 +388,19 @@ export function translate(item: Item, dx: number, dy: number): Item {
       return item;
     default:
       return { ...item, pos: t(item.pos) } as Item;
+  }
+}
+
+/** Temporary board rotation; committed together with the move and cancelled by Esc. */
+function rotatePreview(item: Item, center: Point, angle: number): Item {
+  const p=(point:Point)=>rotatePoint(point,center,angle);
+  switch(item.kind) {
+    case 'line': case 'wire': case 'bus': case 'rect': case 'track': return {...item,a:p(item.a),b:p(item.b)};
+    case 'arc': case 'arcTrack': return {...item,center:p(item.center),startAngle:(item.startAngle+angle+360)%360};
+    case 'circle':return {...item,center:p(item.center)};
+    case 'polyline':return {...item,points:item.points.map(p)};
+    case 'zone':return {...item,outline:item.outline.map(p),fill:item.fill.map(f=>({outer:f.outer.map(p),holes:f.holes.map(h=>h.map(p))}))};
+    case 'board':return item;
+    default:return {...item,pos:p(item.pos),...('rotation' in item ? {rotation:(item.rotation+angle+360)%360}: {})} as Item;
   }
 }

@@ -31,6 +31,8 @@ interface FilterState {
   on: Record<FilterKind, boolean>;
   set: (k: FilterKind, v: boolean) => void;
   all: () => void;
+  none: () => void;
+  only: (k: FilterKind) => void;
 }
 
 export const useSelectFilter = create<FilterState>()((set, get) => ({
@@ -42,6 +44,16 @@ export const useSelectFilter = create<FilterState>()((set, get) => ({
     } catch {
       // A view preference; losing it is harmless.
     }
+    set({ on });
+  },
+  none: () => {
+    const on = Object.fromEntries(FILTER_KINDS.map(([k]) => [k, false])) as Record<FilterKind, boolean>;
+    try { localStorage.setItem(KEY, JSON.stringify(on)); } catch { /* Optional preference. */ }
+    set({ on });
+  },
+  only: (k) => {
+    const on = Object.fromEntries(FILTER_KINDS.map(([key]) => [key, key === k])) as Record<FilterKind, boolean>;
+    try { localStorage.setItem(KEY, JSON.stringify(on)); } catch { /* Optional preference. */ }
     set({ on });
   },
   all: () => {

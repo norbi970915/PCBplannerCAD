@@ -418,3 +418,57 @@ fn interactive_latency() {
     println!("enclosed end: {:?} (reached {})", t.elapsed(), r.reached);
     assert!(avg < std::time::Duration::from_millis(if cfg!(debug_assertions) { 400 } else { 20 }));
 }
+
+#[test]
+fn fanout_through_other_net_pour_refills_and_undoes_atomically() {
+    use crate::{Command, Session};
+    use crate::document::Edit;
+    use crate::pcb::{fill, drc};
+    let zone: Item = serde_json::from_value(serde_json::json!({
+        "kind":"zone", "outline":[{"x":-5000000,"y":-5000000},{"x":15000000,"y":-5000000},{"x":15000000,"y":5000000},{"x":-5000000,"y":5000000}],
+        "layer":0,"net":"GND","removeIslands":false
+    })).unwrap();
+    let mut doc = board(vec![placed("U1",pt(0.0,0.0),&[("1","SIGNAL")]),zone],0.85,0.95);
+    for (id,polygons) in fill::fill_all(&doc) {
+        let before=doc.get(id).cloned();
+        if let Some(Item::Zone(mut zone))=before.clone(){zone.fill=polygons;doc.apply(&[Edit{id,before,after:Some(Item::Zone(zone))}]);}
+    }
+    let original=doc.clone();
+    let q=req("SIGNAL",pt(0.0,0.0),pt(8.0,0.0),RouteMode::Walkaround);
+    let preview=route(&doc,&q);
+    assert!(preview.reached,"{}",preview.message);
+    assert_connected(&preview.tracks,q.start,Some(q.end));
+    let mut session=Session::with_document(doc);
+    let delta=session.execute(Command::Route{delete:vec![],add:preview.tracks.into_iter().map(Item::Track).collect()}).unwrap();
+    assert!(delta.upserted.iter().any(|entry|matches!(entry.item,Item::Zone(_))),"pour must change in the routing transaction");
+    let errors:Vec<_>=drc::run(session.document()).violations.into_iter().filter(|v|matches!(v.code,"short"|"clearance")).collect();
+    assert!(errors.is_empty(),"{errors:?}");
+    let after=session.document().clone();
+    session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),crate::io::document_to_string(&original).unwrap());
+    session.redo().unwrap();assert_eq!(session.document(),&after);
+}
+
+#[test]
+fn ignoring_pour_fills_does_not_ignore_other_net_pads_or_keepouts() {
+    let keepout:Item=serde_json::from_value(serde_json::json!({
+        "kind":"zone","outline":[{"x":2000000,"y":-2000000},{"x":4000000,"y":-2000000},{"x":4000000,"y":2000000},{"x":2000000,"y":2000000}],"layer":0,"keepout":true
+    })).unwrap();
+    let doc=board(vec![placed("U1",pt(0.0,0.0),&[("1","SIGNAL")]),placed("U2",pt(6.0,0.0),&[("1","OTHER")]),keepout],1.0,1.0);
+    let q=req("SIGNAL",pt(0.0,0.0),pt(9.0,0.0),RouteMode::Walkaround);
+    let r=route(&doc,&q);assert!(r.reached,"{}",r.message);
+    assert_connected(&r.tracks,q.start,Some(q.end));
+    assert!(min_gap(&doc,&r.tracks,"SIGNAL",1.0,1.0)>=mm(0.2)as f64-1.0);
+    let world=World::build(&doc,TOP,&[]);let mut ids=World::build(&doc,TOP,&[]);let net=ids.net_id("SIGNAL");let excl=[net];
+    let probe=Probe{hw:mm(0.25)as f64/2.0,net,excl:&excl};
+    let path:Vec<_>=std::iter::once(q.start).chain(r.tracks.iter().map(|t|t.b)).collect();
+    assert!(world.path_clear(&path,&probe),"keep-out clearance must remain enforced");
+}
+
+#[test]
+fn failed_routing_commit_does_not_change_document_or_history() {
+    use crate::{Command,Session};
+    let doc=board(vec![],1.0,1.0);let original=doc.clone();let mut session=Session::with_document(doc);
+    let invalid=Item::Track(Track{a:pt(0.0,0.0),b:pt(0.0,0.0),width:0,layer:TOP,net:"S".into()});
+    assert!(session.execute(Command::Route{delete:vec![],add:vec![invalid]}).is_err());
+    assert_eq!(session.document(),&original);assert!(!session.can_undo());
+}

@@ -182,13 +182,22 @@ fn moved_items(moved: Vec<(ItemId, Vec<Track>)>) -> Vec<IdItem> {
     moved.into_iter().flat_map(|(id, ts)| ts.into_iter().map(move |t| IdItem { id, item: Item::Track(t) })).collect()
 }
 
+// Zone fills are regenerated around committed tracks; they are not fixed obstacles.
+// Keep-outs, pads, tracks, vias and the board edge still constrain the route.
+fn routing_ignored(doc: &Document, ignored: &[ItemId]) -> Vec<ItemId> {
+    ignored.iter().copied().chain(doc.items().filter_map(|(id, item)| {
+        matches!(item, Item::Zone(zone) if !zone.keepout).then_some(id)
+    })).collect()
+}
+
 /// Routes one track from `req.start` toward `req.end`.
 pub fn route(doc: &Document, req: &RouteRequest) -> RouteResult {
     if req.mode == RouteMode::Ignore {
         let path = corner_path(req.start, req.end, req.corner, req.posture_flip);
         return RouteResult { tracks: tracks_of(&path, req.width, req.layer, &req.net), reached: true, moved: vec![], blocked_at: None, message: String::new() };
     }
-    let mut world = World::build(doc, req.layer, &req.ignore);
+    let ignored = routing_ignored(doc, &req.ignore);
+    let mut world = World::build(doc, req.layer, &ignored);
     let net = world.net_id(&req.net);
     let excl = [net];
     let probe = Probe { hw: req.width as f64 / 2.0, net, excl: &excl };
@@ -218,7 +227,8 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
         CornerStyle::Orthogonal90 | CornerStyle::Any => c * (std::f64::consts::SQRT_2 - 1.0),
     };
     let corridor = (2 * w + gap) as f64 + miter + 4.0;
-    let mut world = World::build(doc, pos.layer, &pos.ignore);
+    let ignored = routing_ignored(doc, &pos.ignore);
+    let mut world = World::build(doc, pos.layer, &ignored);
     let pnet = world.net_id(&pos.net);
     let nnet = world.net_id(neg_net);
     let excl = [pnet, nnet];

@@ -24,6 +24,8 @@ pub enum Command {
     Change { delete: Vec<ItemId>, add: Vec<Item> },
     /// Changes/slices an outline and recomputes affected pours in one undo step.
     EditPolygon { id: ItemId, original: Vec<Point>, outlines: Vec<Vec<Point>> },
+    /// Commits routed copper and dependent zone clearances as one undo step.
+    Route { delete: Vec<ItemId>, add: Vec<Item> },
 }
 
 impl Command {
@@ -37,6 +39,7 @@ impl Command {
             Command::Replace { .. } | Command::ReplaceMany { .. } => "Modify",
             Command::Change { .. } => "Edit",
             Command::EditPolygon { .. } => "Edit polygon",
+            Command::Route { .. } => "Route",
         }
     }
 
@@ -52,6 +55,7 @@ impl Command {
                 .collect()
         };
         match self {
+            Command::Route { delete, add } => resolve_route(doc, delete, add),
             Command::EditPolygon { id, original, outlines } => crate::pcb::polygon::resolve(doc, id, original, outlines),
             Command::Add { items } => {
                 items.iter().try_for_each(Item::validate)?;
@@ -79,4 +83,25 @@ impl Command {
             }
         }
     }
+}
+
+/// Plan on a copy so failed validation cannot allocate IDs or alter copper.
+fn resolve_route(doc: &mut Document, delete: Vec<ItemId>, add: Vec<Item>) -> Result<Vec<Edit>, CoreError> {
+    if doc.kind() != crate::DocKind::Pcb || add.iter().any(|item| !matches!(item, Item::Track(_) | Item::Via(_) | Item::ArcTrack(_))) {
+        return Err(CoreError::InvalidGeometry("routing requires PCB tracks or vias"));
+    }
+    let count = add.len();
+    let mut next = doc.clone();
+    let mut edits = Command::Change { delete, add }.resolve(&mut next)?;
+    next.apply(&edits);
+    for (id, polygons) in crate::pcb::fill::fill_all(&next) {
+        if let Some(Item::Zone(zone)) = next.get(id) {
+            if zone.fill == polygons { continue; }
+            let mut zone = zone.clone();
+            zone.fill = polygons;
+            edits.push(Edit { id, before: doc.get(id).cloned(), after: Some(Item::Zone(zone)) });
+        }
+    }
+    for _ in 0..count { doc.alloc_id(); }
+    Ok(edits)
 }

@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test:polygons": "node --import ./tests/register.mjs --experimental-strip-types --test tests/polygon.test.ts",
     "tauri": "tauri",
-    "test:editor": "node --import ./tests/register.mjs --experimental-transform-types --test tests/polygon.test.ts tests/navigation.test.ts"
+    "test:editor": "node --import ./tests/register.mjs --experimental-transform-types --test tests/polygon.test.ts tests/navigation.test.ts tests/routing.test.ts tests/selection.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "4.3.3",
