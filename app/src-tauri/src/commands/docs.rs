@@ -99,10 +99,10 @@ fn ensure_editable(ws: &Workspace, id: &str) -> Res<()> {
 }
 
 #[tauri::command(async)]
-pub fn doc_execute(state: State<AppState>, id: String, cmd: Command) -> Res<Update> {
+pub fn doc_execute(state: State<AppState>, id: String, cmd: Command, enforce_vias: Option<bool>) -> Res<Update> {
     let mut ws = lock(&state);
     ensure_editable(&ws, &id)?;
-    let delta = ws.doc_mut(&id)?.session.execute(cmd).map_err(|e| e.to_string())?;
+    let delta = ws.doc_mut(&id)?.session.execute_with_via_checks(cmd, enforce_vias.unwrap_or(true)).map_err(|e| e.to_string())?;
     update(&mut ws, &id, delta)
 }
 

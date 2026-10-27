@@ -30,7 +30,7 @@ export async function showSnapshotDoc(id: string) {
 
 export async function execute(docId: string, cmd: Command): Promise<boolean> {
   try {
-    const u = await api.execute(docId, cmd);
+    const u = await api.execute(docId, cmd, st().drcEnforce);
     st().applyUpdate(u);
     if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
     afterEdit(docId);

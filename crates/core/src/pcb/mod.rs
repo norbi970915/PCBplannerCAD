@@ -31,3 +31,6 @@ pub use items::{ArcTrack, PlacedFootprint, Side, Track, Via, Zone, ZoneConnect, 
 
 #[cfg(test)]
 mod editing_tests;
+
+#[cfg(test)]
+mod via_guard_tests;

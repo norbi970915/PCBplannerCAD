@@ -25,19 +25,20 @@ export function MessagesPanel() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query,setQuery]=useState(""),[source,setSource]=useState(""),[follow,setFollow]=useState(true),[saving,setSaving]=useState(false);
   const sources=useMemo(()=>[...new Set(messages.flatMap(m=>m.source?[m.source]:[]))].sort(),[messages]);
-  const endRef = useRef<HTMLDivElement>(null);
+  const logRef = useRef<HTMLDivElement>(null);
   const shown = useMemo(()=>filterMessages(messages,{level:filter,source,query}),[messages,filter,source,query]);
   const exportLog=async()=>{setSaving(true);try{const path=await save({defaultPath:"PCBPlannerCAD-log.txt",filters:[{name:"Text log",extensions:["txt"]}]});if(path)await api.writeFileBytes(path,new TextEncoder().encode(messageLogText(shown)));}catch(e){report(e);}finally{setSaving(false);}};
   const errors = messages.filter((m) => m.level === "error").length;
   const warnings = messages.filter((m) => m.level === "warning").length;
 
   useEffect(() => {
-    if(follow)endRef.current?.scrollIntoView({ block: "end" });
+    // Scroll only the log: scrollIntoView can also scroll dock panels and hide their headers.
+    if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [messages,follow,filter,source,query]);
 
   return (
-    <div className="flex h-full flex-col bg-panel text-xs">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-panel-head px-2">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-panel text-xs">
+      <div className="flex h-8 shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap border-b border-line bg-panel-head px-2">
         <ToggleGroup type="single" value={filter} onValueChange={(v) => v && setFilter(v as Filter)} className="h-6">
           <ToggleGroupItem value="all" className="h-6 px-2 text-[11px]">
             All <span className="font-mono text-faint">{messages.length}</span>
@@ -59,15 +60,15 @@ export function MessagesPanel() {
           <Trash2 /> Clear
         </Button>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-2 py-1">
-        <Input className="h-7 min-w-36 flex-1" aria-label="Search messages" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
-        <NativeSelect aria-label="Message source" value={source} onChange={e=>setSource(e.target.value)}><NativeSelectOption value="">All sources</NativeSelectOption>{[...new Set([...sources,...(source?[source]:[])])].map(name=><NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}</NativeSelect>
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap border-b border-line px-2 py-1 [&>button]:shrink-0">
+        <Input className="h-7 w-48 min-w-32 flex-1" aria-label="Search messages" placeholder="Search messages…" value={query} onChange={e=>setQuery(e.target.value)}/>
+        <NativeSelect wrapperClassName="w-36 shrink-0" aria-label="Message source" value={source} onChange={e=>setSource(e.target.value)}><NativeSelectOption value="">All sources</NativeSelectOption>{[...new Set([...sources,...(source?[source]:[])])].map(name=><NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}</NativeSelect>
         <button className={'rounded px-2 py-1 text-[11px] hover:bg-hover '+(follow?'text-accent-ink':'text-faint')} aria-pressed={follow} title="Follow new messages; scrolling up pauses following" onClick={()=>setFollow(!follow)}>Follow</button>
         <Button variant="ghost" size="sm" disabled={!shown.length} onClick={()=>void navigator.clipboard.writeText(messageLogText(shown)).catch(report)}>Copy shown</Button>
         <Button variant="ghost" size="sm" disabled={!shown.length||saving} onClick={()=>void exportLog()}>Save log</Button>
         <span className="text-[10px] text-faint">{shown.length}/{messages.length}</span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto" onScroll={e=>{const element=e.currentTarget;setFollow(element.scrollHeight-element.scrollTop-element.clientHeight<24);}}>
+      <div ref={logRef} className="min-h-0 flex-1 overflow-auto overscroll-contain" onScroll={e=>{const element=e.currentTarget;setFollow(element.scrollHeight-element.scrollTop-element.clientHeight<24);}}>
         <div className="sticky top-0 grid grid-cols-[24px_74px_64px_1fr] border-b border-line bg-panel-head px-2 py-1 text-[10.5px] font-semibold text-faint">
           <span />
           <span>Time</span>
@@ -91,7 +92,6 @@ export function MessagesPanel() {
             <span className="min-w-0 break-words select-text">{m.text}</span>
           </div>
         ))}
-        <div ref={endRef} />
       </div>
     </div>
   );

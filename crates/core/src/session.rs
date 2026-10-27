@@ -4,6 +4,7 @@ use crate::command::Command;
 use crate::document::{DocKind, Document, Edit, IdItem, ItemId};
 use crate::error::CoreError;
 use crate::library::CachedPart;
+use crate::item::Item;
 
 #[derive(Clone, Debug)]
 struct Transaction {
@@ -113,11 +114,47 @@ impl Session {
             edits.extend(prune);
             edits.extend(crate::pcb::teardrop::maintain(&mut self.doc, &edits));
         }
+        Ok(self.record(edits))
+    }
+
+    /// Validate routed vias on their actual copper span before publishing edits.
+    /// The candidate includes shoved copper and refilled pours. Rejection leaves
+    /// the document, allocated IDs, dirty state and both history stacks intact.
+    pub fn execute_with_via_checks(&mut self, cmd: Command, enforce: bool) -> Result<Delta, CoreError> {
+        let check = enforce && matches!(&cmd, Command::Route { add, replace, .. }
+            if add.iter().any(|i| matches!(i, Item::Via(_)))
+                || replace.iter().any(|i| matches!(i.item, Item::Via(_))));
+        if !check { return self.execute(cmd); }
+        let mut planned = Self::with_document(self.doc.clone());
+        let delta = planned.execute(cmd)?;
+        let vias: Vec<_> = delta.upserted.iter().filter_map(|entry| {
+            let Item::Via(via) = &entry.item else { return None; };
+            if let Some(Item::Via(before)) = self.doc.get(entry.id) {
+                // Unlocking an existing violation must remain possible so it can
+                // be repaired. Only geometry/net changes need placement checks.
+                let mut unchanged = before.clone();
+                unchanged.locked = via.locked;
+                if unchanged == *via { return None; }
+            }
+            Some(entry.id)
+        }).collect();
+        if let Some(violation) = crate::pcb::drc::run_near(&planned.doc, &vias).into_iter()
+            .find(|v| v.severity == crate::pcb::drc::Severity::Error) {
+            return Err(CoreError::ViaBlocked(violation.message));
+        }
+        if let Some(transaction) = planned.undo.pop() {
+            self.doc = planned.doc;
+            return Ok(self.record(transaction.edits));
+        }
+        Ok(delta)
+    }
+
+    fn record(&mut self, edits: Vec<Edit>) -> Delta {
         let delta = Delta::from_edits(&edits);
         self.undo.push(Transaction { serial: self.next_serial, edits });
         self.next_serial += 1;
         self.redo.clear();
-        Ok(delta)
+        delta
     }
 
     pub fn undo(&mut self) -> Option<Delta> {

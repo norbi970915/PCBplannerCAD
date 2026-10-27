@@ -20,12 +20,12 @@ const p = (x: number, y: number): Point => ({ x: x * 1e6, y: y * 1e6 });
 const via = (x: number, y: number): Item => ({ kind: 'via', pos: p(x,y), diameter: 600000, drill: 300000, fromLayer: 0, toLayer: 1, net: 'GND' });
 const track: Item = { kind: 'track', a: p(-2,4), b: p(10,4), width: 200000, layer: 0, net: 'GND' };
 
-function harness() {
+function harness(kind: DocState['info']['kind'] = 'pcb') {
   useSelectFilter.getState().reset();
   const items = new Map<number, Item>([[1, via(3,3)], [2, via(6,6)], [3, track]]);
   const scene = new Scene();
-  scene.update(items, { kind: 'pcb', cache: {}, footprints: {}, view: DEFAULT_VIEW });
-  const doc = { info: { id: 'test', kind: 'pcb' }, items, selection: new Set<number>(), marked: new Set<number>(), activeLayer: 0, tool: 'select', view: DEFAULT_VIEW, grid: 1e6, footprints: {} } as unknown as DocState;
+  scene.update(items, { kind, cache: {}, footprints: {}, view: DEFAULT_VIEW });
+  const doc = { info: { id: 'test', kind }, items, selection: new Set<number>(), marked: new Set<number>(), activeLayer: 0, tool: 'select', view: DEFAULT_VIEW, grid: 1e6, footprints: {} } as unknown as DocState;
   useEditor.setState({ docs: { test: doc }, activeDocId: 'test' });
   let cursor = p(0,0);
   const commands: import("../src/core/types.ts").Command[] = [];
@@ -35,7 +35,7 @@ function harness() {
     select: (ids: Iterable<number>) => useEditor.getState().patchDoc('test', { selection: new Set(ids) }),
     toWorld: (sx: number, sy: number) => p(sx / 10, sy / 10),
     redraw: () => {}, setBox: () => {},
-    ctx: () => ({kind:"pcb",cache:{},footprints:useEditor.getState().docs.test.footprints,view:DEFAULT_VIEW}),
+    ctx: () => ({kind,cache:{},footprints:useEditor.getState().docs.test.footprints,view:DEFAULT_VIEW}),
     exec: async (cmd: import("../src/core/types.ts").Command) => { commands.push(cmd); return true; },
   } as unknown as ToolEnv;
   const tool = selectTool();
@@ -49,6 +49,28 @@ function harness() {
   const key=(key:string,shiftKey=false)=>tool.key!(env,key,{shiftKey}as KeyboardEvent);
   return { env, scene, items, click, box, selected, move, key, tool, commands };
 }
+
+test('schematic selection advertises its actual rotate and mirror controls', () => {
+  const h = harness('schematic');
+  h.env.select([1]);
+  const hint = h.tool.hint!(h.env);
+  assert.match(hint, /Drag selection to move/);
+  assert.match(hint, /Space rotates/);
+  assert.match(hint, /X mirrors/);
+  assert.doesNotMatch(hint, /M move|R rotate|X route/);
+  assert.equal(h.key('m'), false);
+  assert.equal(h.key('r'), false);
+  assert.equal(h.key(' '), true);
+  assert.equal(h.commands.at(-1)?.op, 'rotate');
+  assert.equal(h.key('x'), true);
+  assert.equal(h.commands.at(-1)?.op, 'mirror');
+});
+
+test('footprint selection describes X as mirror rather than routing', () => {
+  const h = harness('footprint');
+  assert.match(h.tool.hint!(h.env), /M move.*R rotate.*X mirror/);
+  assert.doesNotMatch(h.tool.hint!(h.env), /X route/);
+});
 
 test('vias-only box selection ignores tracks and keeps both vias', () => {
   const h = harness(); useSelectFilter.getState().only('vias');

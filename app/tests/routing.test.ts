@@ -549,3 +549,50 @@ test('ending the route closes a pending layer picker and ignores its late choice
     h.tool.cancel(h.env);settle(0);await tick();assert.equal(dismissed,1);assert.equal(vias,0);assert.equal(h.commands.length,0);
   });
 });
+
+test('routing commands default to via enforcement and forward explicit rules-off',async()=>{
+  const flags:unknown[]=[];
+  await withIPC((cmd,args)=>{assert.equal(cmd,'doc_execute');flags.push(args!.enforceVias);},async()=>{
+    const command:Command={op:'route',delete:[],add:[{...via,kind:'via'}]};
+    await api.execute('board',command);
+    await api.execute('board',command,false);
+  });
+  assert.deepEqual(flags,[true,false]);
+});
+
+test('rejected via keeps its source layer and anchor, adds no history, and can be retried',async()=>{
+  const h=toolHarness();let reject=true,undos=0,last!:RouteRequest;
+  useEditor.setState({docs:{board:h.env.doc()},activeDocId:'board'});
+  useEditor.getState().setPlacement({routeViaLayer:0});
+  h.env.exec=async command=>{if(reject)return false;h.commands.push(command);return true;};
+  h.env.undo=async()=>{undos++;return true;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via')return{...via,pos:args!.pos,fromLayer:1,toLayer:0,net:'SIGNAL'};
+    last=args!.req as RouteRequest;
+    return{...result('SIGNAL'),tracks:[{...track,a:last.start,b:last.end,layer:last.layer,net:'SIGNAL'}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(14000000,9000000);h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.match(h.tool.hint(h.env),/Via placement rejected/);
+    assert.equal(useEditor.getState().docs.board.activeLayer,1);
+    assert.equal(h.commands.length,0);
+    assert.deepEqual(last.start,h.center);
+    h.tool.key!(h.env,'Backspace',{}as never);await tick();assert.equal(undos,0);
+    reject=false;h.move(18000000,9000000);h.tool.move!(h.env,{}as never);await tick();
+    h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.equal(h.commands.length,1);
+    if(h.commands[0].op==='route')assert.deepEqual((h.commands[0].add.find(i=>i.kind==='track') as typeof track).a,h.center);
+    assert.equal(useEditor.getState().docs.board.activeLayer,0);
+    h.tool.cancel(h.env);
+  });
+  useEditor.getState().setPlacement({routeViaLayer:null});
+});
+
+test('standalone via placement uses the same guarded, refilling route transaction',async()=>{
+  const {makeTool}=await import('../src/editor/tools/place.ts');
+  const h=toolHarness();useEditor.getState().setPlacement({net:'SIGNAL'});
+  makeTool('via')!.down!(h.env,{}as never);await tick();
+  assert.equal(h.commands.length,1);assert.equal(h.commands[0].op,'route');
+  if(h.commands[0].op==='route')assert.equal(h.commands[0].add[0].kind,'via');
+});

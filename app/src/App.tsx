@@ -159,6 +159,9 @@ const PANEL_DEFAULTS: Record<(typeof TOOL_PANELS)[number] | "scripts" | "pcb", {
   pcb: { title: "PCB" },
 };
 
+// Includes the dock tab, two control rows and space for readable message rows.
+const MESSAGES_MIN_HEIGHT = 170;
+
 function buildDefaultLayout(api: DockviewApi) {
   api.clear();
   api.addPanel({ id: "home", component: "home", title: "Home", tabComponent: "doc" });
@@ -166,7 +169,7 @@ function buildDefaultLayout(api: DockviewApi) {
   api.addPanel({ id: "components", component: "components", title: "Components", tabComponent: "tool", position: { referencePanel: "projects", direction: "within" }, inactive: true });
   api.addPanel({ id: "pcb", component: "pcb", title: "PCB", tabComponent: "tool", position: { referencePanel: "projects", direction: "within" }, inactive: true });
   api.addPanel({ id: "properties", component: "properties", title: "Properties", tabComponent: "tool", position: { referencePanel: "home", direction: "right" }, initialWidth: 310 });
-  api.addPanel({ id: "messages", component: "messages", title: "Messages", tabComponent: "tool", position: { referencePanel: "home", direction: "below" }, initialHeight: 170 });
+  api.addPanel({ id: "messages", component: "messages", title: "Messages", tabComponent: "tool", position: { referencePanel: "home", direction: "below" }, initialHeight: MESSAGES_MIN_HEIGHT }).api.group.api.setConstraints({ minimumHeight: MESSAGES_MIN_HEIGHT });
   api.getPanel("home")?.api.setActive();
 }
 
@@ -179,6 +182,7 @@ function restoreLayout(api: DockviewApi): boolean {
     for (const p of [...api.panels]) if (isDocPanel(p.id) && p.id !== "home") p.api.close();
     if (!TOOL_PANELS.every((id) => api.getPanel(id))) return false;
     if (!api.getPanel("home")) addDocPanel(api, { id: "home", component: "home", title: "Home", tabComponent: "doc" });
+    api.getPanel("messages")?.api.group.api.setConstraints({ minimumHeight: MESSAGES_MIN_HEIGHT });
     return true;
   } catch {
     return false;
@@ -279,6 +283,7 @@ export function App() {
           return;
         }
         a.addPanel({ id, component: id, title: PANEL_DEFAULTS[id].title, tabComponent: "tool", floating: { width: 320, height: 420 } });
+        if (id === "messages") a.getPanel(id)?.api.group.api.setConstraints({ minimumHeight: MESSAGES_MIN_HEIGHT });
       }),
     ];
 

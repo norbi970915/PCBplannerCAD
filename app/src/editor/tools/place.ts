@@ -54,7 +54,8 @@ function oneClick(
     down(env) {
       const items = build(env, env.cursor());
       if (!items?.length) return;
-      void env.exec({ op: "add", items }).then((ok) => ok && after?.(env));
+      // Vias share routing's native span guard and atomic pour refill.
+      void env.exec(id === "via" ? { op: "route", delete: [], add: items } : { op: "add", items }).then((ok) => ok && after?.(env));
     },
     key: rotateKey,
     cancel: () => false,

@@ -114,7 +114,12 @@ export function selectTool(): Tool {
             : ""} · R or right-click rotates 90° · middle-click flips components · release / click to place · Esc cancels`
         : editedPolygon(env)
         ? "Polygon: drag a corner · drag a mid-point to add a corner · drag an edge to move it · Ctrl+click or Backspace removes a corner · Shift: 45° · E R reshapes"
-        : "Click to select · Ctrl+click adds/removes · Drag empty space to box-select (→ inside, ← touching) · M move · R rotate · X route · Esc cancel" +
+        : s.kind === "drag" && s.moved && env.doc().info.kind === "schematic"
+        ? "Moving · Space / R rotates · X mirrors · release / click to place · Esc cancels"
+        : "Click to select · Ctrl+click adds/removes · Drag empty space to box-select (→ inside, ← touching)" +
+          (env.doc().info.kind === "pcb" ? " · M move · R rotate · X route" :
+            env.doc().info.kind === "footprint" ? " · M move · R rotate · X mirror" : " · Drag selection to move · Space rotates · X mirrors") +
+          " · Esc cancel" +
           (env.doc().info.kind === "pcb" && filterActive(useSelectFilter.getState()) ? " · Selection filter active" : "") +
           (env.doc().info.kind === "pcb" ? (env.doc().marked.size ? " · Net highlighted (Esc clears)" : " · Alt+click or ` highlights a net · I selects its copper") : ""),
     auxPress(env, button, shift) {

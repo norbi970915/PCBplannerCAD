@@ -195,7 +195,15 @@ export function routeTool(pair = false): Tool {
       seq++;
       pending = null;
       const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...(transition ? [transition.via] : [])] });
-      if (!ok || s !== session) return false;
+      if (s !== session) return false;
+      if (!ok) {
+        if (transition) {
+          session.reached = false;
+          session.blockedAt = transition.to;
+          session.message = "Via placement rejected; see Messages for the rule and layer. Move to a clear position to retry.";
+        }
+        return false;
+      }
       history.push({ from:{...session.from}, layer:session.layer, items:env.doc().items });
       session.from = routeEnd(tracks, session.net) ?? session.from;
       session.preview = [];
