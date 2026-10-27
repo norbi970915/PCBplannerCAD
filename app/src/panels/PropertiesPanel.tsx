@@ -1,3 +1,4 @@
+import { BulkProperties } from "./BulkProperties";
 import { useState, type ReactNode } from "react";
 import { ViewPanel } from "./ViewPanel";
 import { api } from "../core/api";
@@ -735,7 +736,7 @@ export function PropertiesPanel() {
       {canView && <div className="flex gap-1 border-b border-line bg-panel-head px-2 py-1.5" role="tablist" aria-label="Panel mode">
         {(["properties", "view"] as const).map(tab => <button key={tab} role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${panelTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab}</button>)}
       </div>}
-      <div className="min-h-0 flex-1 overflow-auto">{body}</div>
+      <div className="min-h-0 flex-1 overflow-auto">{body}{doc.info.kind === "pcb" && doc.selection.size > 0 && panelTab === "properties" && <BulkProperties key={[...doc.selection].sort().join(",")} doc={doc}/>}</div>
     </Panel>
   );
 }

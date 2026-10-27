@@ -16,7 +16,7 @@ fn pt(x: f64, y: f64) -> Point {
 }
 
 fn track(a: Point, b: Point, net: &str) -> Item {
-    Item::Track(Track { a, b, width: mm(0.25), layer: TOP, net: net.into() })
+    Item::Track(Track { locked: false, a, b, width: mm(0.25), layer: TOP, net: net.into() })
 }
 
 fn pad(number: &str, x: f64, y: f64, w: f64, h: f64) -> Item {
@@ -353,7 +353,7 @@ fn tune_length_avoids_other_nets() {
 #[test]
 fn net_length_and_vias() {
     let mut items = vec![track(pt(0.0, 0.0), pt(3.0, 4.0), "A"), track(pt(0.0, 0.0), pt(1.0, 0.0), "B")];
-    items.push(Item::ArcTrack(crate::pcb::items::ArcTrack { center: pt(0.0, 0.0), radius: mm(1.0), start_angle: 0.0, sweep: 180.0, width: mm(0.2), layer: TOP, net: "A".into() }));
+    items.push(Item::ArcTrack(crate::pcb::items::ArcTrack { locked: false, center: pt(0.0, 0.0), radius: mm(1.0), start_angle: 0.0, sweep: 180.0, width: mm(0.2), layer: TOP, net: "A".into() }));
     let doc = board(items, 1.0, 1.0);
     let expect = mm(5.0) as f64 + mm(1.0) as f64 * std::f64::consts::PI;
     assert!((net_length(&doc, "A") as f64 - expect).abs() <= 1.0);
@@ -468,7 +468,7 @@ fn ignoring_pour_fills_does_not_ignore_other_net_pads_or_keepouts() {
 fn failed_routing_commit_does_not_change_document_or_history() {
     use crate::{Command,Session};
     let doc=board(vec![],1.0,1.0);let original=doc.clone();let mut session=Session::with_document(doc);
-    let invalid=Item::Track(Track{a:pt(0.0,0.0),b:pt(0.0,0.0),width:0,layer:TOP,net:"S".into()});
+    let invalid=Item::Track(Track{ locked: false,a:pt(0.0,0.0),b:pt(0.0,0.0),width:0,layer:TOP,net:"S".into()});
     assert!(session.execute(Command::Route{delete:vec![],replace:vec![],add:vec![invalid]}).is_err());
     assert_eq!(session.document(),&original);assert!(!session.can_undo());
 }
@@ -519,8 +519,8 @@ fn layer_changes_use_the_smallest_matching_via_type() {
 #[test]
 fn drc_accepts_defined_microvias_but_flags_undefined_small_vias() {
     let in1 = layer::inner_copper(1);
-    let ok = Via { pos: pt(5.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: in1, net: "A".into() };
-    let odd = Via { pos: pt(9.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: layer::BOTTOM_COPPER, net: "A".into() };
+    let ok = Via { locked: false, pos: pt(5.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: in1, net: "A".into() };
+    let odd = Via { locked: false, pos: pt(9.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: layer::BOTTOM_COPPER, net: "A".into() };
     let doc = hdi_board(vec![Item::Via(ok), Item::Via(odd)]);
     let report = crate::pcb::drc::run(&doc);
     let flagged: Vec<_> = report.violations.iter().filter(|v| v.code == "via-style" || v.code == "hole-size").flat_map(|v| v.items.clone()).collect();

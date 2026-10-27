@@ -243,9 +243,10 @@ test('dragging a routed track commits neighbours and the move as one routing ste
   h.move(24, 23); h.tool.up!(h.env, { sx: 240, sy: 230, ctrl: false, shift: false, alt: false } as never);
   assert.equal(h.commands.length, 1); const cmd = h.commands[0]; assert.equal(cmd.op, 'route');
   if (cmd.op === 'route') {
-    assert.deepEqual(cmd.delete.sort(), [10, 11]);
-    const moved = cmd.add.find((t) => t.kind === 'track' && t.a.y === p(0, 23).y && t.b.y === p(0, 23).y);
-    assert(moved, 'the segment moved up 1 mm'); const nb = cmd.add.find((t) => t.kind === 'track' && t.a.x === p(20, 0).x);
+    assert.deepEqual(cmd.delete, []);
+    assert.deepEqual(cmd.replace?.map(r=>r.id).sort(), [10,11], "dragged tracks retain their IDs");
+    const moved = cmd.replace?.map(r=>r.item).find((t) => t.kind === 'track' && t.a.y === p(0, 23).y && t.b.y === p(0, 23).y);
+    assert(moved, 'the segment moved up 1 mm'); const nb = cmd.replace?.map(r=>r.item).find((t) => t.kind === 'track' && t.a.x === p(20, 0).x);
     assert(nb && nb.kind === 'track' && nb.b.x === p(23, 0).x && nb.b.y === p(0, 23).y, 'the 45° neighbour followed along its own direction');
   }
 });
@@ -273,7 +274,7 @@ test('moving a routed part previews its track following and commits the backend 
     assert(stretched && stretched.kind === 'track' && stretched.a.x === p(24, 0).x && stretched.a.y === p(0, 22).y && stretched.b.x === p(15, 0).x, 'the pad end follows, the far end stays');
     assert.match(h.tool.hint(h.env), /preserve angles, push violators \(Tab \/ Shift\+Tab\)/);
     h.click(23, 22); await new Promise((r) => setTimeout(r, 0));
-    assert.deepEqual(sent, { ids: [4], delta: p(3, 2), mode: 'preserveAngles', routeMode: 'shove', corner: 'diagonal45' });
+    assert.deepEqual(sent, { ids: [4], delta: p(3, 2), angle: 0, flipped: false, center: p(20,20), mode: 'preserveAngles', routeMode: 'shove', corner: 'diagonal45' });
     assert.deepEqual(h.commands, [{ op: 'route', delete: [12], add: [{ kind: 'track' }], replace: [{ id: 4, item: { kind: 'footprint' } }] }]);
   } finally { clearMocks(); Reflect.deleteProperty(globalThis, 'window'); }
 });

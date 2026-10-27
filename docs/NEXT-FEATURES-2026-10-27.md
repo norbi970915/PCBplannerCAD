@@ -1,5 +1,7 @@
 # PCBPlannerCAD next feature priorities — 2026-10-27
 
+The pour manager, bulk editing, copper locking, automatic teardrops, connected rotation/flip, spatial hit testing and bounded via shoving are now implemented. See [the editing update](PROGRESS-2026-10-27-EDITING.md) for validation and limits. The table below records the earlier proposal; the custom-pad, groups/arrays and differential-pair-tuning projects remain future work.
+
 ## Where to continue
 
 This is a proposed development plan based on inspection of source commit `2436510`. The features below have not been implemented by this assessment. The latest completed-work handoff is [PROGRESS-2026-10-27-1544.md](PROGRESS-2026-10-27-1544.md).

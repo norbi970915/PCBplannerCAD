@@ -11,7 +11,7 @@ fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
     vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)]
 }
 fn zone(outline: Vec<Point>, priority: i32) -> Item {
-    Item::Zone(Zone {
+    Item::Zone(Zone { locked: false,
             teardrop: false,
         outline,
         layer: layer::TOP_COPPER,

@@ -1,3 +1,4 @@
+import { PourManager } from "./PourManager";
 import { useEffect, useMemo, useState } from "react";
 import { open as openDialogPicker, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
@@ -28,7 +29,7 @@ const mm = (v: number) => Math.round(v * NM_PER_MM);
 const toMm = (nm: number) => nm / NM_PER_MM;
 const close = () => useModal.getState().close();
 
-type DialogName = "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants" | "cleanup" | "stitch" | "stats" | "teardrops";
+type DialogName = "pours" | "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants" | "cleanup" | "stitch" | "stats" | "teardrops";
 
 export function openDialog(name: DialogName) {
   const doc = activeDoc();
@@ -40,6 +41,7 @@ export function openDialog(name: DialogName) {
   const id = doc?.info.id ?? "";
   const show = useModal.getState().show;
   switch (name) {
+    case "pours": return show(<PourManager docId={id}/>);
     case "eco":
       return show(<EcoDialog docId={id} />);
     case "stack":

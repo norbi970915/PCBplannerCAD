@@ -98,7 +98,7 @@ fn ensure_editable(ws: &Workspace, id: &str) -> Res<()> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn doc_execute(state: State<AppState>, id: String, cmd: Command) -> Res<Update> {
     let mut ws = lock(&state);
     ensure_editable(&ws, &id)?;

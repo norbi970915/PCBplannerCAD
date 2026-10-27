@@ -33,6 +33,8 @@ impl Side {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Track {
+    #[serde(default)]
+    pub locked: bool,
     pub a: Point,
     pub b: Point,
     pub width: Coord,
@@ -46,6 +48,8 @@ pub struct Track {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArcTrack {
+    #[serde(default)]
+    pub locked: bool,
     pub center: Point,
     pub radius: Coord,
     pub start_angle: f64,
@@ -69,6 +73,8 @@ fn bottom() -> LayerId {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Via {
+    #[serde(default)]
+    pub locked: bool,
     pub pos: Point,
     pub diameter: Coord,
     pub drill: Coord,
@@ -108,6 +114,8 @@ pub struct ZonePolygon {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Zone {
+    #[serde(default)]
+    pub locked: bool,
     pub outline: Vec<Point>,
     pub layer: LayerId,
     #[serde(default)]

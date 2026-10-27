@@ -62,7 +62,7 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
     { title: "Place", items: place },
     { title: "Design", items: ["design.updatePcb", "-", "design.layerStack", "design.rules", "design.toggleRules", "-", "design.impedance"] },
     { title: "Project", items: ["project.compile", "-", "project.annotate", "project.annotateAll", "-", "project.bom", "project.variants", "-", "project.addSheet", "project.board"] },
-    { title: "Tools", items: ["tools.drc", "tools.onlineDrc", "tools.measure", "tools.repour", "tools.tune", "tools.clearMarks", "-", "tools.cleanup", "tools.teardrops", "tools.stitch", "tools.stats", "-", "tools.footprintWizard", "tools.symbolWizard", "-", "tools.panelize", "tools.scripts"] },
+    { title: "Tools", items: ["tools.drc", "tools.onlineDrc", "tools.measure", "tools.repour", "tools.tune", "tools.clearMarks", "-", "tools.pours", "tools.cleanup", "tools.teardrops", "tools.stitch", "tools.stats", "-", "tools.footprintWizard", "tools.symbolWizard", "-", "tools.panelize", "tools.scripts"] },
     { title: "Window", items: ["window.projects", "window.components", "window.pcb", "window.properties", "window.messages", "-", "window.resetLayout"] },
     { title: "Help", items: ["help.about"] },
   ];

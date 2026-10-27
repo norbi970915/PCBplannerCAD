@@ -14,7 +14,7 @@ use super::board::BoardSettings;
 use super::geometry::{board_settings, world_pads};
 use super::items::{Zone, ZoneConnect};
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeardropOptions {
     pub vias: bool,
@@ -86,7 +86,7 @@ pub fn stale(doc: &Document, near: Option<(Point, Point)>) -> Vec<ItemId> {
     let within = |p: Point, (lo, hi): (Point, Point)| p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
     for (id, item) in doc.items() {
         let Item::Zone(z) = item else { continue };
-        if !z.teardrop || z.outline.len() < 3 {
+        if !z.teardrop || z.locked || z.outline.len() < 3 {
             continue;
         }
         let bb = bbox(&z.outline);
@@ -204,6 +204,10 @@ fn outline(center: Point, dir: (f64, f64), width: f64, size: f64, room: f64, o: 
 }
 
 pub fn plan(doc: &Document, o: &TeardropOptions) -> TeardropPlan {
+    plan_near(doc, o, None)
+}
+
+fn plan_near(doc: &Document, o: &TeardropOptions, near: Option<(Point, Point)>) -> TeardropPlan {
     let fallback = BoardSettings::default();
     let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
     let mut anchors: Vec<Anchor> = Vec::new();
@@ -233,11 +237,14 @@ pub fn plan(doc: &Document, o: &TeardropOptions) -> TeardropPlan {
         }
     }
 
-    let mut out = TeardropPlan { delete: teardrops(doc), ..TeardropPlan::default() };
+    let within = |p: Point| near.is_none_or(|(lo, hi)| p.x >= lo.x && p.y >= lo.y && p.x <= hi.x && p.y <= hi.y);
+    anchors.retain(|a| within(a.center));
+    let mut out = TeardropPlan { delete: teardrops(doc).into_iter().filter(|id| matches!(doc.get(*id), Some(Item::Zone(z)) if !z.locked && z.outline.iter().any(|p| within(*p)))).collect(), ..TeardropPlan::default() };
     for (_, item) in doc.items() {
         let Item::Track(t) = item else { continue };
         for (end, other) in [(t.a, t.b), (t.b, t.a)] {
             let Some(anchor) = anchors.iter().find(|a| a.net == t.net && (a.on)(t.layer) && ((end.x - a.center.x) as f64).hypot((end.y - a.center.y) as f64) <= a.reach) else { continue };
+            if doc.items().any(|(_, i)| matches!(i, Item::Zone(z) if z.teardrop && z.locked && z.net == t.net && z.layer == t.layer && inside(anchor.center, &z.outline))) { continue; }
             let (dx, dy) = ((other.x - anchor.center.x) as f64, (other.y - anchor.center.y) as f64);
             let room = dx.hypot(dy);
             if room <= 0.0 {
@@ -249,7 +256,7 @@ pub fn plan(doc: &Document, o: &TeardropOptions) -> TeardropPlan {
             } else {
                 out.pads += 1;
             }
-            out.add.push(Item::Zone(Zone {
+            out.add.push(Item::Zone(Zone { locked: false,
                 outline,
                 layer: t.layer,
                 net: t.net.clone(),
@@ -268,6 +275,43 @@ pub fn plan(doc: &Document, o: &TeardropOptions) -> TeardropPlan {
         }
     }
     out
+}
+
+/// Regenerate only joints near edited copper, preserving unchanged zone IDs.
+pub fn maintain(doc: &mut Document, changes: &[crate::document::Edit]) -> Vec<crate::document::Edit> {
+    use crate::document::Edit;
+    let Some(options) = board_settings(doc).and_then(|(_, b)| b.auto_teardrops) else { return vec![] };
+    let settings_changed = changes.iter().any(|e| match (&e.before, &e.after) {
+        (Some(Item::Board(a)), Some(Item::Board(b))) => a.auto_teardrops != b.auto_teardrops,
+        (_, Some(Item::Board(b))) => b.auto_teardrops.is_some(),
+        _ => false,
+    });
+    let near = if settings_changed { None } else {
+        let Some(bounds) = touched_extent(doc, changes) else { return vec![] };
+        Some(bounds)
+    };
+    let plan = plan_near(doc, &options, near);
+    let mut remaining = plan.delete;
+    let mut edits = Vec::new();
+    for item in plan.add {
+        if let Some(index) = remaining.iter().position(|id| match (doc.get(*id), &item) {
+            (Some(Item::Zone(a)), Item::Zone(b)) => a.outline == b.outline && a.net == b.net && a.layer == b.layer,
+            _ => false,
+        }) { remaining.remove(index); continue; }
+        edits.push(Edit { id: doc.alloc_id(), before: None, after: Some(item) });
+    }
+    edits.extend(remaining.into_iter().map(|id| Edit { id, before: doc.get(id).cloned(), after: None }));
+    if edits.is_empty() { return edits; }
+    doc.apply(&edits);
+    for (id, fill) in super::fill::fill_all(doc) {
+        if let Some(Item::Zone(zone)) = doc.get(id) {
+            if zone.fill == fill { continue; }
+            let mut updated = zone.clone(); updated.fill = fill;
+            edits.push(Edit { id, before: Some(Item::Zone(zone.clone())), after: Some(Item::Zone(updated)) });
+        }
+    }
+    doc.apply(&edits);
+    edits
 }
 
 #[cfg(test)]

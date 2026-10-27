@@ -244,6 +244,9 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardSettings {
+    /// Automatic teardrop generation settings, persisted with the board.
+    #[serde(default)]
+    pub auto_teardrops: Option<super::teardrop::TeardropOptions>,
     #[serde(default)]
     pub stackup: Stackup,
     #[serde(default = "default_rules")]
@@ -309,6 +312,7 @@ fn default_classes() -> Vec<NetClass> {
 impl Default for BoardSettings {
     fn default() -> Self {
         BoardSettings {
+            auto_teardrops: None,
             stackup: Stackup::default(),
             rules: default_rules(),
             net_classes: default_classes(),

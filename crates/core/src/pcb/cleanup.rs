@@ -63,7 +63,7 @@ fn covered_by(inner: &Track, outer: &Track) -> bool {
 pub fn cleanup(doc: &Document, opts: &CleanupOptions) -> CleanupResult {
     let mut out = CleanupResult::default();
     let mut removed: HashSet<ItemId> = HashSet::new();
-    let tracks: Vec<(ItemId, &Track)> = doc.items().filter_map(|(id, i)| if let Item::Track(t) = i { Some((id, t)) } else { None }).collect();
+    let tracks: Vec<(ItemId, &Track)> = doc.items().filter_map(|(id, i)| if let Item::Track(t) = i { if t.locked { None } else { Some((id, t)) } } else { None }).collect();
 
     if opts.zero_length {
         for &(id, t) in &tracks {
@@ -101,7 +101,7 @@ pub fn cleanup(doc: &Document, opts: &CleanupOptions) -> CleanupResult {
             let mut changed = false;
             if opts.dangling {
                 for (i, o) in idx.objs.iter().enumerate() {
-                    if o.kind != ObjKind::Track || removed.contains(&o.item) {
+                    if o.kind != ObjKind::Track || removed.contains(&o.item) || doc.get(o.item).is_some_and(crate::command::is_locked) {
                         continue;
                     }
                     let Some(Item::Track(t)) = doc.get(o.item) else { continue };
@@ -120,7 +120,7 @@ pub fn cleanup(doc: &Document, opts: &CleanupOptions) -> CleanupResult {
             }
             if opts.unconnected_vias {
                 for (i, o) in idx.objs.iter().enumerate() {
-                    if o.kind != ObjKind::Via || removed.contains(&o.item) {
+                    if o.kind != ObjKind::Via || removed.contains(&o.item) || doc.get(o.item).is_some_and(crate::command::is_locked) {
                         continue;
                     }
                     let mut layers: HashSet<LayerId> = HashSet::new();

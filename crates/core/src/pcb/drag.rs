@@ -35,6 +35,12 @@ pub enum MoveMode {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DragRequest {
+    #[serde(default)]
+    pub angle: f64,
+    #[serde(default)]
+    pub flipped: bool,
+    #[serde(default)]
+    pub center: Point,
     pub ids: Vec<ItemId>,
     pub delta: Point,
     #[serde(default)]
@@ -140,21 +146,31 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
     let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
     let moving: std::collections::HashSet<ItemId> = req.ids.iter().copied().collect();
     let mut work = doc.clone();
+    let transform = |item: &Item| {
+        let rotated = item.rotated(req.center, req.angle);
+        let flipped = if req.flipped { rotated.mirrored(req.center) } else { rotated };
+        flipped.translated(req.delta.x, req.delta.y)
+    };
     let mut edits: Vec<Edit> = Vec::new();
 
     // Pads of the moved footprints before the move.
     let mut pads = Vec::new();
     for &id in &req.ids {
         let Some(item) = doc.get(id) else { continue };
+        if crate::command::is_locked(item) { return DragResult { blocked: 1, ..DragResult::default() }; }
         if let Item::Footprint(fp) = item {
             if let Some(geom) = doc.cached_footprint(&fp.footprint) {
                 pads.extend(world_pads(id, fp, geom, board));
             }
         }
         if !matches!(item, Item::Board(_)) {
-            edits.push(Edit { id, before: Some(item.clone()), after: Some(item.translated(req.delta.x, req.delta.y)) });
+            edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) });
         }
     }
+    let new_pads: Vec<_> = edits.iter().flat_map(|edit| match &edit.after {
+        Some(Item::Footprint(fp)) => doc.cached_footprint(&fp.footprint).map(|g| world_pads(edit.id, fp, g, board)).unwrap_or_default(),
+        _ => vec![],
+    }).collect();
     let on_moved_pad = |p: Point, layer: LayerId, net: &str| {
         pads.iter().any(|pad| {
             pad.net == net && pad.copper.contains(&layer) && ((pad.pos.x - p.x) as f64).hypot((pad.pos.y - p.y) as f64) <= pad.width.max(pad.height) as f64 / 2.0
@@ -171,17 +187,31 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
                 continue;
             }
             let (on_a, on_b) = (on_moved_pad(t.a, t.layer, &t.net), on_moved_pad(t.b, t.layer, &t.net));
+            if (on_a || on_b) && t.locked { return DragResult { blocked: 1, ..DragResult::default() }; }
             match (on_a, on_b) {
                 (false, false) => {}
                 // Between two moved pads: the whole segment moves with them.
                 (true, true) => edits.push(Edit { id, before: Some(item.clone()), after: Some(item.translated(req.delta.x, req.delta.y)) }),
                 _ => {
                     let (far, near) = if on_a { (t.b, t.a) } else { (t.a, t.b) };
-                    let to = shifted(near, req.delta);
+                    let pad = pads.iter().find(|pad| pad.net == t.net && pad.copper.contains(&t.layer) && ((pad.pos.x-near.x) as f64).hypot((pad.pos.y-near.y) as f64) <= pad.width.max(pad.height) as f64/2.0);
+                    let target = pad.and_then(|pad| new_pads.iter().find(|p| p.owner == pad.owner && p.number == pad.number));
+                    let to = target.map_or_else(|| shifted(near, req.delta), |p| p.pos);
+                    // A flipped SMD connection needs a transition back to its existing routing layer.
+                    if let Some(target) = target.filter(|p| !p.copper.contains(&t.layer)) {
+                        if let Some(&layer) = target.copper.first() {
+                            if !edits.iter().any(|e| matches!(&e.after, Some(Item::Via(v)) if v.pos == to && v.net == t.net)) {
+                                let mut via = super::router::via_for(doc, &t.net, to);
+                                via.from_layer = t.layer; via.to_layer = layer;
+                                if let Some(style) = board.via_type_between(t.layer, layer) { via.diameter = style.diameter; via.drill = style.drill; }
+                                edits.push(Edit { id: work.alloc_id(), before: None, after: Some(Item::Via(via)) });
+                            }
+                        }
+                    }
                     if req.mode == MoveMode::Free {
                         let moved = if on_a { Track { a: to, ..t.clone() } } else { Track { b: to, ..t.clone() } };
                         edits.push(Edit { id, before: Some(item.clone()), after: Some(Item::Track(moved)) });
-                    } else if let Some(s) = slide(doc, &moving, id, t, on_a, req.delta) {
+                    } else if let Some(s) = if req.angle == 0.0 && !req.flipped { slide(doc, &moving, id, t, on_a, req.delta) } else { None } {
                         // The pad segment keeps its angle and slides; its neighbour keeps its own angle too.
                         slid.push((id, t.clone(), far, to));
                         edits.push(Edit { id, before: Some(item.clone()), after: Some(Item::Track(s.0)) });
@@ -299,7 +329,7 @@ pub fn drag_each(doc: &Document, req: &MultiDragRequest) -> DragResult {
         if m.delta == Point::default() {
             continue;
         }
-        let step = drag_footprints(&work, &DragRequest { ids: vec![m.id], delta: m.delta, mode: req.mode, route_mode: req.route_mode, corner: req.corner });
+        let step = drag_footprints(&work, &DragRequest { angle: 0.0, flipped: false, center: Point::default(), ids: vec![m.id], delta: m.delta, mode: req.mode, route_mode: req.route_mode, corner: req.corner });
         out.rerouted += step.rerouted;
         out.blocked += step.blocked;
         let mut edits: Vec<Edit> = step.replace.into_iter().map(|r| Edit { id: r.id, before: work.get(r.id).cloned(), after: Some(r.item) }).collect();
@@ -343,7 +373,7 @@ mod tests {
     }
 
     fn track(a: Point, b: Point, net: &str) -> Item {
-        Item::Track(Track { a, b, width: mm(0.25), layer: layer::TOP_COPPER, net: net.into() })
+        Item::Track(Track { locked: false, a, b, width: mm(0.25), layer: layer::TOP_COPPER, net: net.into() })
     }
 
     /// U1 at (0,0) routed to U2 at (20,0) on net A via a corner at (10,5); U3 on net B nearby.
@@ -381,7 +411,7 @@ mod tests {
     }
 
     fn req(ids: Vec<ItemId>, delta: Point, mode: MoveMode) -> DragRequest {
-        DragRequest { ids, delta, mode, route_mode: RouteMode::Shove, corner: CornerStyle::Diagonal45 }
+        DragRequest { angle: 0.0, flipped: false, center: Point::default(), ids, delta, mode, route_mode: RouteMode::Shove, corner: CornerStyle::Diagonal45 }
     }
 
     fn connected(d: &Document) -> bool {
@@ -496,5 +526,20 @@ mod tests {
         s.execute(Command::Route { delete: r.delete, add: r.add, replace: r.replace }).unwrap();
         assert!(connected(s.document()), "joined directly instead of left open");
         assert!(copper_violations(s.document()) > 0, "and DRC reports the overlap");
+    }
+
+    #[test]
+    fn rotation_and_flip_preserve_pad_connections_and_undo() {
+        for flipped in [false,true] {
+            let d=doc(vec![]);let id=id_of(&d,"U1");
+            let mut request=req(vec![id],p(2.,1.),MoveMode::PreserveAngles);
+            request.angle=90.;request.flipped=flipped;request.center=p(2.,0.);
+            let plan=drag_footprints(&d,&request);
+            let mut session=crate::Session::with_document(d.clone());
+            session.execute(crate::Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace}).unwrap();
+            assert!(connected(session.document()),"flip={flipped}");
+            if flipped {assert!(session.document().items().any(|(_,i)|matches!(i,Item::Via(_))));}
+            session.undo();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),crate::io::document_to_string(&d).unwrap());
+        }
     }
 }

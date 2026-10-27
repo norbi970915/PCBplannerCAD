@@ -123,6 +123,7 @@ export const COMMANDS: Record<string, AppCommand> = {
   "tools.drc": { label: "Design Rule Check", keys: ["T D"], when: ["pcb"], run: () => pcb.runDrc() },
   "tools.repour": { label: "Repour All Polygons", keys: ["T G"], when: ["pcb"], run: () => pcb.repour() },
   "tools.tune": { label: "Length Tuning of Selected Tracks…", keys: ["T R"], when: ["pcb"], run: () => openDialog("tune"), enabled: () => !!activeDoc()?.selection.size },
+  "tools.pours": { label: "Pour Manager…", when: ["pcb"], run: () => openDialog("pours") },
   "tools.cleanup": { label: "Cleanup Tracks & Vias…", when: ["pcb"], run: () => openDialog("cleanup") },
   "tools.teardrops": { label: "Teardrops…", when: ["pcb"], run: () => openDialog("teardrops") },
   "tools.stitch": { label: "Via Stitching…", when: ["pcb"], run: () => openDialog("stitch") },

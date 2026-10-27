@@ -162,9 +162,9 @@ fn sample() -> Document {
         place("R1", "L/R", Point::new(mm(10.0), mm(10.0)), 0.0),
         place("R2", "L/R", Point::new(mm(20.0), mm(10.0)), 90.0),
         place("J1", "L/J", Point::new(mm(30.0), mm(15.0)), 0.0),
-        Item::Track(Track { a: Point::new(mm(10.8), mm(10.0)), b: Point::new(mm(20.0), mm(9.2)), width: mm(0.25), layer: layer::TOP_COPPER, net: "N1".into() }),
-        Item::ArcTrack(ArcTrack { center: Point::new(mm(25.0), mm(20.0)), radius: mm(2.0), start_angle: 0.0, sweep: 90.0, width: mm(0.25), layer: layer::TOP_COPPER, net: "N1".into() }),
-        Item::Via(Via { pos: Point::new(mm(5.0), mm(5.0)), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "GND".into() }),
+        Item::Track(Track { locked: false, a: Point::new(mm(10.8), mm(10.0)), b: Point::new(mm(20.0), mm(9.2)), width: mm(0.25), layer: layer::TOP_COPPER, net: "N1".into() }),
+        Item::ArcTrack(ArcTrack { locked: false, center: Point::new(mm(25.0), mm(20.0)), radius: mm(2.0), start_angle: 0.0, sweep: 90.0, width: mm(0.25), layer: layer::TOP_COPPER, net: "N1".into() }),
+        Item::Via(Via { locked: false, pos: Point::new(mm(5.0), mm(5.0)), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "GND".into() }),
     ];
     board_doc(items, &[("L/R", r), ("L/J", j)])
 }
@@ -258,7 +258,7 @@ fn zone_with_hole_is_one_cut_in_region() {
     let mut hole = sq(5.0, 5.0, 4.0);
     hole.reverse();
     let fill = vec![ZonePolygon { outer: outer.clone(), holes: vec![hole, sq(12.0, 6.0, 3.0)] }, ZonePolygon { outer: sq(30.0, 0.0, 5.0), holes: vec![] }];
-    let zone = Zone {
+    let zone = Zone { locked: false,
         teardrop: false,
         outline: outer,
         layer: layer::BOTTOM_COPPER,
@@ -297,7 +297,7 @@ fn zone_with_hole_is_one_cut_in_region() {
 fn coordinate_precision_round_trips() {
     let a = Point::new(1_234_567, -7_654_321);
     let b = Point::new(12_345_678_901 / 1000, 5);
-    let doc = board_doc(vec![Item::Track(Track { a, b, width: mm(0.2), layer: layer::TOP_COPPER, net: String::new() })], &[]);
+    let doc = board_doc(vec![Item::Track(Track { locked: false, a, b, width: mm(0.2), layer: layer::TOP_COPPER, net: String::new() })], &[]);
     for precision in [3u8, 4, 5, 6] {
         let o = GerberOptions { precision, ..opts() };
         let s = write_layer(&doc, LayerFunction::Copper(layer::TOP_COPPER), &o).unwrap();

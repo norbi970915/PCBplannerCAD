@@ -111,6 +111,7 @@ impl Session {
         if self.doc.kind() == DocKind::Pcb {
             let prune = crate::pcb::teardrop::prune(&mut self.doc, &edits);
             edits.extend(prune);
+            edits.extend(crate::pcb::teardrop::maintain(&mut self.doc, &edits));
         }
         let delta = Delta::from_edits(&edits);
         self.undo.push(Transaction { serial: self.next_serial, edits });

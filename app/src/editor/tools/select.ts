@@ -19,7 +19,7 @@ const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.
 /** Selected items that may move: locked footprints stay put. */
 function movableIds(env: ToolEnv, ids: ItemId[]): ItemId[] {
   const items = env.doc().items;
-  const free = ids.filter((id) => { const it = items.get(id); return it?.kind !== "footprint" || !it.locked; });
+  const free = ids.filter((id) => { const it = items.get(id); return !it || !("locked" in it && it.locked); });
   if (free.length < ids.length) useEditor.getState().setHint(free.length ? `${ids.length - free.length} locked footprint${ids.length - free.length === 1 ? "" : "s"} left in place (unlock in Properties)` : "Locked: unlock the footprint in Properties to move it");
   return free;
 }
@@ -51,7 +51,7 @@ function editedPolygon(env: ToolEnv): { id: ItemId; item: Item; ring: Point[] } 
   const id = [...doc.selection][0];
   const item = doc.items.get(id);
   const ring = item ? editableRing(item) : null;
-  return item && ring ? { id, item, ring } : null;
+  return item && !("locked" in item && item.locked) && ring ? { id, item, ring } : null;
 }
 
 /** Schematic objects that follow dragged parts so connections stay intact. */
@@ -279,12 +279,12 @@ export function selectTool(): Tool {
         if (!moved) return finish();
         const { x: dx, y: dy } = done.delta;
         const plan = !done.angle && !done.flipped ? trackPlan(env, done) : null;
-        const attached = !done.angle && !done.flipped ? partTracks(env, done) : [];
+        const attached = partTracks(env, done);
         if (attached.length) {
           // Routed parts: the backend re-routes their attached segments and pushes violators, as one undo step.
           const pl = useEditor.getState().placement;
           const at = done.delta;
-          void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, mode: pl.moveMode, routeMode: violatorModeOf(useEditor.getState()), corner: pl.cornerStyle })
+          void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode: violatorModeOf(useEditor.getState()), corner: pl.cornerStyle })
             .then(async (r) => {
               const ok = await env.exec({ op: "route", delete: r.delete, add: r.add, replace: r.replace });
               if (ok && r.blocked) toast.warning(`${r.blocked} connection${r.blocked === 1 ? "" : "s"} could not be re-routed cleanly; joined directly (run DRC to see the conflicts).`);
@@ -296,7 +296,7 @@ export function selectTool(): Tool {
         if (plan) {
           // Dragged tracks, their adjusted neighbours and joining segments, with pour refill, in one undo step.
           const { replace, add } = applyTrackDrag(plan, done.delta);
-          void env.exec({ op: "route", delete: replace.map((r) => r.id), add: [...replace.map((r) => r.item), ...add] }).then(finish);
+          void env.exec({ op: "route", delete: [], add, replace }).then(finish);
           return;
         }
         if (done.angle || done.flipped) {
@@ -461,6 +461,11 @@ export function selectTool(): Tool {
         .map((i) => translate(dragTransform(i, drag), dx, dy));
       // Routed parts: attached tracks stretch along until the drop re-routes them.
       if (!s.angle && !s.flipped) moved.push(...stretchAttached(partTracks(env, s), s.delta, useEditor.getState().placement.moveMode === "preserveAngles"));
+      else moved.push(...partTracks(env,s).map(a => {
+        const t=a.track;
+        const transform=(p:Point)=>{const r=s.kind==='drag'?rotatePoint(p,s.origin,s.angle??0):p;return {x:Math.round((drag.flipped?2*drag.origin.x-r.x:r.x)+dx),y:Math.round(r.y+dy)};};
+        return {...t,a:a.end==='b'?t.a:transform(t.a),b:a.end==='a'?t.b:transform(t.b)};
+      }));
       return [...moved, ...attach.stretch.map((r) => stretched(r, dx, dy))];
     },
     excluded: () => excluded,

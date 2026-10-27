@@ -110,13 +110,13 @@ fn track_width_limits() {
 
 #[test]
 fn via_style_and_hole_size() {
-    let small = Item::Via(Via { pos: p(10.0, 4.0), diameter: mm(0.5), drill: mm(0.3), from_layer: TOP_COPPER, to_layer: BOTTOM_COPPER, net: String::new() });
+    let small = Item::Via(Via { locked: false, pos: p(10.0, 4.0), diameter: mm(0.5), drill: mm(0.3), from_layer: TOP_COPPER, to_layer: BOTTOM_COPPER, net: String::new() });
     let r = run(&with(vec![small]));
     assert_eq!(codes(&r.violations), vec!["via-style"]);
     assert!(r.violations[0].message.contains("diameter") && r.violations[0].message.contains("annular ring"));
     let r = run(&with(vec![via(10.0, 4.0, "")]));
     assert!(r.violations.is_empty(), "{:#?}", r.violations);
-    let tiny = Item::Via(Via { pos: p(10.0, 4.0), diameter: mm(0.6), drill: mm(0.15), from_layer: TOP_COPPER, to_layer: BOTTOM_COPPER, net: String::new() });
+    let tiny = Item::Via(Via { locked: false, pos: p(10.0, 4.0), diameter: mm(0.6), drill: mm(0.15), from_layer: TOP_COPPER, to_layer: BOTTOM_COPPER, net: String::new() });
     let r = run(&with(vec![tiny]));
     assert!(codes(&r.violations).contains(&"hole-size"), "{:#?}", r.violations);
     // Pad holes: 0.8 mm THT drill against a 0.5 mm maximum.
@@ -219,7 +219,7 @@ fn unrouted_missing_footprint_and_rule_errors() {
 fn keepout_areas() {
     let keepout = |l: LayerId| {
         let outer = vec![p(8.0, 3.0), p(12.0, 3.0), p(12.0, 4.5), p(8.0, 4.5)];
-        Item::Zone(Zone {
+        Item::Zone(Zone { locked: false,
             teardrop: false,
             outline: outer,
             layer: l,

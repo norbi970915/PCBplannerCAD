@@ -91,14 +91,14 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
                     notes.info("zero-length or zero-width tracks skipped", "");
                     continue;
                 }
-                copper_items.push(Item::Track(Track { a, b, width, layer, net: net_of(l, &net_table) }));
+                copper_items.push(Item::Track(Track { locked: false, a, b, width, layer, net: net_of(l, &net_table) }));
             }
             "arc" => {
                 let (Some(s), Some(m), Some(e)) = (Y.child_pt(l, "start"), Y.child_pt(l, "mid"), Y.child_pt(l, "end")) else { continue };
                 let Some(layer) = copper_layer(l.child_str("layer").unwrap_or("")) else { continue };
                 let width = mm(l.child_num("width").unwrap_or(0.0));
                 match arc_from_3pts(s, m, e) {
-                    Some(a) if width > 0 => copper_items.push(Item::ArcTrack(ArcTrack {
+                    Some(a) if width > 0 => copper_items.push(Item::ArcTrack(ArcTrack { locked: false,
                         center: a.center,
                         radius: a.radius,
                         start_angle: a.start_angle,
@@ -109,7 +109,7 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
                     })),
                     // Collinear "arcs" are straight tracks.
                     None if width > 0 && s != e => {
-                        copper_items.push(Item::Track(Track { a: s, b: e, width, layer, net: net_of(l, &net_table) }))
+                        copper_items.push(Item::Track(Track { locked: false, a: s, b: e, width, layer, net: net_of(l, &net_table) }))
                     }
                     _ => notes.info("degenerate arc tracks skipped", ""),
                 }
@@ -336,7 +336,7 @@ fn read_via(l: &List, nets: &HashMap<String, String>, copper: &[LayerId], notes:
     if l.has_atom("micro") || l.has_atom("blind") || l.child_str("type").is_some_and(|t| t != "through") {
         notes.info("blind/buried/micro vias imported with their layer span", "");
     }
-    Some(Item::Via(Via { pos, diameter, drill, from_layer, to_layer, net: net_of(l, nets) }))
+    Some(Item::Via(Via { locked: false, pos, diameter, drill, from_layer, to_layer, net: net_of(l, nets) }))
 }
 
 /// Aligned and orthogonal dimensions; structured format's `height` (Y down) is the negated offset here.
@@ -424,7 +424,7 @@ fn read_zone(l: &List, nets: &HashMap<String, String>, copper: &[LayerId], notes
     let fill = l.child("fill");
     let fnum = |k: &str| fill.and_then(|f| f.child_num(k)).map(mm).unwrap_or(0);
     let remove_islands = fill.and_then(|f| f.child_num("island_removal_mode")).unwrap_or(0.0) as i64 != 1;
-    let base = Zone {
+    let base = Zone { locked: false,
         outline,
         layer: layers[0],
         net: if keepout { String::new() } else { net_of(l, nets) },

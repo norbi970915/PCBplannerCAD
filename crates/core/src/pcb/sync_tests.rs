@@ -254,9 +254,9 @@ fn renames_nets_with_unchanged_pads_including_copper() {
     let doc = board(vec![
         placed("R1", "10k", "Lib/R_0603", 0.0, &[("1", "GND"), ("2", old)]),
         placed("R2", "10k", "Lib/R_0603", 5.0, &[("1", old), ("2", "GND")]),
-        Item::Track(Track { a: Point::new(mm(2.0), mm(10.0)), b: Point::new(mm(5.0), mm(10.0)), width: mm(0.2), layer: layer::TOP_COPPER, net: old.into() }),
-        Item::Via(Via { pos: Point::new(mm(3.0), mm(10.0)), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: old.into() }),
-        Item::Zone(Zone {
+        Item::Track(Track { locked: false, a: Point::new(mm(2.0), mm(10.0)), b: Point::new(mm(5.0), mm(10.0)), width: mm(0.2), layer: layer::TOP_COPPER, net: old.into() }),
+        Item::Via(Via { locked: false, pos: Point::new(mm(3.0), mm(10.0)), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: old.into() }),
+        Item::Zone(Zone { locked: false,
             teardrop: false,
             outline: vec![Point::new(0, 0), Point::new(mm(5.0), 0), Point::new(mm(5.0), mm(5.0))],
             layer: layer::BOTTOM_COPPER,
@@ -272,7 +272,7 @@ fn renames_nets_with_unchanged_pads_including_copper() {
             remove_islands: true,
             fill: vec![],
         }),
-        Item::Track(Track { a: Point::new(0, 0), b: Point::new(mm(1.0), 0), width: mm(0.2), layer: layer::TOP_COPPER, net: "GND".into() }),
+        Item::Track(Track { locked: false, a: Point::new(0, 0), b: Point::new(mm(1.0), 0), width: mm(0.2), layer: layer::TOP_COPPER, net: "GND".into() }),
         Item::Board(settings),
     ]);
     let plan = plan(&c, &doc, &resolver);

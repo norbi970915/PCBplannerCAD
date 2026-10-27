@@ -229,6 +229,7 @@ export interface PlacedFootprintItem {
 }
 
 export interface TrackItem {
+  locked?: boolean;
   kind: "track";
   a: Point;
   b: Point;
@@ -238,6 +239,7 @@ export interface TrackItem {
 }
 
 export interface ArcTrackItem {
+  locked?: boolean;
   kind: "arcTrack";
   center: Point;
   radius: Coord;
@@ -249,6 +251,7 @@ export interface ArcTrackItem {
 }
 
 export interface ViaItem {
+  locked?: boolean;
   kind: "via";
   pos: Point;
   diameter: Coord;
@@ -266,6 +269,7 @@ export interface ZonePolygon {
 }
 
 export interface ZoneItem {
+  locked?: boolean;
   kind: "zone";
   outline: Point[];
   layer: LayerId;
@@ -338,6 +342,7 @@ export interface ViaType {
 }
 
 export interface BoardSettings {
+  autoTeardrops?: TeardropOptions | null;
   stackup: { layers: StackLayer[] };
   viaTypes?: ViaType[];
   rules: Rule[];
@@ -592,6 +597,7 @@ export interface Update {
 }
 
 export type Command =
+  | { op: "editPours"; items: IdItem[]; refill: ItemId[] | null }
   | { op: "add"; items: Item[] }
   | { op: "delete"; ids: ItemId[] }
   | { op: "move"; ids: ItemId[]; dx: Coord; dy: Coord }

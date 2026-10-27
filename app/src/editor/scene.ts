@@ -1,3 +1,4 @@
+import { BoundsIndex } from "./boundsIndex";
 // Per-document cache of drawn primitives plus hit testing and bounds.
 
 import type { Item, ItemId, Point } from "../core/types";
@@ -74,6 +75,7 @@ export interface HighlightState {
 
 export class Scene {
   private entries = new Map<ItemId, Entry>();
+  private index = new BoundsIndex();
   private ctxSignature: unknown[] = [];
   private pourFills: boolean | undefined;
   private nextStyle = 1;
@@ -81,8 +83,10 @@ export class Scene {
 
   /** Syncs with the document; only changed items are redrawn. */
   update(items: ReadonlyMap<ItemId, Item>, ctx: DrawContext) {
+    let boundsChanged = false;
     const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.view];
     if (sig.some((v, i) => v !== this.ctxSignature[i])) {
+      boundsChanged = true;
       this.entries.clear();
       this.nextStyle = 1;
       this.ctxSignature = sig;
@@ -90,13 +94,15 @@ export class Scene {
     // Showing or hiding pour fills only changes zones.
     const fillsChanged = ctx.pourFills !== this.pourFills;
     this.pourFills = ctx.pourFills;
-    for (const id of this.entries.keys()) if (!items.has(id)) this.entries.delete(id);
+    for (const id of this.entries.keys()) if (!items.has(id)) { this.entries.delete(id); boundsChanged = true; }
     for (const [id, item] of items) {
       const e = this.entries.get(id);
       if (e && e.item === item && !(fillsChanged && item.kind === "zone")) continue;
+      boundsChanged = true;
       const prims = drawItem(item, ctx);
       this.entries.set(id, { item, prims, bounds: primBounds(prims), style: e?.style ?? this.nextStyle++ });
     }
+    if (boundsChanged) this.index.rebuild([...this.entries].map(([id,e])=>({id,bounds:e.bounds})));
   }
 
   prims(id: ItemId): Prims | undefined {
@@ -134,7 +140,8 @@ export class Scene {
   pick(p: Point, tol: number, accept: (item: Item) => boolean = () => true): ItemId | null {
     let best: { id: ItemId; score: number; background: boolean } | null = null;
     const probe: Bounds = { minX: p.x - tol, minY: p.y - tol, maxX: p.x + tol, maxY: p.y + tol };
-    for (const [id, e] of this.entries) {
+    for (const id of this.index.query(probe).sort((a,b)=>this.entries.get(a)!.style-this.entries.get(b)!.style)) {
+      const e = this.entries.get(id)!;
       if (!overlaps(e.bounds, probe) || !accept(e.item)) continue;
       let score = this.distance(id, p);
       if (score > tol) {
@@ -153,7 +160,8 @@ export class Scene {
 
   inRect(r: Bounds, touching: boolean, accept: (item: Item) => boolean = () => true): ItemId[] {
     const out: ItemId[] = [];
-    for (const [id, e] of this.entries) {
+    for (const id of this.index.query(r).sort((a,b)=>this.entries.get(a)!.style-this.entries.get(b)!.style)) {
+      const e = this.entries.get(id)!;
       if (!accept(e.item) || !Number.isFinite(e.bounds.minX)) continue;
       if (!touching) {
         if (contains(r, e.bounds)) out.push(id);

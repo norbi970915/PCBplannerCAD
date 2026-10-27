@@ -35,13 +35,18 @@ const OUTLINE_TOLERANCE: Coord = 10_000;
 /// Zones are poured from the highest priority down, so each zone sees the
 /// fresh fills of the zones that outrank it. Results are in item-id order.
 pub fn fill_all(doc: &Document) -> Vec<(ItemId, Vec<ZonePolygon>)> {
+    fill_subset(doc, None)
+}
+
+/// Refill a dependency-closed set in priority order, leaving unrelated pours untouched.
+pub fn fill_subset(doc: &Document, ids: Option<&std::collections::HashSet<ItemId>>) -> Vec<(ItemId, Vec<ZonePolygon>)> {
     let fallback = BoardSettings::default();
     let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
     let ctx = Ctx::new(doc, board);
     let mut zones: Vec<(ItemId, &Zone)> = doc
         .items()
         .filter_map(|(id, i)| match i {
-            Item::Zone(z) if !z.keepout => Some((id, z)),
+            Item::Zone(z) if !z.keepout && ids.is_none_or(|set| set.contains(&id)) => Some((id, z)),
             _ => None,
         })
         .collect();

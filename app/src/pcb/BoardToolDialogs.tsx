@@ -246,7 +246,10 @@ export function StatsDialog({ docId }: { docId: string }) {
 export function TeardropDialog({ docId }: { docId: string }) {
   const doc = useEditor((s) => s.docs[docId]);
   const units = useEditor((s) => s.units);
-  const [opts, setOpts] = useState<TeardropOptions>({
+  const board = [...doc.items].find(([,item])=>item.kind==="board");
+  const savedOptions = board?.[1].kind==="board" ? board[1].autoTeardrops : null;
+  const [automatic,setAutomatic]=useState(!!savedOptions);
+  const [opts, setOpts] = useState<TeardropOptions>(savedOptions ?? {
     vias: true,
     pthPads: true,
     smdPads: false,
@@ -270,7 +273,7 @@ export function TeardropDialog({ docId }: { docId: string }) {
   const set = (p: Partial<TeardropOptions>) => setOpts({ ...opts, ...p });
   const commit = async (remove: boolean) => {
     if (!plan) return;
-    if (await execute(docId, { op: "route", delete: plan.delete, add: remove ? [] : plan.add })) {
+    if (await execute(docId, { op: "route", delete: automatic && !remove ? [] : plan.delete, add: remove || automatic ? [] : plan.add, replace: board ? [{id:board[0],item:{...board[1],autoTeardrops:!remove && automatic ? opts : null} as Item}] : [] })) {
       scheduleAnalysis(docId, 0);
       toast.success(remove ? `Removed ${existing} teardrops` : `${plan.add.length} teardrops (${plan.vias} on vias, ${plan.pads} on pads)`);
       close();
@@ -295,6 +298,7 @@ export function TeardropDialog({ docId }: { docId: string }) {
     >
       <div className="grid gap-3">
         <div className="grid">
+          <Check label="Update automatically after routing and connected moves" checked={automatic} onChange={setAutomatic} />
           <Check label="Vias" checked={opts.vias} onChange={(vias) => set({ vias })} count={plan?.vias} />
           <Check label="Through-hole pads" checked={opts.pthPads} onChange={(pthPads) => set({ pthPads })} />
           <Check label="SMD pads (round or near-square)" checked={opts.smdPads} onChange={(smdPads) => set({ smdPads })} />

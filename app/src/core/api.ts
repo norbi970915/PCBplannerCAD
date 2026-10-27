@@ -135,7 +135,7 @@ export const api = {
   pcbDrcNear: (id: string, items: ItemId[]) => invoke<DrcViolation[]>("pcb_drc_near", { id, items }),
   pcbRepour: (id: string, zone: ItemId | null) => invoke<Update>("pcb_repour", { id, zone }),
   /** Moving footprints with their tracks kept connected, as a `route` command plan. */
-  pcbDragFootprints: (id: string, req: { ids: ItemId[]; delta: Point; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
+  pcbDragFootprints: (id: string, req: { ids: ItemId[]; delta: Point; angle?: number; flipped?: boolean; center?: Point; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
     invoke<{ replace: IdItem[]; delete: ItemId[]; add: Item[]; rerouted: number; blocked: number }>("pcb_drag_footprints", { id, req }),
   /** Cleanup Tracks & Vias plan; commit it as a `route` command. */
   /** Teardrop regeneration plan (replaces all teardrops); commit it as a `route` command. */

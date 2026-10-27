@@ -174,7 +174,7 @@ fn zone(n: Node<'_, '_>, layer: LayerId, net: &str, thermal_gap: Coord, stats: &
     let rank = num_or(n, "rank", 1.0).round().clamp(0.0, 7.0) as i32;
     let width = coord(n, "width").max(0);
     stats.zones += 1;
-    Some(Zone {
+    Some(Zone { locked: false,
         teardrop: false,
         outline,
         layer,
@@ -204,11 +204,11 @@ fn track(n: Node<'_, '_>, layer: LayerId, net: &str, stats: &mut Stats) -> Optio
     match wire_item(a, b, curve, width, layer)? {
         Item::Line(l) => {
             stats.tracks += 1;
-            Some(Item::Track(Track { a: l.a, b: l.b, width, layer, net: net.to_string() }))
+            Some(Item::Track(Track { locked: false, a: l.a, b: l.b, width, layer, net: net.to_string() }))
         }
         Item::Arc(arc) => {
             stats.arcs += 1;
-            Some(Item::ArcTrack(ArcTrack {
+            Some(Item::ArcTrack(ArcTrack { locked: false,
                 center: arc.center,
                 radius: arc.radius,
                 start_angle: arc.start_angle,
@@ -262,7 +262,7 @@ impl Ctx<'_> {
                 }
                 let (a, b) = via_extent(attr(e, "extent"));
                 self.stats.vias += 1;
-                out.push(Item::Via(Via {
+                out.push(Item::Via(Via { locked: false,
                     pos: point(e, "x", "y"),
                     diameter,
                     drill,
@@ -292,7 +292,7 @@ impl Ctx<'_> {
                     let outline = if tag == "polygon" { polygon_points(e) } else { rect_outline(e) };
                     if outline.len() >= 3 {
                         let cu = if l == 41 { layer::TOP_COPPER } else { layer::BOTTOM_COPPER };
-                        out.push(Item::Zone(Zone {
+                        out.push(Item::Zone(Zone { locked: false,
                             teardrop: false,
                             outline,
                             layer: cu,

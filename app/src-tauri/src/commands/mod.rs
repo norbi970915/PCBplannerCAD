@@ -19,11 +19,6 @@ pub type Res<T> = Result<T, String>;
 
 #[track_caller]
 pub fn lock<'a>(state: &'a State<AppState>) -> MutexGuard<'a, Workspace> {
-    // TEMP timing
-    let t = std::time::Instant::now();
     // Commands validate before mutating, so a poisoned lock is safe to reuse.
-    let g = state.workspace.lock().unwrap_or_else(|e| e.into_inner());
-    let w = t.elapsed();
-    eprintln!("TIMING lock at {} waited {:?}", std::panic::Location::caller(), w);
-    g
+    state.workspace.lock().unwrap_or_else(|e| e.into_inner())
 }

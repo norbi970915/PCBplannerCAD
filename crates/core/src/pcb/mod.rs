@@ -28,3 +28,6 @@ pub mod sync;
 
 pub use board::{BoardSettings, NetClass, Rule, RuleKind, Stackup};
 pub use items::{ArcTrack, PlacedFootprint, Side, Track, Via, Zone, ZoneConnect, ZonePolygon};
+
+#[cfg(test)]
+mod editing_tests;

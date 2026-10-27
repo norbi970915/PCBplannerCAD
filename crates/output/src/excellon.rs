@@ -150,8 +150,8 @@ mod tests {
             hole_pad("MH", 10.0, PadKind::Npth, (3.2, 3.2), 0.0),
         ]);
         let mut items = vec![place("J1", "L/J", Point::new(mm(10.0), mm(20.0)), 90.0)];
-        items.push(Item::Via(Via { pos: Point::new(1_234_500, -1_234_500), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "GND".into() }));
-        items.push(Item::Via(Via { pos: Point::new(1_234_499, 7), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: String::new() }));
+        items.push(Item::Via(Via { locked: false, pos: Point::new(1_234_500, -1_234_500), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "GND".into() }));
+        items.push(Item::Via(Via { locked: false, pos: Point::new(1_234_499, 7), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: String::new() }));
         board_doc(items, &[("L/J", fp)])
     }
 

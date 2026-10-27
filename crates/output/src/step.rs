@@ -360,7 +360,7 @@ mod tests {
     }
 
     fn via(x: f64, y: f64, drill: f64) -> Item {
-        Item::Via(Via { pos: Point::new(mm(x), mm(y)), diameter: mm(drill + 0.3), drill: mm(drill), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: String::new() })
+        Item::Via(Via { locked: false, pos: Point::new(mm(x), mm(y)), diameter: mm(drill + 0.3), drill: mm(drill), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: String::new() })
     }
 
     fn pad(number: &str, x: f64, y: f64, kind: PadKind, drill: Option<(f64, f64)>) -> Item {

@@ -222,7 +222,7 @@ impl<'a> World<'a> {
                         key,
                         kind: ObKind::Track,
                         id: Some(id),
-                        track: Some(t.clone()),
+                        track: (!t.locked).then(|| t.clone()),
                     });
                 }
                 Item::ArcTrack(a) if a.layer == layer_id => {

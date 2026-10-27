@@ -36,6 +36,8 @@ mod geom;
 mod search;
 #[path = "router_shove.rs"]
 mod shove;
+#[path = "router_via.rs"]
+mod via_shove;
 #[path = "router_tune.rs"]
 mod tune;
 #[path = "router_world.rs"]
@@ -175,7 +177,7 @@ fn walk(world: &World, probe: &Probe, start: Point, end: Point, corner: CornerSt
 }
 
 fn tracks_of(pts: &[Point], width: Coord, layer: LayerId, net: &str) -> Vec<Track> {
-    pts.windows(2).filter(|w| w[0] != w[1]).map(|w| Track { a: w[0], b: w[1], width, layer, net: net.to_string() }).collect()
+    pts.windows(2).filter(|w| w[0] != w[1]).map(|w| Track { locked: false, a: w[0], b: w[1], width, layer, net: net.to_string() }).collect()
 }
 
 fn moved_items(moved: Vec<(ItemId, Vec<Track>)>) -> Vec<IdItem> {
@@ -192,6 +194,13 @@ fn routing_ignored(doc: &Document, ignored: &[ItemId]) -> Vec<ItemId> {
 
 /// Routes one track from `req.start` toward `req.end`.
 pub fn route(doc: &Document, req: &RouteRequest) -> RouteResult {
+    if req.mode == RouteMode::Shove {
+        if let Some(result) = via_shove::route(doc, req) { return result; }
+    }
+    route_base(doc, req)
+}
+
+fn route_base(doc: &Document, req: &RouteRequest) -> RouteResult {
     if req.mode == RouteMode::Ignore {
         let path = corner_path(req.start, req.end, req.corner, req.posture_flip);
         return RouteResult { tracks: tracks_of(&path, req.width, req.layer, &req.net), reached: true, moved: vec![], blocked_at: None, message: String::new() };
@@ -328,7 +337,7 @@ pub fn via_for(doc: &Document, net: &str, pos: Point) -> Via {
     let board = world::board_of(doc);
     let (diameter, drill, _) = RuleSet::new(board).via_style(&Obj::new(ObjKind::Via, net, None));
     let cu = board.stackup.copper_layers();
-    Via {
+    Via { locked: false,
         pos,
         diameter,
         drill,
@@ -343,7 +352,7 @@ pub fn via_for(doc: &Document, net: &str, pos: Point) -> Via {
 pub fn via_between(doc: &Document, net: &str, pos: Point, a: LayerId, b: LayerId) -> Via {
     let board = world::board_of(doc);
     match board.via_type_between(a, b) {
-        Some(t) => Via { pos, diameter: t.diameter, drill: t.drill, from_layer: t.from_layer, to_layer: t.to_layer, net: net.to_string() },
+        Some(t) => Via { locked: false, pos, diameter: t.diameter, drill: t.drill, from_layer: t.from_layer, to_layer: t.to_layer, net: net.to_string() },
         None => via_for(doc, net, pos),
     }
 }

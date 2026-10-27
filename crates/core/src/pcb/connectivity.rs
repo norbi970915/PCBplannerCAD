@@ -651,16 +651,16 @@ pub(crate) mod fixtures {
     }
 
     pub fn track(a: (f64, f64), b: (f64, f64), w: f64, l: LayerId, net: &str) -> Item {
-        Item::Track(Track { a: p(a.0, a.1), b: p(b.0, b.1), width: mm(w), layer: l, net: net.into() })
+        Item::Track(Track { locked: false, a: p(a.0, a.1), b: p(b.0, b.1), width: mm(w), layer: l, net: net.into() })
     }
 
     pub fn via(x: f64, y: f64, net: &str) -> Item {
-        Item::Via(Via { pos: p(x, y), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: net.into() })
+        Item::Via(Via { locked: false, pos: p(x, y), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: net.into() })
     }
 
     pub fn zone(x0: f64, y0: f64, x1: f64, y1: f64, l: LayerId, net: &str) -> Item {
         let outer = vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)];
-        Item::Zone(Zone {
+        Item::Zone(Zone { locked: false,
             teardrop: false,
             outline: outer.clone(),
             layer: l,

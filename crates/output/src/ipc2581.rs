@@ -1086,9 +1086,9 @@ mod tests {
         items.push(mk("R1", 10.0, Side::Top, &[("1", "GND"), ("2", "VCC")], "Lib/R 0603"));
         items.push(mk("R2", 20.0, Side::Bottom, &[("1", "GND"), ("2", "SIG")], "Lib/R 0603"));
         items.push(mk("J1", 30.0, Side::Top, &[("1", "VCC")], "Lib/Header"));
-        items.push(Item::Track(Track { a: Point::new(nm(10.0), nm(10.0)), b: Point::new(nm(20.0), nm(10.0)), width: nm(0.25), layer: layer::TOP_COPPER, net: "GND".into() }));
-        items.push(Item::Via(Via { pos: Point::new(nm(15.0), nm(12.0)), diameter: nm(0.6), drill: nm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "TRACKONLY".into() }));
-        items.push(Item::Zone(Zone {
+        items.push(Item::Track(Track { locked: false, a: Point::new(nm(10.0), nm(10.0)), b: Point::new(nm(20.0), nm(10.0)), width: nm(0.25), layer: layer::TOP_COPPER, net: "GND".into() }));
+        items.push(Item::Via(Via { locked: false, pos: Point::new(nm(15.0), nm(12.0)), diameter: nm(0.6), drill: nm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "TRACKONLY".into() }));
+        items.push(Item::Zone(Zone { locked: false,
             teardrop: false,
             outline: vec![Point::new(0, 0), Point::new(nm(5.0), 0), Point::new(nm(5.0), nm(5.0))],
             layer: layer::BOTTOM_COPPER,
@@ -1181,7 +1181,7 @@ mod tests {
     fn falls_back_to_copper_extents_without_outline() {
         let doc = Document::from_item_list(
             DocKind::Pcb,
-            [Item::Track(Track { a: Point::new(0, 0), b: Point::new(nm(10.0), 0), width: nm(0.2), layer: layer::TOP_COPPER, net: String::new() })],
+            [Item::Track(Track { locked: false, a: Point::new(0, 0), b: Point::new(nm(10.0), 0), width: nm(0.2), layer: layer::TOP_COPPER, net: String::new() })],
         );
         let xml = write_ipc2581(&doc, "x").unwrap();
         check_xml(&xml);

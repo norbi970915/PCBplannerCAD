@@ -25,7 +25,7 @@ fn board_items() -> Vec<Item> {
 }
 
 fn zone(outline: Vec<Point>, net: &str) -> Zone {
-    Zone {
+    Zone { locked: false,
             teardrop: false,
         outline,
         layer: layer::TOP_COPPER,
@@ -44,11 +44,11 @@ fn zone(outline: Vec<Point>, net: &str) -> Zone {
 }
 
 fn track(a: Point, b: Point, w: f64, net: &str) -> Item {
-    Item::Track(Track { a, b, width: mm(w), layer: layer::TOP_COPPER, net: net.into() })
+    Item::Track(Track { locked: false, a, b, width: mm(w), layer: layer::TOP_COPPER, net: net.into() })
 }
 
 fn via(pos: Point, net: &str) -> Item {
-    Item::Via(Via { pos, diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: net.into() })
+    Item::Via(Via { locked: false, pos, diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: net.into() })
 }
 
 fn doc_with(items: Vec<Item>) -> Document {
@@ -262,7 +262,7 @@ fn zone_extra_clearance_wins_when_larger() {
 #[test]
 fn arc_track_is_cleared() {
     let mut items = board_items();
-    items.push(Item::ArcTrack(ArcTrack { center: p(25.0, 15.0), radius: mm(5.0), start_angle: 0.0, sweep: 180.0, width: mm(0.25), layer: layer::TOP_COPPER, net: "SIG".into() }));
+    items.push(Item::ArcTrack(ArcTrack { locked: false, center: p(25.0, 15.0), radius: mm(5.0), start_angle: 0.0, sweep: 180.0, width: mm(0.25), layer: layer::TOP_COPPER, net: "SIG".into() }));
     items.push(Item::Zone(zone(rect(2.0, 2.0, 48.0, 28.0), "GND")));
     let doc = doc_with(items);
     let fill = fill_zone(&doc, first_zone(&doc));
@@ -642,7 +642,7 @@ fn perf_large_board() {
         let b = Point::new(a.x + mm(dx), a.y + mm(dy));
         let layer = if i % 3 == 0 { layer::BOTTOM_COPPER } else { layer::TOP_COPPER };
         let net = if i % 10 == 0 { "GND".to_string() } else { format!("T{}", i % 97) };
-        items.push(Item::Track(Track { a, b, width: mm(0.25), layer, net }));
+        items.push(Item::Track(Track { locked: false, a, b, width: mm(0.25), layer, net }));
     }
     for i in 0..200 {
         items.push(via(p(3.0 + rnd() * 94.0, 3.0 + rnd() * 94.0), if i % 4 == 0 { "GND" } else { "SIG" }));

@@ -67,7 +67,7 @@ For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/PC
 
 With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design.
 
-For editor regressions run `pnpm.cmd -C app test:editor`. See [latest progress and remaining work](docs/PROGRESS-2026-10-27-1544.md) for continuation on another computer. The [next feature priorities](docs/NEXT-FEATURES-2026-10-27.md) describe the proposed development order and implementation starting points.
+For editor regressions run `pnpm.cmd -C app test:editor`. See [latest progress and remaining work](docs/PROGRESS-2026-10-27-EDITING.md) for continuation on another computer. The [next feature priorities](docs/NEXT-FEATURES-2026-10-27.md) describe the proposed development order and implementation starting points.
 
 ## Bringing designs in
 
@@ -111,3 +111,5 @@ Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb)
 | 3D view, fabrication outputs, print to PDF | `3`, `F F`, `Ctrl+P` |
 
 Board selection filters are in the right **View** tab and stay available with an active selection. Drag empty space left to right to select enclosed objects, or right to left to select touching objects. Ctrl+click toggles individual objects; Shift adds, Ctrl toggles, and Ctrl+Shift subtracts box selections.
+
+**PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Tools → Teardrops can persist automatic updates after routing and connected moves.

@@ -61,7 +61,7 @@ fn run(ws: &mut Workspace, id: &str, cmd: Command) -> Res<DocUpdate> {
 }
 
 /// Recomputes pour fills (one zone, or all) as a single undo step.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_repour(state: State<AppState>, id: String, zone: Option<ItemId>) -> Res<DocUpdate> {
     let mut ws = lock(&state);
     let doc = pcb_doc(&ws, &id)?;
@@ -82,13 +82,13 @@ pub fn pcb_repour(state: State<AppState>, id: String, zone: Option<ItemId>) -> R
     run(&mut ws, &id, Command::ReplaceMany { items })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_route(state: State<AppState>, id: String, req: router::RouteRequest) -> Res<router::RouteResult> {
     let ws = lock(&state);
     Ok(router::route(pcb_doc(&ws, &id)?, &req))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_route_pair(state: State<AppState>, id: String, req: router::RouteRequest, neg_net: String, gap: Coord) -> Res<(router::RouteResult, router::RouteResult)> {
     let ws = lock(&state);
     Ok(router::route_diff_pair(pcb_doc(&ws, &id)?, &req, &neg_net, gap))
@@ -252,14 +252,14 @@ pub fn pcb_panelize(state: State<AppState>, id: String, spec: pcbplannercad_core
 }
 
 /// Plans dragging footprints with their routing kept connected; the frontend commits it as a `route` command.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_drag_footprints(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::DragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
     let ws = lock(&state);
     Ok(pcbplannercad_core::pcb::drag::drag_footprints(pcb_doc(&ws, &id)?, &req))
 }
 
 /// Plans Cleanup Tracks & Vias; the frontend commits it as a `route` command.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_cleanup(state: State<AppState>, id: String, opts: pcbplannercad_core::pcb::cleanup::CleanupOptions) -> Res<pcbplannercad_core::pcb::cleanup::CleanupResult> {
     let ws = lock(&state);
     Ok(pcbplannercad_core::pcb::cleanup::cleanup(pcb_doc(&ws, &id)?, &opts))
@@ -273,14 +273,14 @@ pub fn pcb_stitch(state: State<AppState>, id: String, req: pcbplannercad_core::p
 }
 
 /// Plans regenerating every teardrop; the frontend commits it as a `route` command.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_teardrops(state: State<AppState>, id: String, opts: pcbplannercad_core::pcb::teardrop::TeardropOptions) -> Res<pcbplannercad_core::pcb::teardrop::TeardropPlan> {
     let ws = lock(&state);
     Ok(pcbplannercad_core::pcb::teardrop::plan(pcb_doc(&ws, &id)?, &opts))
 }
 
 /// Plans moving several footprints, each by its own offset, with their routing kept connected (Pack & Move).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_drag_each(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::MultiDragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
     let ws = lock(&state);
     Ok(pcbplannercad_core::pcb::drag::drag_each(pcb_doc(&ws, &id)?, &req))
