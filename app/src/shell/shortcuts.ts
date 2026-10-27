@@ -83,6 +83,9 @@ function isTextInput(target: EventTarget | null): boolean {
 }
 
 export function installShortcuts(): () => void {
+  // Built up front: the prefix check below runs before any resolve() would build it,
+  // so the first P after start-up would otherwise not open the Place menu.
+  if (!bindings) build();
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented || isTextInput(e.target) || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
     if (document.querySelector("[role=dialog]") || useContextMenu.getState().at) return;

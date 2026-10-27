@@ -280,6 +280,8 @@ export interface ZoneItem {
   keepout: boolean;
   removeIslands: boolean;
   fill: ZonePolygon[];
+  /** Teardrop copper (Tools ▸ Teardrops), not a user pour. */
+  teardrop?: boolean;
 }
 
 export type StackKind = "copper" | "dielectric" | "solderMask" | "silkscreen" | "paste";
@@ -326,14 +328,41 @@ export interface DiffPair {
   negative: string;
 }
 
+/** A via the board may use; routing picks it for matching layer changes and DRC accepts it. */
+export interface ViaType {
+  name: string;
+  fromLayer: LayerId;
+  toLayer: LayerId;
+  diameter: Coord;
+  drill: Coord;
+}
+
 export interface BoardSettings {
   stackup: { layers: StackLayer[] };
+  viaTypes?: ViaType[];
   rules: Rule[];
   netClasses: NetClass[];
   diffPairs: DiffPair[];
   origin: Point;
   maskColor: string;
   silkColor: string;
+}
+
+/** A measured distance (see crates/core/src/pcb/dimension.rs). */
+export interface DimensionItem {
+  kind: "dimension";
+  a: Point;
+  b: Point;
+  /** Distance of the dimension line from `a` along the left normal of the measuring direction. */
+  offset: Coord;
+  /** Measure along `angle` (0 = horizontal, 90 = vertical) instead of along a→b. */
+  orthogonal: boolean;
+  angle: number;
+  layer: LayerId;
+  width: Coord;
+  textHeight: Coord;
+  units: "mm" | "mil" | "inch";
+  precision: number;
 }
 
 export interface BoardItem extends BoardSettings {
@@ -363,6 +392,7 @@ export type Item =
   | ArcTrackItem
   | ViaItem
   | ZoneItem
+  | DimensionItem
   | BoardItem;
 
 export type ItemKind = Item["kind"];
@@ -570,7 +600,7 @@ export type Command =
   | { op: "replace"; id: ItemId; item: Item }
   | { op: "replaceMany"; items: IdItem[] }
   | { op: "change"; delete: ItemId[]; add: Item[] }
-  | { op: "route"; delete: ItemId[]; add: Item[] }
+  | { op: "route"; delete: ItemId[]; add: Item[]; replace?: IdItem[] }
   | { op: "editPolygon"; id: ItemId; original: Point[]; outlines: Point[][] };
 
 export interface LibInfo {
@@ -663,4 +693,36 @@ export interface Compiled {
 export interface ReportLine {
   warning: boolean;
   text: string;
+}
+
+/** Tools ▸ Cleanup Tracks & Vias: what to remove or merge. */
+export interface CleanupOptions {
+  zeroLength: boolean;
+  duplicates: boolean;
+  dangling: boolean;
+  unconnectedVias: boolean;
+  mergeCollinear: boolean;
+}
+
+export interface CleanupResult {
+  delete: ItemId[];
+  replace: IdItem[];
+  zeroLength: number;
+  duplicates: number;
+  dangling: number;
+  vias: number;
+  merged: number;
+}
+
+/** Tools ▸ Teardrops. */
+export interface TeardropOptions {
+  vias: boolean;
+  pthPads: boolean;
+  smdPads: boolean;
+  lengthRatio: number;
+  widthRatio: number;
+  maxLength: Coord;
+  maxWidth: Coord;
+  curved: boolean;
+  maxTrackRatio: number;
 }

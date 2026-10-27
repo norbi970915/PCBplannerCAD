@@ -12,6 +12,7 @@ fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
 }
 fn zone(outline: Vec<Point>, priority: i32) -> Item {
     Item::Zone(Zone {
+            teardrop: false,
         outline,
         layer: layer::TOP_COPPER,
         net: "GND".into(),

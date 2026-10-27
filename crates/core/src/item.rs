@@ -529,6 +529,7 @@ pub enum Item {
     ArcTrack(ArcTrack),
     Via(Via),
     Zone(Zone),
+    Dimension(crate::pcb::dimension::Dimension),
     /// Singleton board settings (stack, rules, net classes) of a PCB document.
     Board(BoardSettings),
 }
@@ -566,6 +567,7 @@ impl Item {
             Item::ArcTrack(_) => "arcTrack",
             Item::Via(_) => "via",
             Item::Zone(_) => "zone",
+            Item::Dimension(_) => "dimension",
             Item::Board(_) => "board",
         }
     }
@@ -621,6 +623,10 @@ impl Item {
                 check(v.diameter > v.drill, "via diameter must exceed its drill")
             }
             Item::Zone(z) => check(z.outline.len() >= 3, "zone outline needs at least three points"),
+            Item::Dimension(d) => {
+                check(d.a != d.b, "dimension has zero length")?;
+                check(d.text_height > 0 && d.width >= 0, "dimension text height must be positive")
+            }
             Item::Junction(_) | Item::NoConnect(_) | Item::Board(_) => Ok(()),
         }
     }
@@ -650,6 +656,7 @@ impl Item {
             Item::ArcTrack(x) => Item::ArcTrack(ArcTrack { center: t(x.center), ..x }),
             Item::Via(v) => Item::Via(Via { pos: t(v.pos), ..v }),
             Item::Zone(z) => Item::Zone(map_zone(z, t)),
+            Item::Dimension(d) => Item::Dimension(crate::pcb::dimension::Dimension { a: t(d.a), b: t(d.b), ..d }),
             Item::Board(b) => Item::Board(b),
         }
     }
@@ -699,6 +706,7 @@ impl Item {
             Item::ArcTrack(x) => Item::ArcTrack(ArcTrack { center: r(x.center), start_angle: ang(x.start_angle), ..x }),
             Item::Via(v) => Item::Via(Via { pos: r(v.pos), ..v }),
             Item::Zone(z) => Item::Zone(map_zone(z, r)),
+            Item::Dimension(d) => Item::Dimension(crate::pcb::dimension::Dimension { a: r(d.a), b: r(d.b), angle: ang(d.angle), ..d }),
             Item::Board(b) => Item::Board(b),
         }
     }
@@ -759,6 +767,8 @@ impl Item {
             Item::ArcTrack(x) => Item::ArcTrack(ArcTrack { center: m(x.center), start_angle: normalize_deg(180.0 - x.start_angle - x.sweep), ..x }),
             Item::Via(v) => Item::Via(Via { pos: m(v.pos), ..v }),
             Item::Zone(z) => Item::Zone(map_zone(z, m)),
+            // The left normal flips with the mirror, so the offset changes sign.
+            Item::Dimension(d) => Item::Dimension(crate::pcb::dimension::Dimension { a: m(d.a), b: m(d.b), angle: flip_angle(d.angle), offset: -d.offset, ..d }),
             Item::Board(b) => Item::Board(b),
         }
     }

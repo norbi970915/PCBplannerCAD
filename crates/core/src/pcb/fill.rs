@@ -56,6 +56,27 @@ pub fn fill_all(doc: &Document) -> Vec<(ItemId, Vec<ZonePolygon>)> {
     out
 }
 
+/// True when a fill outline repeats a vertex: holes joined to the outline by
+/// zero-width slits (the "fractured" form some tools store). Such rings are
+/// valid copper but triangulate very slowly, so they are resolved on load.
+pub fn is_fractured(polys: &[ZonePolygon]) -> bool {
+    polys.iter().any(|p| {
+        let mut seen = std::collections::HashSet::with_capacity(p.outer.len());
+        p.outer.iter().any(|v| !seen.insert((v.x, v.y)))
+    })
+}
+
+/// Resolves fractured fill polygons into outlines with explicit holes; the copper area is unchanged.
+pub fn unfracture(polys: &[ZonePolygon]) -> Vec<ZonePolygon> {
+    let mut out = Vec::with_capacity(polys.len());
+    for p in polys {
+        let fr = Frame::around(&p.outer);
+        let contours: Vec<Contour> = std::iter::once(&p.outer).chain(&p.holes).map(|c| c.iter().map(|v| fr.p(*v)).collect()).collect();
+        out.extend(geom::normalize(&contours, FillRule::EvenOdd).iter().filter(|s| !s.is_empty()).map(|s| to_polygon(&fr, s)));
+    }
+    out
+}
+
 /// Fills one zone in the context of the whole board (other zones' current fills count as obstacles per priority rules).
 pub fn fill_zone(doc: &Document, zone: ItemId) -> Vec<ZonePolygon> {
     let Some(Item::Zone(z)) = doc.get(zone) else { return Vec::new() };

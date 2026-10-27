@@ -439,7 +439,7 @@ fn fanout_through_other_net_pour_refills_and_undoes_atomically() {
     assert!(preview.reached,"{}",preview.message);
     assert_connected(&preview.tracks,q.start,Some(q.end));
     let mut session=Session::with_document(doc);
-    let delta=session.execute(Command::Route{delete:vec![],add:preview.tracks.into_iter().map(Item::Track).collect()}).unwrap();
+    let delta=session.execute(Command::Route{delete:vec![],replace:vec![],add:preview.tracks.into_iter().map(Item::Track).collect()}).unwrap();
     assert!(delta.upserted.iter().any(|entry|matches!(entry.item,Item::Zone(_))),"pour must change in the routing transaction");
     let errors:Vec<_>=drc::run(session.document()).violations.into_iter().filter(|v|matches!(v.code,"short"|"clearance")).collect();
     assert!(errors.is_empty(),"{errors:?}");
@@ -469,6 +469,62 @@ fn failed_routing_commit_does_not_change_document_or_history() {
     use crate::{Command,Session};
     let doc=board(vec![],1.0,1.0);let original=doc.clone();let mut session=Session::with_document(doc);
     let invalid=Item::Track(Track{a:pt(0.0,0.0),b:pt(0.0,0.0),width:0,layer:TOP,net:"S".into()});
-    assert!(session.execute(Command::Route{delete:vec![],add:vec![invalid]}).is_err());
+    assert!(session.execute(Command::Route{delete:vec![],replace:vec![],add:vec![invalid]}).is_err());
     assert_eq!(session.document(),&original);assert!(!session.can_undo());
+}
+
+/// 4-layer board with a Top→Inner 1 microvia and a Top→Inner 2 blind via defined.
+fn hdi_board(items: Vec<Item>) -> Document {
+    use crate::pcb::board::{Stackup, ViaType};
+    let in1 = layer::inner_copper(1);
+    let in2 = layer::inner_copper(2);
+    let settings = BoardSettings {
+        stackup: Stackup::with_copper(4),
+        via_types: vec![
+            ViaType { name: "µvia".into(), from_layer: TOP, to_layer: in1, diameter: mm(0.25), drill: mm(0.1) },
+            ViaType { name: "Blind".into(), from_layer: TOP, to_layer: in2, diameter: mm(0.45), drill: mm(0.2) },
+        ],
+        ..BoardSettings::default()
+    };
+    let mut all = vec![Item::Board(settings)];
+    all.extend(items);
+    Document::from_item_list(DocKind::Pcb, all)
+}
+
+#[test]
+fn via_kinds_follow_the_copper_span_and_drill() {
+    use crate::pcb::board::{Stackup, ViaKind};
+    let s = Stackup::with_copper(4);
+    let (in1, in2) = (layer::inner_copper(1), layer::inner_copper(2));
+    assert_eq!(s.via_kind(TOP, layer::BOTTOM_COPPER, mm(0.3)), ViaKind::Through);
+    assert_eq!(s.via_kind(TOP, in1, mm(0.1)), ViaKind::Micro);
+    assert_eq!(s.via_kind(TOP, in1, mm(0.3)), ViaKind::Blind);
+    assert_eq!(s.via_kind(TOP, in2, mm(0.2)), ViaKind::Blind);
+    assert_eq!(s.via_kind(in1, in2, mm(0.3)), ViaKind::Buried);
+}
+
+#[test]
+fn layer_changes_use_the_smallest_matching_via_type() {
+    let doc = hdi_board(vec![]);
+    let in1 = layer::inner_copper(1);
+    let micro = via_between(&doc, "A", pt(1.0, 1.0), TOP, in1);
+    assert_eq!((micro.from_layer, micro.to_layer, micro.drill), (TOP, in1, mm(0.1)));
+    let blind = via_between(&doc, "A", pt(1.0, 1.0), in1, layer::inner_copper(2));
+    assert_eq!((blind.to_layer, blind.drill), (layer::inner_copper(2), mm(0.2)));
+    // No type reaches Bottom: a through via sized by the rules.
+    let through = via_between(&doc, "A", pt(1.0, 1.0), TOP, layer::BOTTOM_COPPER);
+    assert_eq!((through.from_layer, through.to_layer, through.drill), (TOP, layer::BOTTOM_COPPER, mm(0.3)));
+}
+
+#[test]
+fn drc_accepts_defined_microvias_but_flags_undefined_small_vias() {
+    let in1 = layer::inner_copper(1);
+    let ok = Via { pos: pt(5.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: in1, net: "A".into() };
+    let odd = Via { pos: pt(9.0, 5.0), diameter: mm(0.25), drill: mm(0.1), from_layer: TOP, to_layer: layer::BOTTOM_COPPER, net: "A".into() };
+    let doc = hdi_board(vec![Item::Via(ok), Item::Via(odd)]);
+    let report = crate::pcb::drc::run(&doc);
+    let flagged: Vec<_> = report.violations.iter().filter(|v| v.code == "via-style" || v.code == "hole-size").flat_map(|v| v.items.clone()).collect();
+    let ids: Vec<_> = doc.items().filter(|(_, i)| matches!(i, Item::Via(_))).map(|(id, _)| id).collect();
+    assert!(!flagged.contains(&ids[0]), "the defined microvia is an approved style");
+    assert!(flagged.contains(&ids[1]), "a small through via still violates the via-style rule");
 }

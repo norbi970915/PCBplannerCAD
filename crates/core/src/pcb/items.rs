@@ -137,6 +137,9 @@ pub struct Zone {
     pub remove_islands: bool,
     #[serde(default)]
     pub fill: Vec<ZonePolygon>,
+    /// Teardrop copper joining a track to a pad or via (Tools ▸ Teardrops regenerates these).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub teardrop: bool,
 }
 
 fn default_true() -> bool {

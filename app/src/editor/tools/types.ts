@@ -55,7 +55,7 @@ export interface Tool {
   /** Keyboard while the canvas is active. Return true when handled. */
   key?(env: ToolEnv, key: string, e: KeyboardEvent): boolean;
   /** Esc / right-click. Return true if an operation in progress was cancelled. */
-  cancel(env: ToolEnv): boolean;
+  cancel(env: ToolEnv, source?: "key" | "mouse"): boolean;
   preview?(env: ToolEnv): Item[];
   /** Screen-space marks drawn on top (handles, rubber bands); widths in world units. */
   overlay?(env: ToolEnv): DrawLine[];
@@ -69,4 +69,8 @@ export interface Tool {
   gridSnap?(): boolean;
   /** Called when the tool becomes active / inactive. */
   reset?(): void;
+  /** Middle (1) or right (2) press during an operation, e.g. flip or rotate a dragged part. Return true when handled; otherwise the button pans. */
+  auxPress?(env: ToolEnv, button: 1 | 2, shift: boolean): boolean;
+  /** Attach `ids` to the cursor as a floating move (Pack & Move, new parts from Update PCB). */
+  pickUp?(env: ToolEnv, ids: ItemId[]): void;
 }

@@ -53,16 +53,16 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
     },
     {
       title: "Edit",
-      items: ["edit.undo", "edit.redo", "-", "edit.cut", "edit.copy", "edit.paste", "edit.duplicate", "edit.delete", "-", "edit.rotate", "edit.mirror", "-", "edit.selectAll", "edit.deselectAll"],
+      items: ["edit.undo", "edit.redo", "-", "edit.cut", "edit.copy", "edit.paste", "edit.duplicate", "edit.delete", "-", "edit.rotate", "edit.mirror", { title: "Align / Distribute", items: ["edit.alignLeft", "edit.alignRight", "edit.alignTop", "edit.alignBottom", "-", "edit.alignCenterX", "edit.alignCenterY", "-", "edit.distributeX", "edit.distributeY", "-", "edit.packMove"] }, "-", "edit.selectAll", "edit.deselectAll", "edit.selectConnection", "-", "edit.find", "-", "edit.unroute"],
     },
     {
       title: "View",
       items: ["view.fit", "view.fitSelection", "view.zoomIn", "view.zoomOut", "-", "view.toggleUnits", "view.gridNext", "view.gridPrev", "-", "view.singleLayer", "view.pourFills", "view.layerNext", "view.layerPrev", "-", "view.3d", "view.theme"],
     },
     { title: "Place", items: place },
-    { title: "Design", items: ["design.updatePcb", "-", "design.layerStack", "design.rules", "-", "design.impedance"] },
+    { title: "Design", items: ["design.updatePcb", "-", "design.layerStack", "design.rules", "design.toggleRules", "-", "design.impedance"] },
     { title: "Project", items: ["project.compile", "-", "project.annotate", "project.annotateAll", "-", "project.bom", "project.variants", "-", "project.addSheet", "project.board"] },
-    { title: "Tools", items: ["tools.drc", "tools.measure", "tools.repour", "tools.tune", "tools.clearMarks", "-", "tools.footprintWizard", "tools.symbolWizard", "-", "tools.panelize", "tools.scripts"] },
+    { title: "Tools", items: ["tools.drc", "tools.onlineDrc", "tools.measure", "tools.repour", "tools.tune", "tools.clearMarks", "-", "tools.cleanup", "tools.teardrops", "tools.stitch", "tools.stats", "-", "tools.footprintWizard", "tools.symbolWizard", "-", "tools.panelize", "tools.scripts"] },
     { title: "Window", items: ["window.projects", "window.components", "window.pcb", "window.properties", "window.messages", "-", "window.resetLayout"] },
     { title: "Help", items: ["help.about"] },
   ];

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { readPreference } from "./preferences";
-import { normalizeView, type ViewSettings } from "./view";
+import { normalizeView, type LayerMode, type ViewSettings } from "./view";
 import { L } from "./layers";
 import type {
   AirWire,
@@ -44,7 +44,8 @@ export interface DocState {
   marked: ReadonlySet<ItemId>;
   tool: string;
   activeLayer: LayerId;
-  singleLayer: boolean;
+  /** Shift+S display of non-active layers. */
+  layerMode: LayerMode;
   view: ViewSettings;
   grid: Coord;
   /** Bumped when the whole document is (re)loaded, so views refit. */
@@ -85,6 +86,10 @@ export interface Placement {
   routeMode: "ignore" | "walkaround" | "shove";
   cornerStyle: "diagonal45" | "orthogonal90" | "any";
   trackWidth: Coord | null;
+  /** Moving routed parts: tracks stay connected (free / preserve angles) or are left behind. */
+  moveMode: "disconnect" | "free" | "preserveAngles";
+  /** Other nets' copper in the way of re-routed tracks: ignore, avoid (walk around) or push (shove). */
+  moveViolators: "ignore" | "walkaround" | "shove";
   zonePriority: number;
   /** Footprint being placed on a board. */
   footprint: { key: string; designator: string; value: string; component: string } | null;
@@ -148,6 +153,8 @@ const DEFAULT_PLACEMENT: Placement = {
   routeMode: "walkaround",
   cornerStyle: "diagonal45",
   trackWidth: null,
+  moveMode: "preserveAngles",
+  moveViolators: "shove",
   zonePriority: 0,
   footprint: null,
 };
@@ -165,6 +172,10 @@ interface AppState {
   units: Units;
   /** Draw pour fills; off shows pours as outlines only (a view setting). */
   showPourFills: boolean;
+  /** Design rules on: routing and moves keep clearances (walk around / push). Off: violators are ignored. */
+  drcEnforce: boolean;
+  /** Online DRC: violations refresh automatically after every board change. */
+  onlineDrc: boolean;
   cursor: Point | null;
   pendingKeys: string | null;
   hint: string;
@@ -188,6 +199,8 @@ interface AppState {
   setCompiled: (c: Compiled | null) => void;
   toggleUnits: () => void;
   togglePourFills: () => void;
+  toggleDrcEnforce: () => void;
+  toggleOnlineDrc: () => void;
   cycleGrid: (step: 1 | -1) => void;
   setCursor: (p: Point | null) => void;
   setPendingKeys: (k: string | null) => void;
@@ -199,6 +212,8 @@ interface AppState {
 }
 
 const FILLS_KEY = "pcbplannercad.pourFills";
+const ENFORCE_KEY = "pcbplannercad.drcEnforce";
+const ONLINE_DRC_KEY = "pcbplannercad.onlineDrc";
 const VIEW_KEY = "pcbplannercad.view";
 function loadView() { try { return normalizeView(JSON.parse(readPreference(VIEW_KEY) ?? "null")); } catch { return normalizeView(null); } }
 
@@ -219,6 +234,11 @@ function writeFlag(key: string, value: boolean) {
   }
 }
 
+/** Routing mode after the design-rule switch: with rules off, violators are ignored. */
+export const routeModeOf = (s: Pick<AppState, "drcEnforce" | "placement">) => (s.drcEnforce ? s.placement.routeMode : "ignore");
+/** What a moved part's re-routed tracks do with other nets: ignored while rules are off. */
+export const violatorModeOf = (s: Pick<AppState, "drcEnforce" | "placement">) => (s.drcEnforce ? s.placement.moveViolators : "ignore");
+
 export const useEditor = create<AppState>()((set, get) => ({
   docs: {},
   activeDocId: null,
@@ -228,6 +248,8 @@ export const useEditor = create<AppState>()((set, get) => ({
   compiled: null,
   units: "mm",
   showPourFills: readFlag(FILLS_KEY, true),
+  drcEnforce: readFlag(ENFORCE_KEY, true),
+  onlineDrc: readFlag(ONLINE_DRC_KEY, true),
   cursor: null,
   pendingKeys: null,
   hint: "",
@@ -249,7 +271,7 @@ export const useEditor = create<AppState>()((set, get) => ({
       marked: new Set(),
       tool: prev?.tool ?? "select",
       activeLayer: prev?.activeLayer ?? (kind === "schematic" || kind === "symbol" ? L.schematic : L.topCopper),
-      singleLayer: prev?.singleLayer ?? false,
+      layerMode: prev?.layerMode ?? "all",
       view: prev?.view ?? loadView(),
       grid: prev?.grid ?? DEFAULT_GRID[kind],
       epoch: (prev?.epoch ?? 0) + 1,
@@ -314,6 +336,16 @@ export const useEditor = create<AppState>()((set, get) => ({
     const showPourFills = !get().showPourFills;
     writeFlag(FILLS_KEY, showPourFills);
     set({ showPourFills });
+  },
+  toggleDrcEnforce: () => {
+    const drcEnforce = !get().drcEnforce;
+    writeFlag(ENFORCE_KEY, drcEnforce);
+    set({ drcEnforce });
+  },
+  toggleOnlineDrc: () => {
+    const onlineDrc = !get().onlineDrc;
+    writeFlag(ONLINE_DRC_KEY, onlineDrc);
+    set({ onlineDrc });
   },
 
   cycleGrid: (step) => {

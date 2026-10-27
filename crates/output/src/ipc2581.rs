@@ -279,6 +279,7 @@ fn graphic_feats(item: &Item, out: &mut Vec<(LayerId, Feat)>) {
             }
             out.push((p.layer, Feat::Polyline { pts, w: p.width }));
         }
+        Item::Dimension(d) => d.primitives().iter().for_each(|prim| graphic_feats(prim, out)),
         Item::Text(t) => {
             let w = stroke_width(t.height);
             for (a, b) in text_segments(&t.text, t.pos, TextStyle::of(t)) {
@@ -1088,6 +1089,7 @@ mod tests {
         items.push(Item::Track(Track { a: Point::new(nm(10.0), nm(10.0)), b: Point::new(nm(20.0), nm(10.0)), width: nm(0.25), layer: layer::TOP_COPPER, net: "GND".into() }));
         items.push(Item::Via(Via { pos: Point::new(nm(15.0), nm(12.0)), diameter: nm(0.6), drill: nm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: "TRACKONLY".into() }));
         items.push(Item::Zone(Zone {
+            teardrop: false,
             outline: vec![Point::new(0, 0), Point::new(nm(5.0), 0), Point::new(nm(5.0), nm(5.0))],
             layer: layer::BOTTOM_COPPER,
             net: "GND".into(),

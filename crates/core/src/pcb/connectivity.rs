@@ -661,6 +661,7 @@ pub(crate) mod fixtures {
     pub fn zone(x0: f64, y0: f64, x1: f64, y1: f64, l: LayerId, net: &str) -> Item {
         let outer = vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)];
         Item::Zone(Zone {
+            teardrop: false,
             outline: outer.clone(),
             layer: l,
             net: net.into(),

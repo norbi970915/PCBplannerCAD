@@ -3,7 +3,9 @@ import { api } from "./api";
 import { report } from "./actions";
 import { bus } from "./bus";
 import { useEditor } from "./store";
-import type { ItemId } from "./types";
+import type { ItemId, Point } from "./types";
+import { NM_PER_MM } from "./units";
+import { mergeViolations, ONLINE_SKIP, touchedBetween, type Touched } from "../pcb/drcMerge";
 
 const st = () => useEditor.getState();
 const timers = new Map<string, number>();
@@ -83,7 +85,16 @@ export async function openProjectBoard() {
   if (!st().docs[id]) {
     const t = toast.loading("Opening board…");
     try {
-      st().loadDoc(await api.snapshot(id));
+      const start = performance.now();
+      const snap = await api.snapshot(id);
+      const loaded = performance.now();
+      st().loadDoc(snap);
+      bus.emit("showDoc", { docId: id });
+      // Two frames: the canvas has built its scene and drawn once.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const shown = performance.now();
+      const s = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
+      st().log("info", `Board opened: ${snap.items.length} objects in ${s(shown - start)} (backend snapshot ${s(loaded - start)}, drawing ${s(shown - loaded)}).`);
     } catch (e) {
       return report(e);
     } finally {
@@ -100,6 +111,143 @@ export async function highlightNetOnBoard(docId: string, net: string) {
   } catch (e) {
     report(e);
   }
+}
+
+/** Net of the copper under `pos`: the active layer first, then the other copper layers of the stack. */
+export async function netAt(docId: string, pos: Point): Promise<string | null> {
+  const d = st().docs[docId];
+  if (!d) return null;
+  const board = [...d.items.values()].find((i) => i.kind === "board");
+  const cu = board?.kind === "board" ? board.stackup.layers.filter((l) => l.kind === "copper" && l.layer !== null).map((l) => l.layer as number) : [0, 1];
+  const at = { x: Math.round(pos.x), y: Math.round(pos.y) };
+  for (const layer of [d.activeLayer, ...cu.filter((l) => l !== d.activeLayer)].filter((l) => cu.includes(l))) {
+    const hit = await api.pcbObjectAt(docId, at, layer);
+    if (hit?.[1]) return hit[1];
+  }
+  return null;
+}
+
+/** Alt+click / `: highlights the whole net under the cursor; on open board it clears the highlight. */
+export async function highlightNetAt(docId: string, pos: Point) {
+  try {
+    const net = await netAt(docId, pos);
+    if (!net) {
+      st().patchDoc(docId, { marked: new Set() });
+      st().setHint("No net under the cursor · highlight cleared");
+      return;
+    }
+    const [ids, length] = await Promise.all([api.pcbNetItems(docId, net), api.pcbNetLength(docId, net)]);
+    st().patchDoc(docId, { marked: new Set(ids) });
+    st().setHint(`Net ${net}: ${ids.length} objects · routed length ${(length / NM_PER_MM).toFixed(2)} mm · Esc clears`);
+  } catch (e) {
+    report(e);
+  }
+}
+
+/** I: selects the tracks and vias of the net under the cursor. */
+export async function selectNetCopperAt(docId: string, pos: Point) {
+  try {
+    const net = await netAt(docId, pos);
+    if (!net) return;
+    const items = st().docs[docId]?.items;
+    const ids = (await api.pcbNetItems(docId, net)).filter((id) => ["track", "arcTrack", "via"].includes(items?.get(id)?.kind ?? ""));
+    st().patchDoc(docId, { selection: new Set(ids) });
+    st().setHint(`Net ${net}: ${ids.length} tracks and vias selected`);
+  } catch (e) {
+    report(e);
+  }
+}
+
+// ---------- online DRC ----------
+
+interface OnlineJob {
+  full: boolean;
+  touched: Touched;
+  timer: number;
+  running: boolean;
+}
+const online = new Map<string, OnlineJob>();
+
+function onlineJob(docId: string): OnlineJob {
+  let j = online.get(docId);
+  if (!j) online.set(docId, (j = { full: false, touched: { check: new Set(), drop: new Set() }, timer: 0, running: false }));
+  return j;
+}
+
+function scheduleOnline(docId: string, delay = 250) {
+  const j = onlineJob(docId);
+  window.clearTimeout(j.timer);
+  j.timer = window.setTimeout(() => void runOnline(docId), delay);
+}
+
+/** One request at a time per board; changes arriving meanwhile run right after. */
+async function runOnline(docId: string) {
+  const j = onlineJob(docId);
+  if (j.running) return;
+  if (!st().onlineDrc || st().docs[docId]?.info.kind !== "pcb") {
+    online.delete(docId);
+    return;
+  }
+  const full = j.full;
+  const touched = j.touched;
+  if (!full && !touched.drop.size) return;
+  j.full = false;
+  j.touched = { check: new Set(), drop: new Set() };
+  j.running = true;
+  try {
+    if (full) {
+      const r = await api.pcbDrc(docId);
+      st().patchDoc(docId, { drc: r.violations.filter((v) => !ONLINE_SKIP.has(v.code)) });
+    } else {
+      const items = st().docs[docId]?.items;
+      const ids = [...touched.check].filter((id) => items?.has(id));
+      const fresh = ids.length ? await api.pcbDrcNear(docId, ids) : [];
+      const doc = st().docs[docId];
+      if (doc) st().patchDoc(docId, { drc: mergeViolations(doc.drc, touched.drop, fresh) });
+    }
+  } catch {
+    // Advisory, like the ratsnest: a closed document or a transient error just skips this round.
+  } finally {
+    j.running = false;
+    if (j.full || j.touched.drop.size) scheduleOnline(docId, 0);
+  }
+}
+
+/** Errors and warnings currently marked on a board (what online DRC keeps up to date). */
+export function drcCounts(docId: string): { errors: number; warnings: number } {
+  const v = st().docs[docId]?.drc ?? [];
+  const errors = v.filter((x) => x.severity === "error").length;
+  return { errors, warnings: v.length - errors };
+}
+
+/**
+ * Online DRC: after every board change (routing, moves, dialogs, undo / redo) the changed objects are
+ * re-checked with the near-DRC and their markers replaced. Opening a board or switching it on runs one full check.
+ */
+export function installOnlineDrc(): () => void {
+  const baseline = () => {
+    for (const [id, d] of Object.entries(st().docs)) {
+      if (d.info.kind === "pcb") {
+        onlineJob(id).full = true;
+        scheduleOnline(id, 0);
+      }
+    }
+  };
+  if (st().onlineDrc) baseline();
+  return useEditor.subscribe((s, prev) => {
+    if (!s.onlineDrc) return;
+    if (!prev.onlineDrc) return baseline();
+    if (s.docs === prev.docs) return;
+    for (const [id, d] of Object.entries(s.docs)) {
+      if (d.info.kind !== "pcb") continue;
+      const old = prev.docs[id];
+      if (old?.items === d.items && old?.epoch === d.epoch) continue;
+      const j = onlineJob(id);
+      if (!old || old.epoch !== d.epoch) j.full = true;
+      else touchedBetween(old.items, d.items, j.touched);
+      scheduleOnline(id);
+    }
+  });
 }
 
 // ---------- cross-probing ----------

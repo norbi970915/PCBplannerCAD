@@ -17,7 +17,7 @@ use crate::item::{FillStyle, Item};
 use crate::layer;
 use crate::units::{Coord, Point, to_mm};
 
-use super::board::BoardSettings;
+use super::board::{BoardSettings, ViaKind};
 use super::connectivity::geo::{self, Bb, BoxTree, Geo, P, PolyGeo, Prim, TOUCH};
 use super::connectivity::{self as conn, CopperObject, Index, RoutingStats, Shape, Uf, pt, to_point};
 use super::geometry::{board_settings, outline_loops, world_graphics, world_pads};
@@ -333,6 +333,18 @@ impl<'a> Drc<'a> {
                 (ObjKind::Via, Shape::Circle { radius, .. }) => {
                     let dia = radius * 2;
                     let drill = o.drill.map_or(0, |d| d.0.min(d.1));
+                    // A via matching a defined via type is an approved style; laser microvias
+                    // are also exempt from the mechanical minimum hole size.
+                    let via_type = match self.doc.get(o.item) {
+                        Some(Item::Via(v)) => self.board.via_type_of(v.from_layer, v.to_layer, v.diameter, v.drill),
+                        _ => None,
+                    };
+                    if let Some(t) = via_type {
+                        if self.board.stackup.via_kind(t.from_layer, t.to_layer, t.drill) != ViaKind::Micro {
+                            self.hole(o.item, &o.obj(None), (drill, drill), o.pos, describe(o));
+                        }
+                        continue;
+                    }
                     let ((rd, rdrill, ring), src) = self.rules.via_style_rule(&o.obj(None));
                     let mut problems = Vec::new();
                     if dia < rd {

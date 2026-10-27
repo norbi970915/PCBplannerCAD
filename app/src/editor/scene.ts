@@ -68,26 +68,32 @@ export interface HighlightState {
   excluded?: ReadonlySet<ItemId>;
   /** Extra items highlighted (net highlight, ERC targets). */
   marked?: ReadonlySet<ItemId>;
+  /** Fade everything that is not marked (board net highlight). */
+  dimOthers?: boolean;
 }
 
 export class Scene {
   private entries = new Map<ItemId, Entry>();
   private ctxSignature: unknown[] = [];
+  private pourFills: boolean | undefined;
   private nextStyle = 1;
   get styleCount() { return this.nextStyle; }
 
   /** Syncs with the document; only changed items are redrawn. */
   update(items: ReadonlyMap<ItemId, Item>, ctx: DrawContext) {
-    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.pourFills, ctx.view];
+    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.view];
     if (sig.some((v, i) => v !== this.ctxSignature[i])) {
       this.entries.clear();
       this.nextStyle = 1;
       this.ctxSignature = sig;
     }
+    // Showing or hiding pour fills only changes zones.
+    const fillsChanged = ctx.pourFills !== this.pourFills;
+    this.pourFills = ctx.pourFills;
     for (const id of this.entries.keys()) if (!items.has(id)) this.entries.delete(id);
     for (const [id, item] of items) {
       const e = this.entries.get(id);
-      if (e && e.item === item) continue;
+      if (e && e.item === item && !(fillsChanged && item.kind === "zone")) continue;
       const prims = drawItem(item, ctx);
       this.entries.set(id, { item, prims, bounds: primBounds(prims), style: e?.style ?? this.nextStyle++ });
     }
@@ -177,6 +183,11 @@ export class Scene {
       const e = this.entries.get(id);
       if (e && !hl.excluded?.has(id)) out.set(e.style, [tint[0], tint[1], tint[2], amount]);
     };
+    // Net highlight: everything outside the marked set fades toward the background.
+    if (hl.dimOthers && hl.marked?.size) {
+      const bg = theme.background;
+      for (const [id, e] of this.entries) if (!hl.marked.has(id) && !hl.excluded?.has(id)) out.set(e.style, [bg[0], bg[1], bg[2], 0.75]);
+    }
     if (hl.hover !== null) add(hl.hover, 0.3, [1, 1, 1, 1]);
     for (const id of hl.marked ?? []) add(id, 0.4, theme.selectTint);
     for (const id of hl.selection) add(id, 0.55, theme.selectTint);

@@ -288,6 +288,7 @@ function ItemEditor({ doc, id, item, units }: { doc: DocState; id: ItemId; item:
     case "arcTrack":
     case "via":
     case "zone":
+    case "dimension":
       return <BoardItemEditor doc={doc} id={id} item={item} put={put} units={units} />;
     case "part":
       return <PartEditor doc={doc} id={id} part={item} put={put} units={units} />;

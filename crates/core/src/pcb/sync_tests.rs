@@ -257,6 +257,7 @@ fn renames_nets_with_unchanged_pads_including_copper() {
         Item::Track(Track { a: Point::new(mm(2.0), mm(10.0)), b: Point::new(mm(5.0), mm(10.0)), width: mm(0.2), layer: layer::TOP_COPPER, net: old.into() }),
         Item::Via(Via { pos: Point::new(mm(3.0), mm(10.0)), diameter: mm(0.6), drill: mm(0.3), from_layer: layer::TOP_COPPER, to_layer: layer::BOTTOM_COPPER, net: old.into() }),
         Item::Zone(Zone {
+            teardrop: false,
             outline: vec![Point::new(0, 0), Point::new(mm(5.0), 0), Point::new(mm(5.0), mm(5.0))],
             layer: layer::BOTTOM_COPPER,
             net: old.into(),

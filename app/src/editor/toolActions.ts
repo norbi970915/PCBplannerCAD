@@ -1,6 +1,7 @@
 import { api } from "../core/api";
 import { report } from "../core/actions";
 import { activeDoc, useEditor } from "../core/store";
+import { LAYER_MODES } from "../core/view";
 import { toolButton } from "./profiles";
 
 const st = () => useEditor.getState();
@@ -73,4 +74,13 @@ export async function startPlaceFootprint(library: string, component: string) {
   } catch (e) {
     report(e);
   }
+}
+
+/** Shift+S: all layers → other layers dimmed → active layer only → all layers. */
+export function cycleLayerMode(docId: string) {
+  const d = st().docs[docId];
+  if (!d) return;
+  const layerMode = LAYER_MODES[d.layerMode].next;
+  st().patchDoc(docId, { layerMode });
+  st().setHint(`Layer display: ${LAYER_MODES[layerMode].label} (Shift+S cycles)`);
 }

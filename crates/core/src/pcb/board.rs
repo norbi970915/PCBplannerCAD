@@ -102,6 +102,65 @@ impl Stackup {
     pub fn layer_name(&self, id: LayerId) -> Option<&str> {
         self.layers.iter().find(|l| l.layer == Some(id)).map(|l| l.name.as_str())
     }
+
+    /// Through, blind, buried or micro, from the copper span and drill.
+    pub fn via_kind(&self, from: LayerId, to: LayerId, drill: Coord) -> ViaKind {
+        let cu = self.copper_layers();
+        let span = self.span(from, to);
+        let outer = |l: LayerId| cu.first() == Some(&l) || cu.last() == Some(&l);
+        if span.len() == cu.len() {
+            ViaKind::Through
+        } else if span.len() == 2 && drill <= MICROVIA_MAX_DRILL {
+            ViaKind::Micro
+        } else if outer(from) || outer(to) {
+            ViaKind::Blind
+        } else {
+            ViaKind::Buried
+        }
+    }
+}
+
+/// Laser-drilled microvias span one dielectric with a drill up to this size.
+pub const MICROVIA_MAX_DRILL: Coord = 150_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ViaKind {
+    Through,
+    Blind,
+    Buried,
+    Micro,
+}
+
+/// A via the board may use: its copper span and pad/drill size. Routing picks
+/// the type that matches a layer change; DRC accepts vias that match a type exactly.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViaType {
+    pub name: String,
+    pub from_layer: LayerId,
+    pub to_layer: LayerId,
+    pub diameter: Coord,
+    pub drill: Coord,
+}
+
+impl BoardSettings {
+    /// The defined via type a placed via matches (same span, diameter and drill).
+    pub fn via_type_of(&self, from: LayerId, to: LayerId, diameter: Coord, drill: Coord) -> Option<&ViaType> {
+        let span = self.stackup.span(from, to);
+        self.via_types.iter().find(|t| t.diameter == diameter && t.drill == drill && self.stackup.span(t.from_layer, t.to_layer) == span)
+    }
+
+    /// Smallest defined via type that connects copper layers `a` and `b`.
+    pub fn via_type_between(&self, a: LayerId, b: LayerId) -> Option<&ViaType> {
+        self.via_types
+            .iter()
+            .filter(|t| {
+                let span = self.stackup.span(t.from_layer, t.to_layer);
+                span.contains(&a) && span.contains(&b)
+            })
+            .min_by_key(|t| self.stackup.span(t.from_layer, t.to_layer).len())
+    }
 }
 
 impl Default for Stackup {
@@ -201,6 +260,9 @@ pub struct BoardSettings {
     pub mask_color: String,
     #[serde(default = "default_silk_color")]
     pub silk_color: String,
+    /// Through, blind, buried and micro via definitions (empty: through vias from the rules).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub via_types: Vec<ViaType>,
 }
 
 fn default_mask_color() -> String {
@@ -254,6 +316,7 @@ impl Default for BoardSettings {
             origin: Point::default(),
             mask_color: default_mask_color(),
             silk_color: default_silk_color(),
+            via_types: vec![],
         }
     }
 }

@@ -35,16 +35,17 @@ pub fn pcb_analysis(state: State<AppState>, id: String) -> Res<Analysis> {
     Ok(Analysis { airwires: connectivity::ratsnest(doc), stats: connectivity::stats(doc) })
 }
 
-#[tauri::command]
+// DRC runs off the main thread on a snapshot, so editing continues while a (online) check is busy.
+#[tauri::command(async)]
 pub fn pcb_drc(state: State<AppState>, id: String) -> Res<drc::DrcReport> {
-    let ws = lock(&state);
-    Ok(drc::run(pcb_doc(&ws, &id)?))
+    let doc = pcb_doc(&lock(&state), &id)?.clone();
+    Ok(drc::run(&doc))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_drc_near(state: State<AppState>, id: String, items: Vec<ItemId>) -> Res<Vec<drc::DrcViolation>> {
-    let ws = lock(&state);
-    Ok(drc::run_near(pcb_doc(&ws, &id)?, &items))
+    let doc = pcb_doc(&lock(&state), &id)?.clone();
+    Ok(drc::run_near(&doc, &items))
 }
 
 #[derive(Serialize)]
@@ -109,9 +110,13 @@ pub fn pcb_net_length(state: State<AppState>, id: String, net: String) -> Res<Co
 }
 
 #[tauri::command]
-pub fn pcb_via(state: State<AppState>, id: String, net: String, pos: Point) -> Res<pcbplannercad_core::pcb::Via> {
+pub fn pcb_via(state: State<AppState>, id: String, net: String, pos: Point, from: Option<LayerId>, to: Option<LayerId>) -> Res<pcbplannercad_core::pcb::Via> {
     let ws = lock(&state);
-    Ok(router::via_for(pcb_doc(&ws, &id)?, &net, pos))
+    let doc = pcb_doc(&ws, &id)?;
+    Ok(match (from, to) {
+        (Some(a), Some(b)) => router::via_between(doc, &net, pos, a, b),
+        _ => router::via_for(doc, &net, pos),
+    })
 }
 
 #[tauri::command]
@@ -244,4 +249,39 @@ pub fn pcb_panelize(state: State<AppState>, id: String, spec: pcbplannercad_core
     let new_id = ws.add_doc(DocKind::Pcb, crate::workspace::Origin::File(None), panel);
     ws.doc_mut(&new_id)?.session.mark_dirty();
     super::docs::snapshot(&ws, &new_id)
+}
+
+/// Plans dragging footprints with their routing kept connected; the frontend commits it as a `route` command.
+#[tauri::command]
+pub fn pcb_drag_footprints(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::DragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
+    let ws = lock(&state);
+    Ok(pcbplannercad_core::pcb::drag::drag_footprints(pcb_doc(&ws, &id)?, &req))
+}
+
+/// Plans Cleanup Tracks & Vias; the frontend commits it as a `route` command.
+#[tauri::command]
+pub fn pcb_cleanup(state: State<AppState>, id: String, opts: pcbplannercad_core::pcb::cleanup::CleanupOptions) -> Res<pcbplannercad_core::pcb::cleanup::CleanupResult> {
+    let ws = lock(&state);
+    Ok(pcbplannercad_core::pcb::cleanup::cleanup(pcb_doc(&ws, &id)?, &opts))
+}
+
+/// Plans stitching vias for a filled pour; the frontend commits them as a `route` command.
+#[tauri::command]
+pub fn pcb_stitch(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::stitch::StitchRequest) -> Res<pcbplannercad_core::pcb::stitch::StitchResult> {
+    let ws = lock(&state);
+    pcbplannercad_core::pcb::stitch::stitch(pcb_doc(&ws, &id)?, &req)
+}
+
+/// Plans regenerating every teardrop; the frontend commits it as a `route` command.
+#[tauri::command]
+pub fn pcb_teardrops(state: State<AppState>, id: String, opts: pcbplannercad_core::pcb::teardrop::TeardropOptions) -> Res<pcbplannercad_core::pcb::teardrop::TeardropPlan> {
+    let ws = lock(&state);
+    Ok(pcbplannercad_core::pcb::teardrop::plan(pcb_doc(&ws, &id)?, &opts))
+}
+
+/// Plans moving several footprints, each by its own offset, with their routing kept connected (Pack & Move).
+#[tauri::command]
+pub fn pcb_drag_each(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::MultiDragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
+    let ws = lock(&state);
+    Ok(pcbplannercad_core::pcb::drag::drag_each(pcb_doc(&ws, &id)?, &req))
 }

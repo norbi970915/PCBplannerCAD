@@ -14,7 +14,7 @@ const event: PointerInfo = { sx:0, sy:0, shift:false, ctrl:false, alt:false };
 function harness(mode: 'cut'|'slice'|'reshape', response: () => Promise<boolean> = async () => true, grid = 0) {
   let cursor = p(0,0);
   const commands: Command[] = [];
-  const doc = { items: new Map([[1, zone()]]), selection:new Set<number>(), activeLayer:0, singleLayer:false };
+  const doc = { items: new Map([[1, zone()]]), selection:new Set<number>(), activeLayer:0, layerMode:'all' };
   const env = {
     doc:() => doc, raw:() => cursor,
     cursor:() => grid ? {x:Math.round(cursor.x/grid)*grid,y:Math.round(cursor.y/grid)*grid} : cursor, scale:() => 100/1e6,
@@ -100,9 +100,9 @@ test('a failed command preserves the cut and side choice for retry', async () =>
 test('hidden layers are ignored unless selected and not in single-layer mode', () => {
   const h=harness('slice'); h.doc.items.set(1,zone(33)); h.click(5,0); h.click(5,10);
   assert.equal(h.commands.length,0); assert.match(h.tool.hint(h.env),/click a polygon boundary/);
-  h.doc.selection.add(1); h.doc.singleLayer=true; h.click(5,0);
+  h.doc.selection.add(1); h.doc.layerMode='dim'; h.click(5,0);
   assert.match(h.tool.hint(h.env),/click a polygon boundary/);
-  h.doc.singleLayer=false; h.click(5,0); assert.match(h.tool.hint(h.env),/click corners/);
+  h.doc.layerMode='all'; h.click(5,0); assert.match(h.tool.hint(h.env),/click corners/);
 });
 
 test('geometry rejects repeated vertices, T junctions, retracing and crossings', () => {

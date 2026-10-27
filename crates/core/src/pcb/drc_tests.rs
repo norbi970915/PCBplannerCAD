@@ -220,6 +220,7 @@ fn keepout_areas() {
     let keepout = |l: LayerId| {
         let outer = vec![p(8.0, 3.0), p(12.0, 3.0), p(12.0, 4.5), p(8.0, 4.5)];
         Item::Zone(Zone {
+            teardrop: false,
             outline: outer,
             layer: l,
             net: String::new(),

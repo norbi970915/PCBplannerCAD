@@ -259,6 +259,7 @@ fn zone_with_hole_is_one_cut_in_region() {
     hole.reverse();
     let fill = vec![ZonePolygon { outer: outer.clone(), holes: vec![hole, sq(12.0, 6.0, 3.0)] }, ZonePolygon { outer: sq(30.0, 0.0, 5.0), holes: vec![] }];
     let zone = Zone {
+        teardrop: false,
         outline: outer,
         layer: layer::BOTTOM_COPPER,
         net: "GND".into(),
@@ -401,4 +402,17 @@ fn fracture_handles_nested_order_and_orientation() {
     let h2 = vec![Point::new(10, 50), Point::new(30, 50), Point::new(30, 70), Point::new(10, 70)];
     let c = fracture(&outer, &[h1, h2]);
     assert!((signed_area(&c) - (10_000.0 - 400.0 - 400.0)).abs() < 1e-6);
+}
+
+#[test]
+fn dimensions_plot_as_strokes_on_their_layer() {
+    use pcbplannercad_core::pcb::dimension::{DimUnits, Dimension};
+    let mut items = sample().item_list();
+    items.push(Item::Dimension(Dimension { a: Point::new(0, 0), b: Point::new(mm(20.0), 0), offset: mm(5.0), orthogonal: false, angle: 0.0, layer: layer::TOP_SILK, width: mm(0.15), text_height: mm(1.0), units: DimUnits::Mm, precision: 1 }));
+    let doc = Document::from_item_list(pcbplannercad_core::DocKind::Pcb, items).with_footprints(sample().footprint_cache().clone());
+    let before = parse(&write_layer(&sample(), LayerFunction::Silk { bottom: false }, &opts()).unwrap()).draws.len();
+    let after = parse(&write_layer(&doc, LayerFunction::Silk { bottom: false }, &opts()).unwrap());
+    assert!(after.draws.len() > before + 7, "extension lines, dimension line, arrows and the text");
+    // The dimension line runs along y = 5 mm from x = 0 to 20.
+    assert!(after.draws.iter().any(|d| near((d.0, d.1), (20.0, 5.0))));
 }

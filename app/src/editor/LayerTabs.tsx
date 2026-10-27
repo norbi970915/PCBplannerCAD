@@ -1,17 +1,19 @@
 import { cn } from "@/lib/utils";
 import { useMemo } from "react";
 import { Filter } from "lucide-react";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { FILTER_KINDS, filterActive, useSelectFilter } from "../core/selectFilter";
+import { filterActive, useSelectFilter } from "../core/selectFilter";
 import { boardTabs, FOOTPRINT_TABS, layer } from "../core/layers";
 import { useEditor } from "../core/store";
+import { LAYER_MODES } from "../core/view";
+import { SelectionFilter } from "../panels/SelectionFilter";
+import { cycleLayerMode } from "./toolActions";
 
 /** Layer tabs along the bottom of board editors. */
 export function LayerTabs({ docId, tabs: override }: { docId: string; tabs?: number[] }) {
   const doc = useEditor((s) => s.docs[docId]);
   const fills = useEditor((s) => s.showPourFills);
-  const filter = useSelectFilter();
+  const filtered = useSelectFilter(filterActive);
   const items = doc?.items;
   const kind = doc?.info.kind;
   const tabs = useMemo(
@@ -26,11 +28,11 @@ export function LayerTabs({ docId, tabs: override }: { docId: string; tabs?: num
     <div className="flex h-[26px] shrink-0 items-stretch overflow-x-auto border-t border-line bg-chrome [scrollbar-width:none]">
       <span className="w-6 shrink-0 border-r border-line" style={{ background: current.color }} title={`Current layer: ${current.name}`} />
       <button
-        className={cn("shrink-0 border-r border-line px-2 font-mono text-[10px] font-semibold text-faint hover:bg-hover", doc.singleLayer && "bg-sel text-accent-ink")}
-        onClick={() => patch(docId, { singleLayer: !doc.singleLayer })}
-        title="Single layer mode (Shift+S)"
+        className={cn("shrink-0 border-r border-line px-2 font-mono text-[10px] font-semibold text-faint hover:bg-hover", doc.layerMode !== "all" && "bg-sel text-accent-ink")}
+        onClick={() => cycleLayerMode(docId)}
+        title={`Layer display: ${LAYER_MODES[doc.layerMode].label} — click or Shift+S for ${LAYER_MODES[LAYER_MODES[doc.layerMode].next].label.toLowerCase()}`}
       >
-        LS
+        {doc.layerMode === "all" ? "LS" : doc.layerMode === "dim" ? "LS·dim" : "LS·only"}
       </button>
       {kind === "pcb" && (
         <button
@@ -65,26 +67,16 @@ export function LayerTabs({ docId, tabs: override }: { docId: string; tabs?: num
             <button
               className={cn(
                 "sticky right-0 ml-auto flex shrink-0 items-center gap-1 border-l border-line bg-chrome px-2.5 text-[11px] text-muted-foreground hover:bg-hover hover:text-ink",
-                filterActive(filter.on) && "bg-sel text-accent-ink",
+                filtered && "bg-sel text-accent-ink",
               )}
-              title="Selection filter: which objects clicks and box selection pick"
+              title="Selection filter: which object types and layers clicks and box selection pick"
             >
-              <Filter className="size-3" /> {filterActive(filter.on) ? "Filtered" : "Filter"}
+              <Filter className="size-3" /> {filtered ? "Filtered" : "Filter"}
             </button>
           </PopoverTrigger>
-          <PopoverContent side="top" align="end" className="w-56 p-2 text-xs">
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="eyebrow">Selectable objects</span>
-              <button className="text-[11px] text-accent-ink hover:underline" onClick={filter.all}>
-                All
-              </button>
-            </div>
-            {FILTER_KINDS.map(([k, label]) => (
-              <label key={k} className="flex items-center gap-2 rounded-[4px] px-1 py-1 hover:bg-hover">
-                <Checkbox className="size-3.5" checked={filter.on[k]} onCheckedChange={(v) => filter.set(k, v === true)} />
-                {label}
-              </label>
-            ))}
+          <PopoverContent side="top" align="end" className="max-h-[70vh] w-64 overflow-y-auto p-2.5 text-xs">
+            <div className="eyebrow pb-1">Selection filter</div>
+            <SelectionFilter doc={doc} />
           </PopoverContent>
         </Popover>
       )}

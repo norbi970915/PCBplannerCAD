@@ -395,6 +395,11 @@ fn emit_item(w: &mut Writer, item: &Item, l: LayerId, func: &str) {
                 w.stroke(&x.points, x.closed, stroke_width(x.width), func);
             }
         }
+        Item::Dimension(d) if d.layer == l => {
+            for prim in d.primitives() {
+                emit_item(w, &prim, l, func);
+            }
+        }
         Item::Text(t) if t.layer == l && !t.text.is_empty() && t.height > 0 => {
             let segs = font::text_segments(&t.text, t.pos, TextStyle::of(t));
             if segs.is_empty() {

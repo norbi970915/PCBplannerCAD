@@ -7,7 +7,8 @@ import { Check, CommitInput, LengthInput, NumberInput, Select } from "@/componen
 import { PropRow as Row, Section } from "@/components/app/panel";
 import { api } from "../core/api";
 import { bus } from "../core/bus";
-import { layer } from "../core/layers";
+import { LAYERS, layer } from "../core/layers";
+import { dimensionLabel } from "../editor/dimension";
 import { highlightNetOnBoard, repour } from "../core/pcbActions";
 import { useEditor, type DocState, type Placement } from "../core/store";
 import type { BoardItem, Item, ItemId, ItemOf, LayerId } from "../core/types";
@@ -50,7 +51,7 @@ function NetInput({ docId, value, onCommit }: { docId: string; value: string; on
   const id = useId();
   return (
     <>
-      <CommitInput mono value={value} placeholder="No net" list={id} onCommit={onCommit} />
+      <CommitInput mono className="min-w-0 flex-1" value={value} placeholder="No net" list={id} onCommit={onCommit} />
       <datalist id={id}>
         {nets.map((n) => (
           <option key={n} value={n} />
@@ -63,7 +64,7 @@ function NetInput({ docId, value, onCommit }: { docId: string; value: string; on
 function NetRow({ doc, net, onCommit }: { doc: DocState; net: string; onCommit: (v: string) => void }) {
   return (
     <Row label="Net">
-      <div className="flex gap-1">
+      <div className="flex min-w-0 gap-1">
         <NetInput docId={doc.info.id} value={net} onCommit={onCommit} />
         {net && (
           <Button variant="ghost" size="sm" className="h-7 px-1.5 text-[11px]" title="Highlight net" onClick={() => void highlightNetOnBoard(doc.info.id, net)}>
@@ -136,6 +137,37 @@ export function BoardItemEditor({ doc, id, item, put, units }: { doc: DocState; 
       );
     case "zone":
       return <ZoneEditor doc={doc} id={id} zone={item} put={put} units={units} />;
+    case "dimension":
+      return (
+        <Section title="Dimension">
+          <Row label="Value">
+            <span className="font-mono text-ink">{dimensionLabel(item)}</span>
+          </Row>
+          <Row label="Style">
+            <Select
+              value={item.orthogonal ? (item.angle % 180 === 90 ? "vertical" : "horizontal") : "aligned"}
+              options={[["aligned", "Aligned"], ["horizontal", "Horizontal"], ["vertical", "Vertical"]]}
+              onChange={(s) => put({ ...item, orthogonal: s !== "aligned", angle: s === "vertical" ? 90 : 0 })}
+            />
+          </Row>
+          <Row label="Layer">
+            <Select value={item.layer} options={LAYERS.filter((l) => l.id !== 15).map((l) => [l.id, l.name] as [LayerId, string])} onChange={(l) => put({ ...item, layer: l })} />
+          </Row>
+          <Row label="Units">
+            <Select value={item.units} options={[["mm", "mm"], ["mil", "mil"], ["inch", "inch"]]} onChange={(u) => put({ ...item, units: u })} />
+          </Row>
+          <Row label="Precision">
+            <NumberInput value={item.precision} onCommit={(p) => put({ ...item, precision: Math.max(0, Math.min(6, Math.round(p))) })} />
+          </Row>
+          <Row label="Text height">{L_(item.textHeight, (textHeight) => put({ ...item, textHeight }), 10_000)}</Row>
+          <Row label="Line width">{L_(item.width, (width) => put({ ...item, width }), 0)}</Row>
+          <Row label="Offset">{L_(item.offset, (offset) => put({ ...item, offset }))}</Row>
+          <Row label="Start X">{L_(item.a.x, (x) => put({ ...item, a: { ...item.a, x } }))}</Row>
+          <Row label="Start Y">{L_(item.a.y, (y) => put({ ...item, a: { ...item.a, y } }))}</Row>
+          <Row label="End X">{L_(item.b.x, (x) => put({ ...item, b: { ...item.b, x } }))}</Row>
+          <Row label="End Y">{L_(item.b.y, (y) => put({ ...item, b: { ...item.b, y } }))}</Row>
+        </Section>
+      );
     default:
       return null;
   }

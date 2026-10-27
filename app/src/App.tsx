@@ -27,7 +27,7 @@ import { ProjectsPanel } from "./panels/ProjectsPanel";
 import { PropertiesPanel } from "./panels/PropertiesPanel";
 import { PcbPanel } from "./panels/PcbPanel";
 import { ScriptsPanel } from "./panels/ScriptsPanel";
-import { installCrossProbe } from "./core/pcbActions";
+import { installCrossProbe, installOnlineDrc } from "./core/pcbActions";
 import { GerberViewer } from "./view3d/GerberViewer";
 import { View3DPanel } from "./view3d/View3DPanel";
 import { Icons } from "./shell/icons";
@@ -222,6 +222,7 @@ export function App() {
     const offs = [
       installShortcuts(),
       installCrossProbe(),
+      installOnlineDrc(),
       bus.on("show3d", ({ docId }) => {
         const a = api();
         const doc = st().docs[docId];

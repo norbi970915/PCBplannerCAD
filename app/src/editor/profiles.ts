@@ -70,6 +70,7 @@ export const TOOLS: Record<DocKind, ToolButton[]> = {
     { id: "polygonCut", tool: "polygonCut", label: "Cut Polygon", icon: "polygonCut", keys: "E C" },
     { id: "polygonSlice", tool: "polygonSlice", label: "Slice Polygon", icon: "polygonSlice", keys: "E S", menuOnly: true },
     { id: "measure", tool: "measure", label: "Measure Distance", icon: "measure", keys: "R M", menuOnly: true },
+    { id: "dimension", tool: "dimension", label: "Dimension", icon: "dimension", keys: "P D" },
     { id: "line", tool: "line", label: "Line", icon: "line", keys: "P L" },
     { id: "arc", tool: "arc", label: "Arc", icon: "arc", keys: "P A" },
     { id: "text", tool: "text", label: "String (text)", icon: "text", keys: "P S" },

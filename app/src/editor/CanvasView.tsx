@@ -66,7 +66,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     let overlayDirty = true;
     let analysisDirty = true;
     let fitted = false;
-    let theme: Theme = themeFor("schematic", 0, false);
+    let theme: Theme = themeFor("schematic", 0, "all");
 
     const doc = () => st().docs[docId];
     const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
@@ -88,14 +88,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     const rebuildHighlights = () => {
       const d = doc();
       if (!d) return;
-      renderer.setHighlights(scene.highlights(theme, { selection: d.selection, marked: d.marked, hover, excluded: tool.excluded?.() }), scene.styleCount);
+      renderer.setHighlights(scene.highlights(theme, { selection: d.selection, marked: d.marked, hover, excluded: tool.excluded?.(), dimOthers: d.info.kind === "pcb" }), scene.styleCount);
       requestRender();
     };
 
     const rebuildScene = () => {
       const d = doc();
       if (!d) return;
-      theme = themeFor(d.info.kind, d.activeLayer, d.singleLayer, useTheme.getState().resolved);
+      theme = themeFor(d.info.kind, d.activeLayer, d.layerMode, useTheme.getState().resolved);
       scene.update(d.items, ctx());
       renderer.setScene(scene.build(theme, { selection: new Set(), hover: null, excluded: tool.excluded?.() }));
       rebuildHighlights();
@@ -145,10 +145,26 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         const rat = theme.color("ratsnest");
         if (d.view.airwires) for (const w of d.airwires) lines.push({ a: w.a, b: w.b, width: px, color: rat });
         const r = 6 * px;
+        const halo: [number, number, number, number] = [0, 0, 0, 0.85];
         if (d.view.drc) for (const v of d.drc) {
-          const c: [number, number, number, number] = v.severity === "error" ? [1, 0.25, 0.25, 1] : theme.color("drc");
-          lines.push({ a: { x: v.pos.x - r, y: v.pos.y - r }, b: { x: v.pos.x + r, y: v.pos.y + r }, width: 2 * px, color: c });
-          lines.push({ a: { x: v.pos.x - r, y: v.pos.y + r }, b: { x: v.pos.x + r, y: v.pos.y - r }, width: 2 * px, color: c });
+          const error = v.severity === "error";
+          const c: [number, number, number, number] = error ? [1, 0.25, 0.25, 1] : theme.color("drc");
+          const cross = [
+            [{ x: v.pos.x - r, y: v.pos.y - r }, { x: v.pos.x + r, y: v.pos.y + r }],
+            [{ x: v.pos.x - r, y: v.pos.y + r }, { x: v.pos.x + r, y: v.pos.y - r }],
+          ] as const;
+          // A dark halo (and a white ring for errors) keeps markers readable on copper of any colour.
+          const ring: [Point, Point][] = [];
+          if (error) {
+            const R = 10 * px;
+            for (let i = 0; i < 16; i++) {
+              const t0 = (i / 16) * 2 * Math.PI, t1 = ((i + 1) / 16) * 2 * Math.PI;
+              ring.push([{ x: v.pos.x + R * Math.cos(t0), y: v.pos.y + R * Math.sin(t0) }, { x: v.pos.x + R * Math.cos(t1), y: v.pos.y + R * Math.sin(t1) }]);
+            }
+          }
+          for (const [a, b] of [...cross, ...ring]) lines.push({ a, b, width: 4 * px, color: halo });
+          for (const [a, b] of ring) lines.push({ a, b, width: 1.5 * px, color: [1, 1, 1, 1] });
+          for (const [a, b] of cross) lines.push({ a, b, width: 2 * px, color: c });
         }
       }
       renderer.setAnalysis([{ rank: 1e6, lines, fills: [] }]);
@@ -290,6 +306,12 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const p = local(e);
       cursorScreen = p;
       computeCursor(p.x, p.y);
+      if ((e.button === 1 || e.button === 2) && tool.auxPress?.(env, e.button, e.shiftKey)) {
+        e.preventDefault();
+        rebuildOverlay();
+        updateHint();
+        return;
+      }
       if (e.button === 1 || e.button === 2) {
         pan = { x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false, button: e.button };
         if (hover !== null) { hover = null; rebuildHighlights(); }
@@ -311,6 +333,13 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const onPointerMove = (e: PointerEvent) => {
       const p = local(e);
+      // A middle or right press while the left button holds a drag arrives as a chorded move, not a pointerdown.
+      const chord = e.button === 1 && e.buttons & 4 ? 1 : e.button === 2 && e.buttons & 2 ? 2 : 0;
+      if (!pan && chord && tool.auxPress?.(env, chord, e.shiftKey)) {
+        e.preventDefault();
+        rebuildOverlay();
+        updateHint();
+      }
       if (pan) {
         cam.panBy(p.x - pan.x, p.y - pan.y);
         pan.x = p.x;
@@ -328,7 +357,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         pan = null;
         updateHover();
         if (!done.moved && done.button === 2) {
-          if (toolId === "select" && !tool.cancel(env)) openContextMenu(e);
+          if (toolId === "select" && !tool.cancel(env, "mouse")) openContextMenu(e);
           else exitOrCancel();
         }
         return;
@@ -446,7 +475,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         d.items !== p?.items ||
         d.view !== p?.view ||
         d.activeLayer !== p?.activeLayer ||
-        d.singleLayer !== p?.singleLayer ||
+        d.layerMode !== p?.layerMode ||
         d.cache !== p?.cache ||
         d.footprints !== p?.footprints
       ) {
@@ -477,7 +506,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     });
 
     const offFilter = useSelectFilter.subscribe((filter, previous) => {
-      if (filter.on === previous.on || doc().info.kind !== "pcb") return;
+      if ((filter.on === previous.on && filter.offLayers === previous.offLayers) || doc().info.kind !== "pcb") return;
       const d = doc();
       const selection = [...d.selection].filter(id => { const item = d.items.get(id); return item && selectable(d.info.kind, item); });
       if (selection.length !== d.selection.size) st().patchDoc(docId, { selection: new Set(selection) });
@@ -495,6 +524,16 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         if (b) cam.fit(b, 80);
         rebuildOverlay();
       }
+    });
+
+    const offPickUp = bus.on("pickUp", ({ docId: target, ids }) => {
+      if (target !== docId) return;
+      if (doc().tool !== "select") st().patchDoc(docId, { tool: "select" });
+      ensureTool();
+      rebuildScene();
+      tool.pickUp?.(env, ids);
+      updateHint();
+      rebuildOverlay();
     });
 
     const onContext = (e: MouseEvent) => e.preventDefault();
@@ -517,6 +556,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       resize.disconnect();
       unsubscribe();
       offView();
+      offPickUp();
       offFilter();
       offTheme();
       rebuildRef.current = () => {};

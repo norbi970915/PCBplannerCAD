@@ -337,3 +337,13 @@ pub fn via_for(doc: &Document, net: &str, pos: Point) -> Via {
         net: net.to_string(),
     }
 }
+
+/// A via for a layer change from `a` to `b`: the smallest defined via type that
+/// connects both layers (blind, buried or micro), else a through via.
+pub fn via_between(doc: &Document, net: &str, pos: Point, a: LayerId, b: LayerId) -> Via {
+    let board = world::board_of(doc);
+    match board.via_type_between(a, b) {
+        Some(t) => Via { pos, diameter: t.diameter, drill: t.drill, from_layer: t.from_layer, to_layer: t.to_layer, net: net.to_string() },
+        None => via_for(doc, net, pos),
+    }
+}

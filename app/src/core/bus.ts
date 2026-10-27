@@ -11,6 +11,8 @@ export interface BusEvents {
   libraryClosed: { libId: string };
   /** Canvas view commands for the active document. */
   view: { action: "fit" | "zoomIn" | "zoomOut" | "fitSelection" };
+  /** Attach items of a document to its canvas cursor as a floating move. */
+  pickUp: { docId: string; ids: number[] };
   resetLayout: Record<string, never>;
   showPanel: { id: "projects" | "components" | "properties" | "messages" | "scripts" | "pcb" };
   /** Open the 3D viewer for a board. */

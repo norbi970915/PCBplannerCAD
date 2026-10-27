@@ -67,7 +67,7 @@ For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/PC
 
 With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design.
 
-For editor regressions run `pnpm.cmd -C app test:editor`. See [today's progress and remaining work](docs/PROGRESS-2026-10-26.md) for continuation on another computer.
+For editor regressions run `pnpm.cmd -C app test:editor`. See [latest progress and remaining work](docs/PROGRESS-2026-10-27-1544.md) for continuation on another computer.
 
 ## Bringing designs in
 

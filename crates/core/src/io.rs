@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::document::{DocKind, Document, IdItem};
+use crate::item::Item;
 use crate::error::CoreError;
 use crate::library::{CachedPart, Library};
 use crate::project::Project;
@@ -85,6 +86,11 @@ pub fn document_from_str(kind: DocKind, s: &str) -> Result<Document, CoreError> 
     let mut items = BTreeMap::new();
     for IdItem { id, item } in body.items {
         item.validate()?;
+        // Earlier imports stored fractured pour fills; resolve them so boards stay responsive.
+        let item = match item {
+            Item::Zone(z) if crate::pcb::fill::is_fractured(&z.fill) => Item::Zone(crate::pcb::Zone { fill: crate::pcb::fill::unfracture(&z.fill), ..z }),
+            other => other,
+        };
         items.insert(id, item);
     }
     Ok(Document::from_parts(kind, items, body.parts).with_footprints(body.footprints))

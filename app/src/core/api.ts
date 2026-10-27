@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AirWire,
+  CleanupOptions,
+  CleanupResult,
+  TeardropOptions,
   BoardModel3d,
   BoardSettings,
   DrcReport,
@@ -30,6 +33,10 @@ import type {
   ReportLine,
   Snapshot,
   Update,
+  IdItem,
+  Item,
+  RouteMode,
+  CornerStyle,
 } from "./types";
 
 export type EntryKind = "symbol" | "footprint" | "component";
@@ -127,6 +134,21 @@ export const api = {
   pcbDrc: (id: string) => invoke<DrcReport>("pcb_drc", { id }),
   pcbDrcNear: (id: string, items: ItemId[]) => invoke<DrcViolation[]>("pcb_drc_near", { id, items }),
   pcbRepour: (id: string, zone: ItemId | null) => invoke<Update>("pcb_repour", { id, zone }),
+  /** Moving footprints with their tracks kept connected, as a `route` command plan. */
+  pcbDragFootprints: (id: string, req: { ids: ItemId[]; delta: Point; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
+    invoke<{ replace: IdItem[]; delete: ItemId[]; add: Item[]; rerouted: number; blocked: number }>("pcb_drag_footprints", { id, req }),
+  /** Cleanup Tracks & Vias plan; commit it as a `route` command. */
+  /** Teardrop regeneration plan (replaces all teardrops); commit it as a `route` command. */
+  pcbTeardrops: (id: string, opts: TeardropOptions) => invoke<{ delete: ItemId[]; add: Item[]; vias: number; pads: number }>("pcb_teardrops", { id, opts }),
+  pcbCleanup: (id: string, opts: CleanupOptions) => invoke<CleanupResult>("pcb_cleanup", { id, opts }),
+  /** Stitching vias for a filled pour (tagged as items); commit them as a `route` command. */
+  pcbStitch: async (id: string, req: { zone: ItemId; pitch: number; stagger: boolean; bothSides: boolean }) => {
+    const r = await invoke<{ vias: Omit<ViaItem, "kind">[]; candidates: number; rejected: number }>("pcb_stitch", { id, req });
+    return { ...r, vias: r.vias.map((v): ViaItem => ({ ...v, kind: "via" })) };
+  },
+  /** Several footprints, each by its own offset, with tracks kept connected (Pack & Move), as a `route` command plan. */
+  pcbDragEach: (id: string, req: { moves: { id: ItemId; delta: Point }[]; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
+    invoke<{ replace: IdItem[]; delete: ItemId[]; add: Item[]; rerouted: number; blocked: number }>("pcb_drag_each", { id, req }),
   pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
   pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number): Promise<[RouteResult, RouteResult]> => {
     const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap });
@@ -135,8 +157,9 @@ export const api = {
   pcbTune: (id: string, req: { tracks: ItemId[]; targetLength: number; amplitude: number; spacing: number; style?: "trombone" | "accordion" }) =>
     invoke<Update>("pcb_tune", { id, req }),
   pcbNetLength: (id: string, net: string) => invoke<number>("pcb_net_length", { id, net }),
-  pcbVia: async (id: string, net: string, pos: Point): Promise<ViaItem> => ({
-    ...await invoke<Omit<ViaItem, "kind">>("pcb_via", { id, net, pos }), kind: "via",
+  /** A via for `net`; with `from`/`to` the board's matching via type (blind, buried, micro) is used, else a through via. */
+  pcbVia: async (id: string, net: string, pos: Point, from: number | null = null, to: number | null = null): Promise<ViaItem> => ({
+    ...await invoke<Omit<ViaItem, "kind">>("pcb_via", { id, net, pos, from, to }), kind: "via",
   }),
   pcbObjectAt: (id: string, pos: Point, layer: number) => invoke<[ItemId, string] | null>("pcb_object_at", { id, pos, layer }),
   pcbNetItems: (id: string, net: string) => invoke<ItemId[]>("pcb_net_items", { id, net }),

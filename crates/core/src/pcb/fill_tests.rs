@@ -26,6 +26,7 @@ fn board_items() -> Vec<Item> {
 
 fn zone(outline: Vec<Point>, net: &str) -> Zone {
     Zone {
+            teardrop: false,
         outline,
         layer: layer::TOP_COPPER,
         net: net.into(),
@@ -663,4 +664,21 @@ fn perf_large_board() {
     println!("filled 2 GND planes in {dt:?}: {polys} polygons, {verts} vertices");
     assert_eq!(fills.len(), 2);
     assert!(polys > 0);
+}
+
+/// A 10 × 10 mm square with a 2 × 2 mm hole joined to its outline by a slit,
+/// as fractured fills are stored, resolves into one outline with one hole.
+#[test]
+fn unfracture_turns_slit_holes_into_holes() {
+    let ring = vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0), p(0.0, 4.0), p(4.0, 4.0), p(4.0, 6.0), p(6.0, 6.0), p(6.0, 4.0), p(4.0, 4.0), p(0.0, 4.0)];
+    let fractured = vec![ZonePolygon { outer: ring, holes: vec![] }];
+    assert!(is_fractured(&fractured));
+    let fixed = unfracture(&fractured);
+    assert_eq!(fixed.len(), 1);
+    assert_eq!(fixed[0].holes.len(), 1);
+    assert!(!is_fractured(&fixed));
+    let area = |r: &[Point]| crate::pcb::geometry::signed_area(r).abs() / 1e12;
+    assert!((area(&fixed[0].outer) - area(&fixed[0].holes[0]) - 96.0).abs() < 1e-6);
+    let plain = vec![ZonePolygon { outer: rect(0.0, 0.0, 1.0, 1.0), holes: vec![] }];
+    assert!(!is_fractured(&plain));
 }

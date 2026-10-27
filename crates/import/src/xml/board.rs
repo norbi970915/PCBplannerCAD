@@ -175,6 +175,7 @@ fn zone(n: Node<'_, '_>, layer: LayerId, net: &str, thermal_gap: Coord, stats: &
     let width = coord(n, "width").max(0);
     stats.zones += 1;
     Some(Zone {
+        teardrop: false,
         outline,
         layer,
         net: net.to_string(),
@@ -292,6 +293,7 @@ impl Ctx<'_> {
                     if outline.len() >= 3 {
                         let cu = if l == 41 { layer::TOP_COPPER } else { layer::BOTTOM_COPPER };
                         out.push(Item::Zone(Zone {
+                            teardrop: false,
                             outline,
                             layer: cu,
                             net: String::new(),

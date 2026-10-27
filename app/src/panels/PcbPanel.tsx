@@ -9,45 +9,10 @@ import { cn } from "@/lib/utils";
 import { api } from "../core/api";
 import { report } from "../core/actions";
 import { bus } from "../core/bus";
-import { activeDoc, useEditor, type DocState } from "../core/store";
-import type { BoardItem } from "../core/types";
+import { activeDoc, useEditor } from "../core/store";
+import { layer } from "../core/layers";
+import { netRows } from "../pcb/boardTools";
 import { NM_PER_MM } from "../core/units";
-
-interface NetRow {
-  name: string;
-  cls: string;
-  pads: number;
-  vias: number;
-  /** Routed copper length (tracks + arcs), nm. */
-  length: number;
-  unrouted: number;
-}
-
-const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-
-/** Per-net statistics computed from the board items and the live ratsnest. */
-function netRows(doc: DocState): { rows: NetRow[]; classes: string[] } {
-  const board = [...doc.items.values()].find((i): i is BoardItem => i.kind === "board");
-  const classes = board?.netClasses ?? [];
-  const classOf = new Map<string, string>();
-  for (const c of classes) for (const n of c.nets) classOf.set(n, c.name);
-  const fallback = classes[0]?.name ?? "Default";
-  const rows = new Map<string, NetRow>();
-  const row = (name: string) => {
-    let r = rows.get(name);
-    if (!r) rows.set(name, (r = { name, cls: classOf.get(name) ?? fallback, pads: 0, vias: 0, length: 0, unrouted: 0 }));
-    return r;
-  };
-  for (const it of doc.items.values()) {
-    if (it.kind === "footprint") {
-      for (const n of Object.values(it.padNets)) if (n) row(n).pads++;
-    } else if (it.kind === "track" && it.net) row(it.net).length += Math.hypot(it.b.x - it.a.x, it.b.y - it.a.y);
-    else if (it.kind === "arcTrack" && it.net) row(it.net).length += (Math.abs(it.sweep) * Math.PI * it.radius) / 180;
-    else if (it.kind === "via" && it.net) row(it.net).vias++;
-  }
-  for (const w of doc.airwires) if (w.net) row(w.net).unrouted++;
-  return { rows: [...rows.values()].sort((a, b) => natural.compare(a.name, b.name)), classes: classes.map((c) => c.name) };
-}
 
 export function PcbPanel() {
   const doc = useEditor((s) => (s.activeDocId ? s.docs[s.activeDocId] : undefined));
@@ -56,7 +21,12 @@ export function PcbPanel() {
   const [onlyOpen, setOnlyOpen] = useState(false);
   const [current, setCurrent] = useState<string | null>(null);
   const isBoard = doc?.info.kind === "pcb";
-  const data = useMemo(() => (doc && isBoard ? netRows(doc) : { rows: [], classes: [] }), [doc?.items, doc?.airwires, isBoard]);
+  const layerNames = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const it of doc?.items.values() ?? []) if (it.kind === "board") for (const l of it.stackup.layers) if (l.layer !== null) m.set(l.layer, l.name);
+    return m;
+  }, [doc?.items]);
+  const data = useMemo(() => (doc && isBoard ? netRows(doc.items, doc.airwires) : { rows: [], classes: [] }), [doc?.items, doc?.airwires, isBoard]);
 
   if (!doc || !isBoard)
     return (
@@ -121,21 +91,22 @@ export function PcbPanel() {
           </label>
         </div>
       </div>
-      <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_34px_64px_30px] gap-2 border-b border-line bg-panel-head px-2 py-1 text-[10px] font-semibold text-faint">
+      <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_30px_30px_58px_30px] gap-2 border-b border-line bg-panel-head px-2 py-1 text-[10px] font-semibold text-faint">
         <span>Net</span>
         <span className="text-right">Pads</span>
+        <span className="text-right">Vias</span>
         <span className="text-right">Length</span>
         <span className="text-right" title="Unrouted connections">Open</span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {rows.map((r) => (
+          <div key={r.name}>
           <div
-            key={r.name}
             onClick={() => void highlight(r.name)}
             onDoubleClick={() => void zoom(r.name)}
-            title={`${r.name} · class ${r.cls} · ${r.vias} vias — click to highlight, double-click to zoom`}
+            title={`${r.name} · class ${r.cls} — click to highlight and show lengths per layer, double-click to zoom`}
             className={cn(
-              "grid cursor-default grid-cols-[minmax(0,1fr)_34px_64px_30px] items-center gap-2 px-2 py-[3px] hover:bg-hover",
+              "grid cursor-default grid-cols-[minmax(0,1fr)_30px_30px_58px_30px] items-center gap-2 px-2 py-[3px] hover:bg-hover",
               current === r.name && "bg-sel hover:bg-sel",
             )}
           >
@@ -144,8 +115,21 @@ export function PcbPanel() {
               {r.cls !== data.classes[0] && <span className="ml-1.5 font-sans text-[10px] text-faint">{r.cls}</span>}
             </span>
             <span className="text-right font-mono text-muted-foreground">{r.pads}</span>
+            <span className="text-right font-mono text-muted-foreground">{r.vias || "·"}</span>
             <span className="text-right font-mono text-muted-foreground">{r.length ? (r.length / NM_PER_MM).toFixed(2) : "—"}</span>
             <span className={cn("text-right font-mono", r.unrouted ? "text-err-line" : "text-faint")}>{r.unrouted || "·"}</span>
+          </div>
+          {current === r.name && r.byLayer.size > 0 && (
+            <div className="grid gap-0.5 border-b border-line/60 bg-sel/40 py-1 pl-5 pr-2 text-[11px]">
+              {[...r.byLayer].sort((a, b) => a[0] - b[0]).map(([l, len]) => (
+                <div key={l} className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">{layerNames.get(l) ?? layer(l).name}</span>
+                  <span className="font-mono">{(len / NM_PER_MM).toFixed(2)} mm · {Math.round((100 * len) / r.length)}%</span>
+                </div>
+              ))}
+              {r.vias > 0 && <div className="flex justify-between gap-2"><span className="text-muted-foreground">Layer changes</span><span className="font-mono">{r.vias} via{r.vias === 1 ? "" : "s"}</span></div>}
+            </div>
+          )}
           </div>
         ))}
         {!rows.length && <p className="px-3 py-3 text-muted-foreground">No nets match.</p>}

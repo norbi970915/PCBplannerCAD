@@ -20,7 +20,7 @@ function pickOutline(env: ToolEnv) {
   for (const [id, item] of doc.items) {
     const ring = editableRing(item);
     if (!ring || !("layer" in item) || !layerVisible(doc.view, item.layer)) continue;
-    if (item.layer !== doc.activeLayer && (!doc.selection.has(id) || doc.singleLayer)) continue;
+    if (item.layer !== doc.activeLayer && (!doc.selection.has(id) || doc.layerMode !== "all")) continue;
     const hit = nearestOnRing(ring, env.raw());
     if (!hit || hit.dist > tol) continue;
     const score = hit.dist - (doc.selection.has(id) ? tol : 0);

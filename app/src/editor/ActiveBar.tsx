@@ -1,13 +1,18 @@
 import type { ReactNode } from "react";
+import { Funnel, ShieldCheck, ShieldOff } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { bus } from "../core/bus";
+import { filterActive, useSelectFilter } from "../core/selectFilter";
 import { useEditor } from "../core/store";
+import { SelectionFilter } from "../panels/SelectionFilter";
 import { Icons } from "../shell/icons";
 import { TOOLS } from "./profiles";
-import { activateTool } from "./toolActions";
+import { LAYER_MODES } from "../core/view";
+import { activateTool, cycleLayerMode } from "./toolActions";
 
 function BarButton({ label, keys, active, onClick, children }: { label: string; keys?: string; active?: boolean; onClick: () => void; children: ReactNode }) {
   return (
@@ -70,11 +75,58 @@ export function RoutingBar({ docId }: { docId: string }) {
   </div>;
 }
 
+/** Design rules on (walk around / push) or off (ignore violators). */
+function RulesButton() {
+  const on = useEditor((s) => s.drcEnforce);
+  return (
+    <BarButton
+      label={on ? "Design rules ON: routing and moves keep clearances" : "Design rules OFF: routing and moves ignore violators"}
+      keys="Ctrl+Shift+D"
+      active={!on}
+      onClick={() => useEditor.getState().toggleDrcEnforce()}
+    >
+      {on ? <ShieldCheck className="size-4" /> : <ShieldOff className="size-4 text-err-line" />}
+    </BarButton>
+  );
+}
+
+/** Toolbar dropdown with the board selection filter; lit while anything is filtered out. */
+function SelectionFilterButton({ docId }: { docId: string }) {
+  const doc = useEditor((s) => s.docs[docId]);
+  const active = useSelectFilter(filterActive);
+  if (!doc) return null;
+  return (
+    <Popover>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              aria-label="Selection filter"
+              className={cn(
+                "relative grid size-7 place-items-center rounded-[4px] text-muted-foreground transition-colors hover:bg-hover hover:text-ink",
+                active && "text-accent-ink",
+              )}
+            >
+              <Funnel className="size-4" />
+              {active && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-[var(--ui-accent)]" />}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{active ? "Selection filter (some objects excluded)" : "Selection filter"}</TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" className="max-h-[70vh] w-64 overflow-y-auto p-2.5" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="eyebrow pb-1">Selection filter</div>
+        <SelectionFilter doc={doc} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /** Floating tool strip at the top of the editor. */
 export function ActiveBar({ docId }: { docId: string }) {
   const kind = useEditor((s) => s.docs[docId]?.info.kind);
   const tool = useEditor((s) => s.docs[docId]?.tool);
-  const singleLayer = useEditor((s) => s.docs[docId]?.singleLayer);
+  const layerMode = useEditor((s) => s.docs[docId]?.layerMode);
   if (!kind) return null;
   const boardLike = kind === "pcb" || kind === "footprint";
 
@@ -104,10 +156,12 @@ export function ActiveBar({ docId }: { docId: string }) {
         {Icons.fit}
       </BarButton>
       {boardLike && (
-        <BarButton label="Single layer mode" keys="Shift+S" active={singleLayer} onClick={() => useEditor.getState().patchDoc(docId, { singleLayer: !singleLayer })}>
+        <BarButton label={`Layer display: ${LAYER_MODES[layerMode ?? "all"].label}`} keys="Shift+S" active={layerMode !== "all"} onClick={() => cycleLayerMode(docId)}>
           {Icons.singleLayer}
         </BarButton>
       )}
+      {kind === "pcb" && <SelectionFilterButton docId={docId} />}
+      {kind === "pcb" && <RulesButton />}
     </div>
   );
 }

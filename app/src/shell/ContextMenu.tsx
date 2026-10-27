@@ -52,13 +52,21 @@ function entriesFor(docId: string): Entry[] {
 
   const net = netOf(one);
   if (board && net) out.push({ label: `Highlight Net "${net}"`, run: () => highlightNetOnBoard(docId, net) });
+  if (board && (one?.kind === "track" || one?.kind === "arcTrack" || one?.kind === "via")) out.push(cmd("edit.selectConnection", "Select Connection"));
   if (board && one?.kind === "zone") {
     if (!one.keepout) out.push({ label: "Repour This Polygon", run: () => repour(docId, sel[0]) });
+    if (!one.keepout && one.net) out.push(cmd("tools.stitch", "Via Stitching…"));
     out.push({ label: "Reshape Polygon", keys: "E R", run: () => st().patchDoc(docId, { tool: "reshape" }) });
     out.push(cmd("place.pcb.polygonCut"), cmd("place.pcb.polygonSlice"));
   }
   if (board && one?.kind === "footprint") {
     out.push(cmd("edit.mirror", "Flip to Other Side"), { label: "View in 3D", keys: "3", run: () => bus.emit("show3d", { docId }) });
+  }
+  const parts = board ? sel.filter((id) => doc.items.get(id)?.kind === "footprint").length : 0;
+  if (parts) out.push(cmd("edit.unroute", parts === 1 ? "Unroute" : `Unroute ${parts} Footprints`));
+  if (parts >= 2) {
+    out.push("-", cmd("edit.alignLeft"), cmd("edit.alignRight"), cmd("edit.alignTop"), cmd("edit.alignBottom"), cmd("edit.alignCenterX"), cmd("edit.alignCenterY"));
+    if (parts >= 3) out.push(cmd("edit.distributeX"), cmd("edit.distributeY"));
   }
   if (out.length) out.push("-");
   out.push(cmd("edit.rotate"));

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { open as openDialogPicker, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,16 +17,18 @@ import { execute, report } from "../core/actions";
 import { bus } from "../core/bus";
 import { refreshFootprints, scheduleAnalysis } from "../core/pcbActions";
 import { activeDoc, useEditor, type DocState } from "../core/store";
-import type { BoardItem, EcoChange, ItemId, NetClass, Rule, StackLayer } from "../core/types";
+import type { BoardItem, EcoChange, ItemId, LayerId, NetClass, Rule, StackLayer, ViaItem, ViaType } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import { Dialog, useModal } from "../shell/modal";
 import { buildPrint } from "./print";
+import { CleanupDialog, StatsDialog, StitchDialog, TeardropDialog } from "./BoardToolDialogs";
+import { StackupView, VIA_KIND_LABEL, viaKind, viaSpan, type StackupVia, type ViaKind } from "./StackupView";
 
 const mm = (v: number) => Math.round(v * NM_PER_MM);
 const toMm = (nm: number) => nm / NM_PER_MM;
 const close = () => useModal.getState().close();
 
-type DialogName = "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants";
+type DialogName = "eco" | "stack" | "rules" | "impedance" | "tune" | "outputs" | "print" | "panelize" | "variants" | "cleanup" | "stitch" | "stats" | "teardrops";
 
 export function openDialog(name: DialogName) {
   const doc = activeDoc();
@@ -55,6 +58,14 @@ export function openDialog(name: DialogName) {
       return show(<PanelizeDialog docId={id} />);
     case "variants":
       return show(<VariantsDialog />);
+    case "cleanup":
+      return show(<CleanupDialog docId={id} />);
+    case "stitch":
+      return show(<StitchDialog docId={id} />);
+    case "stats":
+      return show(<StatsDialog docId={id} />);
+    case "teardrops":
+      return show(<TeardropDialog docId={id} />);
   }
 }
 
@@ -121,6 +132,7 @@ function EcoDialog({ docId }: { docId: string }) {
 
   const apply = async () => {
     try {
+      const before = new Set(useEditor.getState().docs[docId]?.items.keys() ?? []);
       const u = await api.pcbEcoApply(docId, [...selected]);
       useEditor.getState().applyUpdate(u);
       await refreshFootprints(docId);
@@ -128,6 +140,12 @@ function EcoDialog({ docId }: { docId: string }) {
       useEditor.getState().log("info", `Applied ${selected.size} engineering changes.`);
       bus.emit("view", { action: "fit" });
       close();
+      // New footprints arrive on the cursor; Esc leaves them packed beside the board.
+      const added = [...(useEditor.getState().docs[docId]?.items ?? [])].filter(([id, it]) => it.kind === "footprint" && !before.has(id)).map(([id]) => id);
+      if (added.length) {
+        bus.emit("pickUp", { docId, ids: added });
+        toast.info(`${added.length} new footprint${added.length === 1 ? "" : "s"} on the cursor: click to drop them · Esc leaves them beside the board`);
+      }
     } catch (e) {
       report(e);
     }
@@ -204,6 +222,10 @@ function StackDialog({ docId }: { docId: string }) {
   const [layers, setLayers] = useState<StackLayer[]>(board?.[1].stackup.layers ?? []);
   const [mask, setMask] = useState(board?.[1].maskColor ?? "#1f5f2a");
   const [silk, setSilk] = useState(board?.[1].silkColor ?? "#f2f2f2");
+  const [viaTypes, setViaTypes] = useState<ViaType[]>(board?.[1].viaTypes ?? []);
+  const [hover, setHover] = useState<number | null>(null);
+  const items = useEditor((s) => s.docs[docId]?.items);
+  const boardVias = useMemo(() => [...(items?.values() ?? [])].filter((i): i is ViaItem => i.kind === "via"), [items]);
   if (!board) return null;
   const [id, settings] = board;
   const copper = layers.filter((l) => l.kind === "copper").length;
@@ -232,15 +254,47 @@ function StackDialog({ docId }: { docId: string }) {
   };
 
   const patch = (i: number, p: Partial<StackLayer>) => setLayers(layers.map((l, j) => (j === i ? { ...l, ...p } : l)));
+  const cuIds = layers.filter((l) => l.kind === "copper" && l.layer !== null).map((l) => l.layer as LayerId);
+  // Via types whose layers left the stack (copper count changed) are dropped on Apply.
+  const validTypes = viaTypes.filter((t) => cuIds.includes(t.fromLayer) && cuIds.includes(t.toLayer));
   const save = async () => {
-    await saveBoard(docId, id, { ...settings, stackup: { layers }, maskColor: mask, silkColor: silk });
+    await saveBoard(docId, id, { ...settings, stackup: { layers }, viaTypes: validTypes, maskColor: mask, silkColor: silk });
     close();
   };
+  const sameSpan = (a: { fromLayer: LayerId; toLayer: LayerId }, from: LayerId, to: LayerId) =>
+    viaSpan(cuIds, a.fromLayer, a.toLayer).join() === viaSpan(cuIds, from, to).join();
+  // Placed vias grouped by span and size; groups matching a via type count toward it.
+  const placed = new Map<string, StackupVia>();
+  for (const v of boardVias) {
+    const key = `${viaSpan(cuIds, v.fromLayer, v.toLayer).join()}|${v.diameter}|${v.drill}`;
+    const g = placed.get(key) ?? { label: "On the board", from: v.fromLayer, to: v.toLayer, diameter: v.diameter, drill: v.drill, count: 0, defined: false };
+    g.count++;
+    placed.set(key, g);
+  }
+  const columns: StackupVia[] = validTypes.map((t) => {
+    const g = [...placed.values()].find((p) => sameSpan(t, p.from, p.to) && p.diameter === t.diameter && p.drill === t.drill);
+    if (g) g.defined = true;
+    return { label: t.name, from: t.fromLayer, to: t.toLayer, diameter: t.diameter, drill: t.drill, count: g?.count ?? 0, defined: true };
+  });
+  // Through vias sized by the rules are always allowed, so they never read as undefined.
+  for (const g of placed.values()) if (!g.defined) columns.push({ ...g, label: viaSpan(cuIds, g.from, g.to).length === cuIds.length ? "Through (rules)" : "Undefined", defined: viaSpan(cuIds, g.from, g.to).length === cuIds.length });
+  const patchType = (i: number, p: Partial<ViaType>) => setViaTypes(viaTypes.map((t, j) => (j === i ? { ...t, ...p } : t)));
+  const preset = (kind: ViaKind) => {
+    const top = cuIds[0], bottom = cuIds[cuIds.length - 1], inner = cuIds.slice(1, -1);
+    const t: ViaType | null =
+      kind === "through" ? { name: "Through", fromLayer: top, toLayer: bottom, diameter: mm(0.6), drill: mm(0.3) }
+      : kind === "micro" ? (inner.length ? { name: "Microvia", fromLayer: top, toLayer: inner[0], diameter: mm(0.25), drill: mm(0.1) } : null)
+      : kind === "blind" ? (inner.length ? { name: "Blind", fromLayer: top, toLayer: inner[Math.min(1, inner.length - 1)], diameter: mm(0.45), drill: mm(0.2) } : null)
+      : inner.length >= 2 ? { name: "Buried", fromLayer: inner[0], toLayer: inner[inner.length - 1], diameter: mm(0.45), drill: mm(0.2) } : null;
+    if (t) setViaTypes([...viaTypes, t]);
+  };
+  const presets: [ViaKind, boolean][] = [["through", true], ["blind", cuIds.length > 2], ["buried", cuIds.length > 3], ["micro", cuIds.length > 2]];
+  const layerName = (lid: LayerId) => layers.find((l) => l.layer === lid)?.name ?? `Layer ${lid}`;
 
   return (
     <Dialog
       title="Layer stack manager"
-      wide
+      xwide
       footer={
         <>
           <span className="mr-auto font-mono text-[11px] text-muted-foreground">
@@ -270,6 +324,8 @@ function StackDialog({ docId }: { docId: string }) {
           <input type="color" value={silk} onChange={(e) => setSilk(e.target.value)} className="h-7 w-16 rounded-[5px] border border-line bg-field" />
         </Field>
       </div>
+      <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.85fr)]">
+      <div className="grid gap-3">
       <div className="rounded-[5px] border border-line">
         <div className="grid grid-cols-[18px_1.3fr_110px_110px_1fr_70px] gap-2 border-b border-line bg-panel-head px-2 py-1.5 text-[11px] font-semibold text-faint">
           <span />
@@ -292,6 +348,49 @@ function StackDialog({ docId }: { docId: string }) {
             <Input className="h-6 font-mono" value={l.epsilonR ? String(l.epsilonR) : ""} disabled={l.kind !== "dielectric" && l.kind !== "solderMask"} onChange={(e) => patch(i, { epsilonR: parseFloat(e.target.value) || 0 })} />
           </div>
         ))}
+      </div>
+      <div className="rounded-[5px] border border-line">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-line bg-panel-head px-2 py-1.5">
+          <span className="mr-auto text-[11px] font-semibold text-faint">Via types</span>
+          {presets.map(([kind, ok]) => (
+            <Button key={kind} variant="outline" size="sm" className="h-6 gap-1 px-2 text-[11px]" disabled={!ok} onClick={() => preset(kind)} title={ok ? `Add a ${VIA_KIND_LABEL[kind].toLowerCase()} via type` : "Needs more copper layers"}>
+              <Plus className="size-3" /> {VIA_KIND_LABEL[kind]}
+            </Button>
+          ))}
+        </div>
+        <div className="grid grid-cols-[1fr_120px_120px_70px_70px_74px_24px] gap-2 border-b border-line px-2 py-1 text-[11px] font-semibold text-faint">
+          <span>Name</span><span>From</span><span>To</span><span>Ø (mm)</span><span>Drill</span><span>Kind</span><span />
+        </div>
+        {!viaTypes.length && <p className="px-2 py-2 text-[11px] text-muted-foreground">No via types: routing places through vias sized by the via-style rule. Add blind, buried or microvias to route between those layers with <span className="font-mono">*</span>.</p>}
+        {viaTypes.map((t, i) => {
+          const valid = cuIds.includes(t.fromLayer) && cuIds.includes(t.toLayer);
+          const col = validTypes.indexOf(t);
+          return (
+            <div key={i} className={cn("grid grid-cols-[1fr_120px_120px_70px_70px_74px_24px] items-center gap-2 border-b border-line/60 px-2 py-0.5", hover === col && col >= 0 && "bg-sel")} onMouseEnter={() => setHover(col >= 0 ? col : null)} onMouseLeave={() => setHover(null)}>
+              <Input value={t.name} onChange={(e) => patchType(i, { name: e.target.value })} className="h-6" />
+              {(["fromLayer", "toLayer"] as const).map((k) => (
+                <NativeSelect key={k} value={String(t[k])} onChange={(e) => patchType(i, { [k]: Number(e.target.value) })}>
+                  {!cuIds.includes(t[k]) && <NativeSelectOption value={String(t[k])}>(removed layer)</NativeSelectOption>}
+                  {cuIds.map((lid) => <NativeSelectOption key={lid} value={String(lid)}>{layerName(lid)}</NativeSelectOption>)}
+                </NativeSelect>
+              ))}
+              <Input className="h-6 font-mono" defaultValue={toMm(t.diameter).toString()} onBlur={(e) => Number.isFinite(parseFloat(e.target.value)) && patchType(i, { diameter: mm(parseFloat(e.target.value)) })} />
+              <Input className="h-6 font-mono" defaultValue={toMm(t.drill).toString()} onBlur={(e) => Number.isFinite(parseFloat(e.target.value)) && patchType(i, { drill: mm(parseFloat(e.target.value)) })} />
+              <span className={cn("text-[11px]", valid ? "text-muted-foreground" : "text-err-line")}>{valid ? VIA_KIND_LABEL[viaKind(cuIds, t.fromLayer, t.toLayer, t.drill)] : "Invalid"}</span>
+              <button className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-hover hover:text-ink" aria-label={`Remove ${t.name}`} onClick={() => setViaTypes(viaTypes.filter((_, j) => j !== i))}><Trash2 className="size-3.5" /></button>
+            </div>
+          );
+        })}
+        {viaTypes.length > validTypes.length && <p className="px-2 py-1.5 text-[11px] text-err-line">Via types on removed copper layers are dropped on Apply.</p>}
+      </div>
+      </div>
+      <div className="sticky top-0 rounded-[5px] border border-line bg-panel p-2">
+        <div className="pb-1 text-[11px] font-semibold text-faint">Cross-section</div>
+        <div className="overflow-x-auto">
+          <StackupView layers={layers} vias={columns} mask={mask} silk={silk} highlight={hover} onHover={setHover} />
+        </div>
+        <p className="pt-1 text-[11px] text-muted-foreground">Defined via types and the vias placed on this board ({boardVias.length}) are drawn across the copper layers they connect. Red labels: placed vias that match no via type. Hover a column or row to match them up.</p>
+      </div>
       </div>
     </Dialog>
   );

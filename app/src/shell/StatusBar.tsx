@@ -6,6 +6,33 @@ function Cell({ children, className = "" }: { children: React.ReactNode; classNa
   return <span className={`flex items-center gap-1.5 border-r border-line px-2.5 last:border-r-0 ${className}`}>{children}</span>;
 }
 
+/** Design-rule switch and the online DRC result; both click to toggle. */
+function DrcCells({ docId }: { docId: string }) {
+  const enforce = useEditor((s) => s.drcEnforce);
+  const onlineDrc = useEditor((s) => s.onlineDrc);
+  const drc = useEditor((s) => s.docs[docId]?.drc);
+  const errors = drc?.filter((v) => v.severity === "error").length ?? 0;
+  const warnings = (drc?.length ?? 0) - errors;
+  return (
+    <>
+      <button
+        title={enforce ? "Design rules ON: routing and moves keep clearances (Ctrl+Shift+D)" : "Design rules OFF: violators are ignored (Ctrl+Shift+D)"}
+        onClick={() => useEditor.getState().toggleDrcEnforce()}
+        className={`flex h-full items-center border-r border-line px-2.5 hover:bg-hover ${enforce ? "" : "font-semibold text-err-line"}`}
+      >
+        Rules {enforce ? "on" : "off"}
+      </button>
+      <button
+        title={onlineDrc ? "Online DRC: checked after every change · click to turn off (T D runs a full check)" : "Online DRC off · click to check after every change"}
+        onClick={() => useEditor.getState().toggleOnlineDrc()}
+        className={`flex h-full items-center gap-1 border-r border-line px-2.5 hover:bg-hover ${!onlineDrc ? "text-faint" : errors ? "font-semibold text-err-line" : warnings ? "text-note-line" : "text-ok"}`}
+      >
+        {!onlineDrc ? "DRC off" : errors || warnings ? `DRC ${errors} error${errors === 1 ? "" : "s"}${warnings ? ` · ${warnings} warning${warnings === 1 ? "" : "s"}` : ""}` : "DRC ✓"}
+      </button>
+    </>
+  );
+}
+
 export function StatusBar() {
   const units = useEditor((s) => s.units);
   const cursor = useEditor((s) => s.cursor);
@@ -37,6 +64,7 @@ export function StatusBar() {
           "Open or create a project to start"
         )}
       </Cell>
+      {doc?.info.kind === "pcb" && <DrcCells docId={doc.info.id} />}
       {doc && (
         <Cell>
           {doc.selection.size ? `${doc.selection.size} selected · ` : ""}

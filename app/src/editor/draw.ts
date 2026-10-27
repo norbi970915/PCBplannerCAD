@@ -2,6 +2,7 @@
 // triangles) tagged with a *role*; the theme maps roles to colors. The same
 // primitives drive rendering, hit testing and bounds.
 
+import { dimensionPrims } from "./dimension";
 import type {
   CachedPart,
   Footprint,
@@ -509,7 +510,7 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
     if ((item.kind === "track" || item.kind === "arcTrack") && ctx.view?.tracks === false) return out;
     if (item.kind === "via" && (ctx.view?.vias === false || !layerVisible(ctx.view, 15))) return out;
     if (item.kind === "text" && ctx.view?.text === false) return out;
-    if (["line", "arc", "circle", "rect", "polyline"].includes(item.kind) && ctx.view?.graphics === false) return out;
+    if (["line", "arc", "circle", "rect", "polyline", "dimension"].includes(item.kind) && ctx.view?.graphics === false) return out;
     if (item.kind === "zone" && item.keepout && !layerVisible(ctx.view, 5)) return out;
   }
   switch (item.kind) {
@@ -575,6 +576,9 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
     case "zone":
       drawZone(out, item, ctx.pourFills !== false);
       break;
+    case "dimension":
+      for (const p of dimensionPrims(item)) drawGraphic(out, p, ctx, `L${item.layer}`, `L${item.layer}`);
+      break;
     case "board":
       break;
   }
@@ -615,6 +619,9 @@ function drawFootprint(out: Out, fp: ItemOf<"footprint">, ctx: DrawContext) {
   }
 }
 
+/** Pour fills are large and immutable; a repour replaces the polygons, so earcut runs once per fill. */
+const fillTriangles = new WeakMap<object, number[]>();
+
 function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean) {
   // Outlines are construction lines, not copper: 1 px at any zoom.
   const outline = 0;
@@ -631,11 +638,13 @@ function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean) {
     }
     return;
   }
-  for (const poly of fills ? z.fill : []) {
-    const tris = triangulateWithHoles(poly.outer, poly.holes);
+  // Teardrops are part of the track joint: always shown, no construction outline.
+  for (const poly of fills || z.teardrop ? z.fill : []) {
+    let tris = fillTriangles.get(poly);
+    if (!tris) fillTriangles.set(poly, (tris = triangulateWithHoles(poly.outer, poly.holes)));
     if (tris.length) out.fills.push({ tris, role: `L${z.layer}` });
   }
-  out.path(z.outline, outline, `Z${z.layer}`, true);
+  if (!z.teardrop) out.path(z.outline, outline, `Z${z.layer}`, true);
 }
 
 /** Board snap targets: connection points plus corners and line ends. */
@@ -646,6 +655,7 @@ export function snapPoints(item: Item, ctx: DrawContext): Point[] {
     case "polyline":
       return item.points;
     case "line":
+    case "dimension":
       return [item.a, item.b];
     case "arcTrack":
     case "arc": {

@@ -12,6 +12,7 @@ use pcbplannercad_core::item::{DESIGNATOR_TOKEN, Item, VALUE_TOKEN};
 use pcbplannercad_core::layer;
 use pcbplannercad_core::pcb::board::{NetClass, RuleKind, StackKind, StackLayer, Stackup};
 use pcbplannercad_core::pcb::{ArcTrack, BoardSettings, PlacedFootprint, Side, Track, Via, Zone, ZoneConnect, ZonePolygon};
+use pcbplannercad_core::pcb::fill;
 use pcbplannercad_core::units::{Coord, mm};
 use pcbplannercad_core::{DocKind, Document, Footprint, LayerId, Library};
 
@@ -121,7 +122,7 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
                 }
             }
             "gr_text" => graphics.extend(read_text(l, &Frame::LIBRARY, &mut notes)),
-            "dimension" => notes.info("dimensions skipped", ""),
+            "dimension" => graphics.extend(read_dimension(l, &mut notes)),
             "gr_text_box" => notes.info("text boxes skipped", ""),
             "image" | "gr_image" => notes.info("images skipped", ""),
             "table" => notes.info("tables skipped", ""),
@@ -338,6 +339,47 @@ fn read_via(l: &List, nets: &HashMap<String, String>, copper: &[LayerId], notes:
     Some(Item::Via(Via { pos, diameter, drill, from_layer, to_layer, net: net_of(l, nets) }))
 }
 
+/// Aligned and orthogonal dimensions; structured format's `height` (Y down) is the negated offset here.
+fn read_dimension(l: &List, notes: &mut Notes) -> Option<Item> {
+    use pcbplannercad_core::pcb::dimension::{DimUnits, Dimension};
+    let layer = map_layer(l.child_str("layer").unwrap_or(""), notes)?;
+    let pts = Y.pts(l);
+    let (Some(&a), Some(&b)) = (pts.first(), pts.get(1)) else {
+        notes.info("dimensions without points skipped", "");
+        return None;
+    };
+    let (orthogonal, angle) = match l.child_str("type").unwrap_or("aligned") {
+        "aligned" => (false, 0.0),
+        "orthogonal" => (true, if l.child_num("orientation").unwrap_or(0.0) as i64 == 1 { 90.0 } else { 0.0 }),
+        other => {
+            notes.info(&format!("{other} dimensions skipped"), "");
+            return None;
+        }
+    };
+    if a == b {
+        return None;
+    }
+    let format = l.child("format");
+    let units = match format.and_then(|f| f.child_num("units")).unwrap_or(2.0) as i64 {
+        0 => DimUnits::Inch,
+        1 => DimUnits::Mil,
+        _ => DimUnits::Mm,
+    };
+    let size = l.child("gr_text").and_then(|t| t.child("effects")).and_then(|e| e.child("font")).and_then(|f| f.child("size")).and_then(|s| s.num(1));
+    Some(Item::Dimension(Dimension {
+        a,
+        b,
+        offset: -mm(l.child_num("height").unwrap_or(0.0)),
+        orthogonal,
+        angle,
+        layer,
+        width: mm(l.child("style").and_then(|s| s.child_num("thickness")).unwrap_or(0.15)),
+        text_height: mm(size.unwrap_or(1.0)),
+        units,
+        precision: format.and_then(|f| f.child_num("precision")).unwrap_or(2.0).clamp(0.0, 4.0) as u8,
+    }))
+}
+
 fn read_zone(l: &List, nets: &HashMap<String, String>, copper: &[LayerId], notes: &mut Notes) -> Vec<Item> {
     let mut names = atoms(l.child("layers"));
     names.extend(l.child_str("layer"));
@@ -396,16 +438,20 @@ fn read_zone(l: &List, nets: &HashMap<String, String>, copper: &[LayerId], notes
         keepout,
         remove_islands,
         fill: Vec::new(),
+        // structured format 7+ stores teardrops as zones tagged (attr (teardrop (type …))).
+        teardrop: l.child("attr").and_then(|a| a.child("teardrop")).is_some(),
     };
     layers
         .iter()
         .map(|&layer| {
-            let fill = l
+            let fill: Vec<ZonePolygon> = l
                 .children("filled_polygon")
                 .filter(|fp| fp.child_str("layer").and_then(copper_layer).unwrap_or(layers[0]) == layer)
                 .map(|fp| ZonePolygon { outer: Y.pts(fp), holes: Vec::new() })
                 .filter(|p| p.outer.len() >= 3)
                 .collect();
+            // structured format stores fills fractured (holes joined to the outline by slits).
+            let fill = if fill::is_fractured(&fill) { fill::unfracture(&fill) } else { fill };
             Item::Zone(Zone { layer, fill, ..base.clone() })
         })
         .collect()

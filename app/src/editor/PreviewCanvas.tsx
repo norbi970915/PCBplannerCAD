@@ -53,7 +53,7 @@ export function PreviewCanvas({
       s.cam.width = r.width;
       s.cam.height = r.height;
       s.renderer.resize(r.width, r.height, window.devicePixelRatio || 1);
-      const theme = themeFor(kind, 0, false, ui);
+      const theme = themeFor(kind, 0, "all", ui);
       s.scene.update(new Map(items.map((it, i) => [i, it])), { kind, cache: cache ?? {}, symbol });
       s.renderer.setScene(s.scene.build(theme, { selection: new Set(), hover: null }));
       s.renderer.setHighlights(new Map(), s.scene.styleCount);

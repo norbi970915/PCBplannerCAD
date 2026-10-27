@@ -24,7 +24,7 @@ function onPaper(c: PdfRgba): PdfRgba {
 export function buildPrint(doc: DocState, opts: PrintOptions): Uint8Array {
   const kind = doc.info.kind;
   const board = kind === "pcb" || kind === "footprint";
-  const theme: Theme = board ? boardTheme(0, false) : schematicTheme("light");
+  const theme: Theme = board ? boardTheme(0, "all") : schematicTheme("light");
   const ctx: DrawContext = { kind, cache: doc.cache, footprints: doc.footprints };
 
   const ranked: { rank: number; lines: PdfLine[]; fills: PdfFill[] }[] = [];

@@ -175,6 +175,11 @@ export const Icons: Record<string, ReactNode> = {
       <path d="M2 3h9l3 4v6H2z" fill="currentColor" fillOpacity="0.25" />
     </Svg>
   ),
+  dimension: (
+    <Svg>
+      <path d="M2 4v9M14 4v9M2 8.5h12M2 8.5l2.2-1.6M2 8.5l2.2 1.6M14 8.5l-2.2-1.6M14 8.5l-2.2 1.6" />
+    </Svg>
+  ),
   measure: (
     <Svg>
       <path d="M1.5 10.5l9-9 4 4-9 9z" />

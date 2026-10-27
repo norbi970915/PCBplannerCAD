@@ -8,5 +8,9 @@ node_modules
 /docs/HANDOFF.md
 /docs/TEST-AUDIT-*.md
 
-# Local structured format and native performance fixtures
+# Local design and performance fixtures
 /local-test-boards/
+
+# Private reference notes and original session handoffs
+/docs/*-COMPARISON-*.md
+/docs/local-notes/

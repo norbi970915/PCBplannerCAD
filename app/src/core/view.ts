@@ -33,7 +33,15 @@ export function normalizeView(value: unknown): ViewSettings {
   return out;
 }
 
-export const layerVisible = (view: ViewSettings | undefined, layer: number) => !view?.hiddenLayers.includes(layer);
+/** Shift+S cycle: every layer, other layers dimmed, active layer only. */
+export type LayerMode = "all" | "dim" | "only";
+export const LAYER_MODES: Record<LayerMode, { next: LayerMode; label: string }> = {
+  all: { next: "dim", label: "All layers" },
+  dim: { next: "only", label: "Other layers dimmed" },
+  only: { next: "all", label: "Active layer only" },
+};
+
+export const layerVisible =(view: ViewSettings | undefined, layer: number) => !view?.hiddenLayers.includes(layer);
 export const gridPoint = (p: { x: number; y: number }, grid: number) => ({ x: Math.round(p.x / grid) * grid, y: Math.round(p.y / grid) * grid });
 
 /** Free movement still uses whole nanometers accepted by the native model. */

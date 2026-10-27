@@ -4,9 +4,10 @@
 
 import { api } from "../../core/api";
 import { report } from "../../core/actions";
-import { L } from "../../core/layers";
-import { useEditor } from "../../core/store";
-import type { BoardItem, Item, ItemOf, Point, RouteMode, TrackItem } from "../../core/types";
+import { toast } from "sonner";
+import { L, layer as layerDef } from "../../core/layers";
+import { routeModeOf, useEditor } from "../../core/store";
+import type { BoardItem, Item, ItemId, ItemOf, Point, RouteMode, TrackItem } from "../../core/types";
 import { NM_PER_MM } from "../../core/units";
 import { constrain45 } from "../polyedit";
 import { samePoint } from "../shapes";
@@ -29,6 +30,12 @@ export function classOf(board: BoardItem | undefined, net: string) {
 export function copperLayers(board: BoardItem | undefined): number[] {
   const cu = board?.stackup.layers.filter((l) => l.kind === "copper" && l.layer !== null).map((l) => l.layer as number);
   return cu?.length ? cu : [L.topCopper, L.bottomCopper];
+}
+
+/** W / Shift+W steps: the net-class widths plus a standard series, ascending. */
+export function routeWidths(board: BoardItem | undefined): number[] {
+  const series = [0.1, 0.127, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1, 1.5, 2].map((v) => Math.round(v * NM_PER_MM));
+  return [...new Set([...series, ...(board?.netClasses.map((c) => c.trackWidth) ?? [])])].sort((a, b) => a - b);
 }
 
 function trackWidth(env: ToolEnv, net: string): number {
@@ -92,7 +99,7 @@ export function routeTool(pair = false): Tool {
       start: session.from,
       end: to,
       width: trackWidth(env, session.net),
-      mode: useEditor.getState().placement.routeMode,
+      mode: routeModeOf(useEditor.getState()),
       corner: useEditor.getState().placement.cornerStyle,
       ignore: [],
       postureFlip: flip,
@@ -168,22 +175,47 @@ export function routeTool(pair = false): Tool {
       session.moved = [];
       session.message = "";
       session.blockedAt = null;
+      // Keep the freshly committed copper lit with the rest of the net.
+      showNet(env, session.net);
       return true;
     } finally { committing = false; }
   };
+
+  // While routing, the net's objects stay lit and the rest of the board fades; the earlier highlight returns afterwards.
+  let netHighlight: { docId: string; previous: ReadonlySet<ItemId> } | null = null;
+  /** Pad the route started from; its own target is not marked as an "other end". */
+  let startAnchor: Point | null = null;
+  const showNet = (env: ToolEnv, net: string) => {
+    if (!net) return;
+    netHighlight ??= { docId: env.docId, previous: env.doc().marked ?? new Set() };
+    const session = s;
+    void api.pcbNetItems(env.docId, net)
+      .then((ids) => { if (s === session && netHighlight) useEditor.getState().patchDoc(env.docId, { marked: new Set(ids) }); })
+      .catch(() => { /* The highlight is a visual aid only. */ });
+  };
+  /** Target pads still to reach, nearest to `from` first. */
+  const otherEnds = (session: Session, from: Point): Point[] =>
+    session.targets
+      .filter((t) => !(startAnchor && samePoint(t, startAnchor)) && !samePoint(t, session.from))
+      .sort((a, b) => Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y));
 
   const finish = () => {
     s = null;
     pending = null;
     starting = false;
+    startAnchor = null;
     seq++;
+    if (netHighlight) {
+      useEditor.getState().patchDoc(netHighlight.docId, { marked: netHighlight.previous });
+      netHighlight = null;
+    }
   };
 
   return {
     id: pair ? "diffPair" : "route",
-    hint: () =>
+    hint: (env) =>
       s
-        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"} · click to commit · * via + layer · / flip corner · Shift+R mode (${useEditor.getState().placement.routeMode}) · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
+        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"}${s.net ? ` · ${otherEnds(s, s.from).length} other ends (cyan rings)` : ""} · width ${(trackWidth(env, s.net) / NM_PER_MM).toFixed(2)} mm (W / Shift+W) · click to commit · * via + layer · / flip corner · ${useEditor.getState().drcEnforce ? `Shift+R mode (${useEditor.getState().placement.routeMode})` : "design rules OFF: ignoring violators (Ctrl+Shift+D)"} · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
         : `Click a pad or track to start ${pair ? "a differential pair" : "routing"}`,
     reset: finish,
     down(env) {
@@ -194,17 +226,38 @@ export function routeTool(pair = false): Tool {
         const generation = ++seq;
         const layer = env.doc().activeLayer;
         const copper = copperLayers(boardSettings(env));
-        const routeLayer = copper.includes(layer) ? layer : L.topCopper;
+        const active = copper.includes(layer) ? layer : L.topCopper;
         const mouse = env.raw();
         const raw = {x:Math.round(mouse.x),y:Math.round(mouse.y)};
-        void api.pcbObjectAt(env.docId, raw, routeLayer)
-          .then(async hit => hit ?? (samePoint(raw, p) ? null : await api.pcbObjectAt(env.docId, p, routeLayer)))
-          .then(hit => {
+        const at = async (l: number) => (await api.pcbObjectAt(env.docId, raw, l)) ?? (samePoint(raw, p) ? null : await api.pcbObjectAt(env.docId, p, l));
+        // Start on the layer of what was clicked: a pad (active layer first), then a track or via
+        // (active layer first). Pours never switch layers, so clicking open board does not jump to a plane.
+        // E.g. an SMD pad of a bottom-side part while Top is active starts on Bottom.
+        const find = async (): Promise<{ hit: [number, string] | null; layer: number }> => {
+          const hits: { hit: [number, string]; layer: number; kind?: string }[] = [];
+          for (const l of [active, ...copper.filter((c) => c !== active)]) {
+            if (generation !== seq) break;
+            const hit = await at(l);
+            if (hit) hits.push({ hit, layer: l, kind: env.doc().items.get(hit[0])?.kind });
+          }
+          const pad = hits.find((h) => h.kind === "footprint");
+          const onActive = hits.find((h) => h.layer === active);
+          const copperHit = hits.find((h) => h.kind === "track" || h.kind === "arcTrack" || h.kind === "via");
+          return pad ?? (onActive && onActive.kind !== "zone" ? onActive : copperHit) ?? onActive ?? { hit: null, layer: active };
+        };
+        void find()
+          .then(({ hit, layer: routeLayer }) => {
             if (generation !== seq) return;
             starting = false;
+            if (routeLayer !== env.doc().activeLayer) {
+              useEditor.getState().patchDoc(env.docId, { activeLayer: routeLayer });
+              toast.info(`Routing on ${layerDef(routeLayer).name}: the clicked ${env.doc().items.get(hit?.[0] ?? -1)?.kind === "footprint" ? "pad" : "object"} is on that layer.`, { duration: 2500 });
+            }
             const net = hit?.[1] ?? useEditor.getState().placement.net;
             const from = routingAnchor(env, p, hit);
             s = { net, layer: routeLayer, from, preview: [], moved: [], reached: true, targets: netTargets(env, net), message: "", blockedAt: null };
+            startAnchor = from;
+            showNet(env, net);
             requestPreview(env, env.cursor());
             env.redraw();
           })
@@ -232,6 +285,14 @@ export function routeTool(pair = false): Tool {
         requestPreview(env, env.cursor());
         return true;
       }
+      if (key === "w" || key === "W") {
+        const widths = routeWidths(boardSettings(env));
+        const current = trackWidth(env, s.net);
+        const next = e.shiftKey ? [...widths].reverse().find((w) => w < current) ?? widths[0] : widths.find((w) => w > current) ?? widths[widths.length - 1];
+        env.setPlacement({ trackWidth: next });
+        requestPreview(env, env.cursor());
+        return true;
+      }
       if ((key === "R" || key === "r") && e.shiftKey) {
         const m = useEditor.getState().placement.routeMode;
         env.setPlacement({ routeMode: MODES[(MODES.indexOf(m) + 1) % MODES.length] });
@@ -243,12 +304,13 @@ export function routeTool(pair = false): Tool {
         void (async () => {
           await commit(env);
           if (s !== session) return;
-          const via = await api.pcbVia(env.docId, session.net, session.from);
+          const cu = copperLayers(boardSettings(env));
+          const next = cu[(cu.indexOf(session.layer) + 1) % cu.length];
+          // A via type spanning this layer change (blind / micro) is used when the board defines one.
+          const via = await api.pcbVia(env.docId, session.net, session.from, session.layer, next);
           if (s !== session) return;
           if (!await env.exec({ op: "route", delete: [], add: [via] }) || s !== session) return;
-          const cu = copperLayers(boardSettings(env));
-          const i = cu.indexOf(session.layer);
-          session.layer = cu[(i + 1) % cu.length];
+          session.layer = next;
           useEditor.getState().patchDoc(env.docId, { activeLayer: session.layer });
           requestPreview(env, env.cursor());
         })().catch(report);
@@ -274,6 +336,18 @@ export function routeTool(pair = false): Tool {
       };
       mark(s.from,[0.3,1,0.65,1]);
       if (!s.reached && s.blockedAt) mark(s.blockedAt,[1,0.3,0.25,1]);
+      // The other ends of the net: a ring on each target pad and a guide from the route's end to the nearest one.
+      const end = s.preview.length ? s.preview[s.preview.length - 1].b : s.from;
+      const targets = otherEnds(s, end);
+      const cyan: [number, number, number, number] = [0.25, 0.85, 1, 0.95];
+      const ring = 9 / env.scale();
+      for (const t of targets) {
+        for (let i = 0; i < 16; i++) {
+          const a0 = (i / 16) * 2 * Math.PI, a1 = ((i + 1) / 16) * 2 * Math.PI;
+          lines.push({ a: { x: t.x + ring * Math.cos(a0), y: t.y + ring * Math.sin(a0) }, b: { x: t.x + ring * Math.cos(a1), y: t.y + ring * Math.sin(a1) }, width, color: cyan });
+        }
+      }
+      if (targets.length) lines.push({ a: end, b: targets[0], width: width * 0.8, color: [0.25, 0.85, 1, 0.55] });
       return lines;
     },
   };

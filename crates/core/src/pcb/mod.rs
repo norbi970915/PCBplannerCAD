@@ -10,7 +10,10 @@
 //! - [`sync`]: schematic → board engineering change orders.
 
 pub mod board;
+pub mod cleanup;
 pub mod connectivity;
+pub mod dimension;
+pub mod drag;
 pub mod drc;
 pub mod fill;
 pub mod geometry;
@@ -19,6 +22,8 @@ pub mod panel;
 pub mod polygon;
 pub mod query;
 pub mod router;
+pub mod stitch;
+pub mod teardrop;
 pub mod sync;
 
 pub use board::{BoardSettings, NetClass, Rule, RuleKind, Stackup};

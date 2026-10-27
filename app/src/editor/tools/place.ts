@@ -9,6 +9,7 @@ import { connectionPoints } from "../draw";
 import { onSegment, rotatePoint, samePoint } from "../shapes";
 import { boardSettings, classOf, copperLayers, footprintTool, polygonTool, routeTool } from "./route";
 import { measureTool } from "./measure";
+import { dimensionTool } from "./dimension";
 import { reshapeTool } from "./polygonGesture";
 import { translate } from "./select";
 import type { Tool, ToolEnv } from "./types";
@@ -455,6 +456,8 @@ export function makeTool(id: string): Tool | null {
       return reshapeTool("slice");
     case "measure":
       return measureTool();
+    case "dimension":
+      return dimensionTool();
     case "footprint":
       return footprintTool();
     case "via":

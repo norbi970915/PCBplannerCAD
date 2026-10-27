@@ -3,14 +3,16 @@ import * as actions from "../core/actions";
 import * as clipboard from "../core/clipboard";
 import { useTheme } from "../core/theme";
 import * as pcb from "../core/pcbActions";
+import * as board from "../pcb/boardActions";
 import { openDialog } from "../pcb/dialogs";
 import { bus } from "../core/bus";
 import { boardTabs, FOOTPRINT_TABS } from "../core/layers";
 import { activeDoc, useEditor } from "../core/store";
 import type { DocKind } from "../core/types";
 import { TOOLS } from "../editor/profiles";
-import { activateTool } from "../editor/toolActions";
+import { activateTool, cycleLayerMode } from "../editor/toolActions";
 import { openWizardFor } from "../library/wizards";
+import { openFind } from "./FindDialog";
 import { promptText } from "./modal";
 
 export interface AppCommand {
@@ -81,6 +83,7 @@ export const COMMANDS: Record<string, AppCommand> = {
   "edit.rotate": { label: "Rotate Selection", display: "Space", run: () => actions.rotateSelection(), enabled: () => !!activeDoc()?.selection.size },
   "edit.mirror": { label: "Mirror Selection", display: "X", run: actions.mirrorSelection, enabled: () => !!activeDoc()?.selection.size },
   "edit.selectAll": { label: "Select All", keys: ["Ctrl+A", "S A"], run: actions.selectAll, enabled: hasDoc },
+  "edit.find": { label: "Find…", keys: ["Ctrl+F"], run: openFind, enabled: hasDoc },
   "edit.deselectAll": { label: "Deselect All", keys: ["X A"], run: actions.clearSelection, enabled: hasDoc },
 
   "view.fit": { label: "Fit All Objects", keys: ["Ctrl+PageDown", "V F"], run: () => bus.emit("view", { action: "fit" }), enabled: hasDoc },
@@ -93,12 +96,12 @@ export const COMMANDS: Record<string, AppCommand> = {
   "tools.measure": { label: "Measure Distance", keys: ["Ctrl+M"], when: ["pcb", "footprint"], run: () => activateTool("measure") },
   "view.pourFills": { label: "Show Pour Fills", keys: ["V P"], when: ["pcb"], run: () => ed().togglePourFills() },
   "view.singleLayer": {
-    label: "Single Layer Mode",
+    label: "Cycle Layer Display (All / Dimmed / Active Only)",
     keys: ["Shift+S"],
     when: ["pcb", "footprint"],
     run: () => {
       const d = activeDoc();
-      if (d) ed().patchDoc(d.info.id, { singleLayer: !d.singleLayer });
+      if (d) cycleLayerMode(d.info.id);
     },
   },
   "view.layerNext": { label: "Next Layer", keys: ["+", "*"], when: ["pcb", "footprint"], run: () => cycleLayer(1) },
@@ -120,6 +123,38 @@ export const COMMANDS: Record<string, AppCommand> = {
   "tools.drc": { label: "Design Rule Check", keys: ["T D"], when: ["pcb"], run: () => pcb.runDrc() },
   "tools.repour": { label: "Repour All Polygons", keys: ["T G"], when: ["pcb"], run: () => pcb.repour() },
   "tools.tune": { label: "Length Tuning of Selected Tracks…", keys: ["T R"], when: ["pcb"], run: () => openDialog("tune"), enabled: () => !!activeDoc()?.selection.size },
+  "tools.cleanup": { label: "Cleanup Tracks & Vias…", when: ["pcb"], run: () => openDialog("cleanup") },
+  "tools.teardrops": { label: "Teardrops…", when: ["pcb"], run: () => openDialog("teardrops") },
+  "tools.stitch": { label: "Via Stitching…", when: ["pcb"], run: () => openDialog("stitch") },
+  "tools.stats": { label: "Board Statistics & Drill Table…", when: ["pcb"], run: () => openDialog("stats") },
+  "edit.selectConnection": { label: "Select Connection (again: whole connection)", keys: ["U"], when: ["pcb"], run: board.selectConnection },
+  "edit.packMove": { label: "Pack & Move Footprints", keys: ["P P"], when: ["pcb"], run: board.packAndMove, enabled: board.canUnroute },
+  "edit.unroute": { label: "Unroute Selected Footprints", when: ["pcb"], run: board.unrouteSelected, enabled: board.canUnroute },
+  "edit.alignLeft": { label: "Align Left", when: ["pcb"], run: () => board.align("left"), enabled: board.canAlign },
+  "edit.alignRight": { label: "Align Right", when: ["pcb"], run: () => board.align("right"), enabled: board.canAlign },
+  "edit.alignTop": { label: "Align Top", when: ["pcb"], run: () => board.align("top"), enabled: board.canAlign },
+  "edit.alignBottom": { label: "Align Bottom", when: ["pcb"], run: () => board.align("bottom"), enabled: board.canAlign },
+  "edit.alignCenterX": { label: "Align Centers Vertically", when: ["pcb"], run: () => board.align("centerX"), enabled: board.canAlign },
+  "edit.alignCenterY": { label: "Align Centers Horizontally", when: ["pcb"], run: () => board.align("centerY"), enabled: board.canAlign },
+  "edit.distributeX": { label: "Distribute Horizontally", when: ["pcb"], run: () => board.align("distributeX"), enabled: board.canDistribute },
+  "edit.distributeY": { label: "Distribute Vertically", when: ["pcb"], run: () => board.align("distributeY"), enabled: board.canDistribute },
+  "design.toggleRules": {
+    label: "Toggle Design Rules (keep clearances / ignore violators)",
+    keys: ["Ctrl+Shift+D"],
+    when: ["pcb"],
+    run: () => {
+      ed().toggleDrcEnforce();
+      ed().setHint(ed().drcEnforce ? "Design rules ON: routing and moves walk around or push other nets" : "Design rules OFF: routing and moves ignore violators (online DRC still marks them)");
+    },
+  },
+  "tools.onlineDrc": {
+    label: "Toggle Online DRC (check after every change)",
+    when: ["pcb"],
+    run: () => {
+      ed().toggleOnlineDrc();
+      ed().setHint(ed().onlineDrc ? "Online DRC on: violations update after every change" : "Online DRC off: run T D to check");
+    },
+  },
   "tools.clearMarks": { label: "Clear DRC Markers & Highlights", keys: ["T M"], when: ["pcb"], run: () => {
       const d = activeDoc();
       if (d) ed().patchDoc(d.info.id, { drc: [], marked: new Set() });

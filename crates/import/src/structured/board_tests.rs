@@ -600,13 +600,44 @@ fn structured_projects_import_their_boards() {
     assert_eq!(pwr.nets, vec!["+3.3V".to_string(), "+5F".to_string()]);
     assert_eq!(vs.net_classes[0].name, "Default");
 
-    let user = Path::new(r"C:\Users\Norbi\Documents\ProtoFlow Projects\ProtoFlow Tutorial\ProtoFlow Tutorial.kicad_pro");
+    let user = std::env::var_os("PCAD_TEST_STRUCTURED_PROJECT").map(PathBuf::from).unwrap_or_default();
     if user.is_file() {
-        let u = import_project(user).unwrap();
-        assert_eq!(u.project.pcb.as_deref(), Some("ProtoFlow Tutorial.arpcb"));
+        let u = import_project(&user).unwrap();
+        assert!(u.project.pcb.as_deref().is_some_and(|p| p.ends_with(".arpcb")));
         let b = u.board.unwrap();
         let (_, us) = board_settings(&b.document).unwrap();
         assert_eq!(us.stackup.copper_layers().len(), 2);
         assert_round_trip(&b.document);
     }
+}
+
+#[test]
+fn structured_dimensions_and_teardrop_zones_import() {
+    use pcbplannercad_core::pcb::dimension::DimUnits;
+    // From the bundled "video" demo: an aligned dimension measuring down (structured format Y), its line 3.175 mm to the right.
+    let extra = r#"
+	(dimension (type aligned) (layer "Dwgs.User") (pts (xy 224.028 134.366) (xy 224.028 154.94)) (height -3.175)
+		(format (prefix "") (suffix "") (units 2) (units_format 1) (precision 4))
+		(style (thickness 0.2) (arrow_length 1.27))
+		(gr_text "20.5740 mm" (at 225.479 144.653 90) (layer "Dwgs.User") (effects (font (size 1.524 1.524) (thickness 0.2)))))
+	(dimension (type orthogonal) (layer "Cmts.User") (pts (xy 0 0) (xy 10 4)) (height 2) (orientation 1)
+		(format (units 1) (precision 1)) (style (thickness 0.1)))
+	(zone (net 0) (net_name "") (layer "F.Cu") (hatch edge 0.5) (attr (teardrop (type padvia)))
+		(connect_pads yes (clearance 0)) (min_thickness 0.0254) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))
+		(polygon (pts (xy 0 0) (xy 1 0) (xy 1 1))))
+"#;
+    let text = format!("{}{extra})", BOARD.trim_end().strip_suffix(')').unwrap());
+    let imp = parse_board(&text, "demo").unwrap();
+    let dims: Vec<_> = imp.document.items().filter_map(|(_, i)| if let Item::Dimension(d) = i { Some(d.clone()) } else { None }).collect();
+    assert_eq!(dims.len(), 2);
+    let d = &dims[0];
+    assert_eq!((d.layer, d.units, d.precision, d.text_height, d.width), (layer::MECHANICAL_1, DimUnits::Mm, 4, mm(1.524), mm(0.2)));
+    assert_eq!(d.label(), "20.5740 mm");
+    // The dimension line sits on the side of structured format's text (x ≈ 225.5): right of the measured points.
+    let pcbplannercad_core::item::Item::Line(line) = &d.primitives()[2] else { panic!() };
+    assert_eq!(line.a.x, mm(224.028 + 3.175));
+    assert!(dims[1].orthogonal && dims[1].angle == 90.0 && dims[1].units == DimUnits::Mil);
+    assert_eq!(dims[1].label(), "157.5 mil");
+    let teardrops = imp.document.items().filter(|(_, i)| matches!(i, Item::Zone(z) if z.teardrop)).count();
+    assert_eq!(teardrops, 1);
 }

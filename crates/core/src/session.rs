@@ -102,11 +102,16 @@ impl Session {
     }
 
     pub fn execute(&mut self, cmd: Command) -> Result<Delta, CoreError> {
-        let edits = cmd.resolve(&mut self.doc)?;
+        let mut edits = cmd.resolve(&mut self.doc)?;
         if edits.is_empty() {
             return Ok(Delta::default());
         }
         self.doc.apply(&edits);
+        // Teardrops left without their track or pad go in the same undo step.
+        if self.doc.kind() == DocKind::Pcb {
+            let prune = crate::pcb::teardrop::prune(&mut self.doc, &edits);
+            edits.extend(prune);
+        }
         let delta = Delta::from_edits(&edits);
         self.undo.push(Transaction { serial: self.next_serial, edits });
         self.next_serial += 1;
