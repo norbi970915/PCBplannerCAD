@@ -184,7 +184,7 @@ test('cancelling while a via lookup is pending never inserts the via', async () 
     h.tool.key!(h.env, 'v', {} as never); await tick();
     assert.equal(typeof resolveVia, 'function');
     h.tool.cancel(h.env); resolveVia(via); await tick();
-    assert.equal(h.commands.length, 1);
+    assert.equal(h.commands.length, 0);
     assert(h.commands.every(cmd => cmd.op !== 'route' || cmd.add.every(item => item.kind !== 'via')));
   });
 });
@@ -322,4 +322,51 @@ test('with design rules off the router ignores violators and the hint says so', 
   assert.match(h.tool.hint(h.env), /design rules OFF/);
   useEditor.getState().toggleDrcEnforce();
   assert.deepEqual([modes[0], modes[modes.length - 1]], ['shove', 'ignore']);
+});
+
+
+test('a layer-change via and its exact endpoint tracks commit as one undo transaction',async()=>{
+  const h=toolHarness();
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];
+    if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via')return{...via,pos:args!.pos,net:'SIGNAL'};
+    const request=args!.req as RouteRequest;
+    return{...result('SIGNAL'),tracks:[{...track,a:request.start,b:request.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();h.move(14000000,9000000);
+    h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'route');
+    if(command.op==='route'){
+      assert.equal(command.add.filter(i=>i.kind==='via').length,1);
+      assert.deepEqual(command.add.find(i=>i.kind==='via')!.pos,{x:14000000,y:9000000});
+      assert.deepEqual(command.add.find(i=>i.kind==='track')!.b,{x:14000000,y:9000000});
+    }
+    assert.match(h.tool.hint(h.env),/on top/);
+  });
+});
+
+test('a blocked fanout cannot insert a via at the previous route point',async()=>{
+  const h=toolHarness();await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];
+    if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via')return{...via,pos:args!.pos};
+    return{...result(),tracks:[{...track,a:h.center,b:{x:11000000,y:9000000}}],reached:false,blockedAt:h.center,message:'Blocked'};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();h.move(14000000,9000000);h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.deepEqual(h.commands,[]);assert.match(h.tool.hint(h.env),/on bottom/);
+  });
+});
+
+test('a rejected atomic via commit keeps routing on the previous layer',async()=>{
+  const h=toolHarness();h.env.exec=async()=>false;
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];
+    if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via')return{...via,pos:args!.pos};
+    const request=args!.req as RouteRequest;return{...result(),tracks:[{...track,a:request.start,b:request.end}]};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();h.move(14000000,9000000);h.tool.key!(h.env,'v',{}as never);await tick();await tick();
+    assert.match(h.tool.hint(h.env),/on bottom/);
+  });
 });

@@ -65,12 +65,12 @@ export const COMMANDS: Record<string, AppCommand> = {
     },
     enabled: hasDoc,
   },
-  "import.structuredProject": { label: "structured format Project (.kicad_pro)…", run: () => actions.importDesign("structuredProject") },
-  "import.structuredSchematic": { label: "structured format Schematic (.kicad_sch)…", run: () => actions.importDesign("structuredSchematic") },
-  "import.structuredSymbols": { label: "structured format Symbol Library (.kicad_sym)…", run: () => actions.importLibrary("structuredSymbols") },
-  "import.structuredFootprints": { label: "structured format Footprint Library (.pretty)…", run: () => actions.importLibrary("structuredFootprints") },
-  "import.xmlSchematic": { label: "XML Schematic (.sch)…", run: () => actions.importDesign("xmlSchematic") },
-  "import.xmlLibrary": { label: "XML Library (.lbr)…", run: () => actions.importLibrary("xmlLibrary") },
+  "import.structuredProject": { label: "Structured project…", run: () => actions.importDesign("structuredProject") },
+  "import.structuredSchematic": { label: "Structured schematic…", run: () => actions.importDesign("structuredSchematic") },
+  "import.structuredSymbols": { label: "Symbol library…", run: () => actions.importLibrary("structuredSymbols") },
+  "import.structuredFootprints": { label: "Footprint folder…", run: () => actions.importLibrary("structuredFootprints") },
+  "import.xmlSchematic": { label: "XML schematic (.sch)…", run: () => actions.importDesign("xmlSchematic") },
+  "import.xmlLibrary": { label: "XML library (.lbr)…", run: () => actions.importLibrary("xmlLibrary") },
   "file.exit": { label: "Exit", run: () => getCurrentWindow().close() },
 
   "edit.undo": { label: "Undo", keys: ["Ctrl+Z"], run: () => actions.undo(), enabled: () => !!activeDoc()?.info.canUndo },
@@ -182,7 +182,7 @@ export const COMMANDS: Record<string, AppCommand> = {
   "window.messages": { label: "Messages Panel", run: () => bus.emit("showPanel", { id: "messages" }) },
   "help.about": {
     label: "About PCBPlannerCAD",
-    run: () => ed().log("info", "PCBPlannerCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, structured format & XML import."),
+    run: () => ed().log("info", "PCBPlannerCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, and external design import."),
   },
 };
 

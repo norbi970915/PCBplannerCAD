@@ -66,7 +66,7 @@ export async function unrouteSelected() {
   }
 }
 
-/** P P : packs the selected footprints into tight rows and attaches them to the cursor. */
+/** P P: packs the selected footprints into tight rows and attaches them to the cursor. */
 export async function packAndMove() {
   const d = activeDoc();
   if (d?.info.kind !== "pcb") return;

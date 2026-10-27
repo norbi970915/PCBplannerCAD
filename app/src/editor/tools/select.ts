@@ -16,7 +16,7 @@ const DRAG_PX = 4;
 const PICK_PX = 5;
 const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.doc().view?.snapToGrid !== false);
 
-/** Selected items that may move: locked footprints stay put. */
+/** Selected items that may move: locked items stay put. */
 function movableIds(env: ToolEnv, ids: ItemId[]): ItemId[] {
   const items = env.doc().items;
   const free = ids.filter((id) => { const it = items.get(id); return !it || !("locked" in it && it.locked); });

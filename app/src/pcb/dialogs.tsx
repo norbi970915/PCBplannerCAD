@@ -859,7 +859,7 @@ function OutputsDialog({ docId }: { docId: string }) {
             <NativeSelect value={opts.pnp ?? ""} onChange={(e) => setOpts({ ...opts, pnp: (e.target.value || null) as FabOptions["pnp"] })}>
               <NativeSelectOption value="">None</NativeSelectOption>
               <NativeSelectOption value="jlc">JLCPCB (CPL)</NativeSelectOption>
-              <NativeSelectOption value="coordinates">structured format format</NativeSelectOption>
+              <NativeSelectOption value="coordinates">Coordinate CSV</NativeSelectOption>
               <NativeSelectOption value="generic">Generic CSV</NativeSelectOption>
             </NativeSelect>
           </Field>

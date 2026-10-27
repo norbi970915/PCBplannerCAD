@@ -37,12 +37,12 @@ pub fn parse_library(text: &str, lib_name: &str) -> Result<(Library, ImportRepor
     let doc = util::parse_xml(text)?;
     let root = doc.root_element();
     if root.tag_name().name() != "eagle" {
-        return Err(ImportError::Invalid("not a supported XML design file".into()));
+        return Err(ImportError::Invalid("not a supported XML library file (missing document root)".into()));
     }
     let lib = root
         .descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "library")
-        .ok_or_else(|| ImportError::Invalid("not an XML library (no <library> element)".into()))?;
+        .ok_or_else(|| ImportError::Invalid("not an XML library (missing library element)".into()))?;
     let mut report = ImportReport::default();
     let converted = library::convert_library(lib, lib_name, &mut report);
     Ok((converted.library, report))

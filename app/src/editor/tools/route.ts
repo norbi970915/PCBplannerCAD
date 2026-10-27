@@ -7,7 +7,7 @@ import { report } from "../../core/actions";
 import { toast } from "sonner";
 import { L, layer as layerDef } from "../../core/layers";
 import { routeModeOf, useEditor } from "../../core/store";
-import type { BoardItem, Item, ItemId, ItemOf, Point, RouteMode, TrackItem } from "../../core/types";
+import type { BoardItem, Item, ItemId, ItemOf, Point, RouteMode, TrackItem, ViaItem } from "../../core/types";
 import { NM_PER_MM } from "../../core/units";
 import { constrain45 } from "../polyedit";
 import { samePoint } from "../shapes";
@@ -82,6 +82,7 @@ export function routeTool(pair = false): Tool {
   let pending: Point | null = null;
   let starting = false;
   let committing = false;
+  let viaSession: Session | null = null;
   let previewSettled: Promise<void> = Promise.resolve();
 
   const requestPreview = (env: ToolEnv, to: Point) => {
@@ -154,23 +155,25 @@ export function routeTool(pair = false): Tool {
     return out;
   };
 
-  const commit = async (env: ToolEnv): Promise<boolean> => {
+  const commit = async (env: ToolEnv, transition?: { to: Point; via: ViaItem }): Promise<boolean> => {
     if (!s || committing) return false;
     const session = s;
     committing = true;
     try {
-      requestPreview(env, env.cursor());
+      requestPreview(env, transition?.to ?? env.cursor());
       // Commit the clicked endpoint, never an older asynchronous mouse preview.
       while (inflight || pending) await previewSettled;
-      if (s !== session || !session.preview.length) return false;
+      if (s !== session || (!session.preview.length && !transition)) return false;
+      // A blocked/partial route must never drop a via back at its previous source.
+      if (transition && (!session.reached || !samePoint(session.preview.at(-1)?.b ?? session.from, transition.to))) return false;
       const tracks = session.preview;
       const moved = session.moved;
       seq++;
       pending = null;
-      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks] });
+      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...(transition ? [transition.via] : [])] });
       if (!ok || s !== session) return false;
       const last = tracks[pair ? Math.floor(tracks.length / 2) - 1 : tracks.length - 1] ?? tracks[tracks.length - 1];
-      session.from = last.b;
+      session.from = last?.b ?? session.from;
       session.preview = [];
       session.moved = [];
       session.message = "";
@@ -201,6 +204,7 @@ export function routeTool(pair = false): Tool {
 
   const finish = () => {
     s = null;
+    viaSession = null;
     pending = null;
     starting = false;
     startAnchor = null;
@@ -219,6 +223,7 @@ export function routeTool(pair = false): Tool {
         : `Click a pad or track to start ${pair ? "a differential pair" : "routing"}`,
     reset: finish,
     down(env) {
+      if (viaSession) return;
       const p = env.cursor();
       if (!s) {
         if (starting) return;
@@ -270,7 +275,7 @@ export function routeTool(pair = false): Tool {
       });
     },
     move(env) {
-      if (s && !committing) requestPreview(env, env.cursor());
+      if (s && !committing && viaSession !== s) requestPreview(env, env.cursor());
     },
     dblclick(env) {
       void commit(env).then(() => {
@@ -300,20 +305,21 @@ export function routeTool(pair = false): Tool {
         return true;
       }
       if (key === "*" || key === "v" || key === "V") {
+        if (viaSession === s || committing) return true;
         const session = s;
+        const to = { ...env.cursor() };
+        const cu = copperLayers(boardSettings(env));
+        const next = cu[(cu.indexOf(session.layer) + 1) % cu.length];
+        viaSession = session;
         void (async () => {
-          await commit(env);
+          const via = await api.pcbVia(env.docId, session.net, to, session.layer, next);
           if (s !== session) return;
-          const cu = copperLayers(boardSettings(env));
-          const next = cu[(cu.indexOf(session.layer) + 1) % cu.length];
-          // A via type spanning this layer change (blind / micro) is used when the board defines one.
-          const via = await api.pcbVia(env.docId, session.net, session.from, session.layer, next);
-          if (s !== session) return;
-          if (!await env.exec({ op: "route", delete: [], add: [via] }) || s !== session) return;
+          // Copper, via and dependent refill are one transaction and one undo.
+          if (!await commit(env, { to, via }) || s !== session) return;
           session.layer = next;
           useEditor.getState().patchDoc(env.docId, { activeLayer: session.layer });
           requestPreview(env, env.cursor());
-        })().catch(report);
+        })().catch(report).finally(() => { if (viaSession === session) viaSession = null; env.redraw(); });
         return true;
       }
       return false;

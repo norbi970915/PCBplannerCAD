@@ -446,12 +446,12 @@ export async function importLibrary(source: LibrarySource, path?: string) {
     const structured = await api.libraryPaths().catch(() => ({ symbols: null, footprints: null }));
     p =
       source === "structuredFootprints"
-        ? await openDialog({ directory: true, defaultPath: structured.footprints ?? undefined, title: "Select a structured format .pretty footprint folder" })
+        ? await openDialog({ directory: true, defaultPath: structured.footprints ?? undefined, title: "Select a footprint library folder" })
         : await openDialog({
             filters:
               source === "structuredSymbols"
-                ? [{ name: "structured format symbol library", extensions: ["kicad_sym"] }]
-                : [{ name: "XML / XML design library", extensions: ["lbr"] }],
+                ? [{ name: "Symbol library", extensions: ["kicad_sym"] }]
+                : [{ name: "XML library", extensions: ["lbr"] }],
             defaultPath: source === "structuredSymbols" ? (structured.symbols ?? undefined) : undefined,
             multiple: false,
           });
@@ -475,9 +475,9 @@ export async function importLibrary(source: LibrarySource, path?: string) {
 export async function importDesign(source: DesignSource) {
   const filters =
     source === "structuredProject"
-      ? [{ name: "structured format project", extensions: ["kicad_pro"] }]
+      ? [{ name: "Structured project", extensions: ["kicad_pro"] }]
       : source === "structuredSchematic"
-        ? [{ name: "structured format schematic", extensions: ["kicad_sch"] }]
+        ? [{ name: "Structured schematic", extensions: ["kicad_sch"] }]
         : [{ name: "XML schematic", extensions: ["sch"] }];
   const src = await openDialog({ filters, multiple: false, title: "Select the design to import" });
   if (typeof src !== "string") return;

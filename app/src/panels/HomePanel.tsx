@@ -73,8 +73,7 @@ export function HomePanel() {
               PCBPlannerCAD<span className="title-dot">.</span> Schematic, layout and manufacturing in one place.
             </h1>
             <p className="mt-2 max-w-[100ch] text-[13px] leading-relaxed text-muted-foreground">
-              Capture schematics, build component libraries, route boards and generate fabrication files. Bring existing designs in from structured format or
-              XML design (XML format) — everything stays on this PC.
+              Capture schematics, build component libraries, route boards and generate fabrication files. Import existing projects, schematics and libraries — everything stays on this PC.
             </p>
             {!project && last && (
               <button onClick={() => void openProject(last)} className="mt-4 inline-flex items-center gap-2 rounded-[5px] border border-line bg-secondary px-3 py-1.5 text-xs hover:bg-[var(--ui-btn-hover)]">
@@ -90,8 +89,8 @@ export function HomePanel() {
           <div className="grid grid-cols-1 gap-3 border-t border-line bg-panel-head px-6 py-5 sm:grid-cols-2 xl:grid-cols-4">
             <Task icon={<Plus />} eyebrow="Start" title="New project" text="A project with a first schematic sheet; add libraries and a board as you go." action="Get started" onClick={() => void newProject()} />
             <Task icon={<FolderOpen />} eyebrow="Open" title="Open a file" text="Project, schematic, board or library (.arproj, .arsch, .arpcb, .arlib)." action="Browse" onClick={() => void openAnyFile()} />
-            <Task icon={<FileInput />} eyebrow="Import · structured format" title="structured format project" text="Sheets with hierarchy, embedded libraries and the board (.kicad_pro)." action="Import" onClick={() => void importDesign("structuredProject")} />
-            <Task icon={<FileInput />} eyebrow="Import · XML design" title="XML / XML design schematic" text="Export from XML design as XML (.sch / .brd), then import here." action="Import" onClick={() => void importDesign("xmlSchematic")} />
+            <Task icon={<FileInput />} eyebrow="Import project" title="Structured project" text="Hierarchical sheets, embedded libraries and the board." action="Import" onClick={() => void importDesign("structuredProject")} />
+            <Task icon={<FileInput />} eyebrow="Import schematic" title="XML design" text="Import a schematic and its board from XML design files (.sch / .brd)." action="Import" onClick={() => void importDesign("xmlSchematic")} />
           </div>
         </Card>
 
@@ -101,8 +100,8 @@ export function HomePanel() {
               <CardTitle className="text-xs font-semibold">Libraries &amp; scratch documents</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
-              <Task icon={<BookOpen />} eyebrow="Library" title="Import structured format symbols" text="Any .kicad_sym — the installed structured format libraries are also listed in the Components panel." action="Choose file" onClick={() => void importLibrary("structuredSymbols")} />
-              <Task icon={<BookOpen />} eyebrow="Library" title="Import XML design / XML library" text="Parts, symbols and packages from an .lbr file." action="Choose file" onClick={() => void importLibrary("xmlLibrary")} />
+              <Task icon={<BookOpen />} eyebrow="Library" title="Import symbol library" text="Import a structured symbol library, or browse installed libraries in the Components panel." action="Choose file" onClick={() => void importLibrary("structuredSymbols")} />
+              <Task icon={<BookOpen />} eyebrow="Library" title="Import XML library" text="Parts, symbols and packages from an .lbr file." action="Choose file" onClick={() => void importLibrary("xmlLibrary")} />
               <Task icon={<FileCode2 />} eyebrow="Scratch" title="Free schematic" text="A sheet outside any project — handy for sketching circuits." action="Create" onClick={() => void newDocument("schematic")} />
               <Task icon={<CircuitBoard />} eyebrow="Scratch" title="Free board" text="An empty PCB with a default 2-layer stack and design rules." action="Create" onClick={() => void newDocument("pcb")} />
             </CardContent>

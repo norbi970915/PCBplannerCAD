@@ -26,7 +26,7 @@ pub struct TeardropOptions {
     pub width_ratio: f64,
     pub max_length: Coord,
     pub max_width: Coord,
-    /// Concave flanks (structured format's curved shape) instead of straight ones.
+    /// Concave flanks for curved joints instead of straight ones.
     pub curved: bool,
     /// No teardrop when the track is at least this fraction of the pad size.
     pub max_track_ratio: f64,

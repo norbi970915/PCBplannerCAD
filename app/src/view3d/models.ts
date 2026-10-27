@@ -32,7 +32,7 @@ async function parse(path: string): Promise<THREE.Object3D | null> {
   if (lower.endsWith(".wrl")) {
     const text = new TextDecoder().decode(bytes);
     const scene = new VRMLLoader().parse(text, "");
-    // structured format VRML models use 0.1 inch units.
+    // Imported VRML models use 0.1 inch units.
     scene.scale.setScalar(2.54);
     const root = new THREE.Group();
     root.add(scene);
@@ -68,7 +68,7 @@ export async function loadModel(model: Model3d, baseDir: string | null): Promise
   }
   const obj = await p;
   if (!obj) return null;
-  // structured format convention: T(offset) · Rz(-z) · Ry(-y) · Rx(-x) · S.
+  // Imported-model convention: T(offset) · Rz(-z) · Ry(-y) · Rx(-x) · S.
   const holder = new THREE.Group();
   const inner = obj.clone(true);
   holder.add(inner);

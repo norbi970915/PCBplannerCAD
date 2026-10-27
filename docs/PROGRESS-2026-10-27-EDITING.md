@@ -13,11 +13,17 @@ Supersedes the implementation status in the 15:44 handoff. Source and validation
 
 ## Validation
 
-- 101 editor tests passed, including bulk-edit validation/mixed values, locking, priority ties, ID-preserving drag and spatial-index correctness.
+- 106 editor tests passed, including bulk-edit validation/mixed values, locking, priority ties, ID-preserving drag and spatial-index correctness.
 - TypeScript checking passed.
 - Rust workspace: 190 core tests passed (3 performance tests ignored), 43 import tests, 44 output tests (1 performance test ignored), and 6 reported integration tests passed. Fixture-dependent tests may return early when external designs are unavailable.
 - Added regressions for backend lock enforcement and unlock/undo, automatic generation/deletion/undo of teardrops, overlapping pour edits and refill/undo, selected-refill isolation, via shoving with attached tracks on both layers and clean DRC, and connected rotation/flip with undo.
 - Production executable, MSI and NSIS installers built successfully. Existing optional-module externalization/chunking warnings remain.
+
+## Routing via safety and public presentation
+
+Layer-change routing now commits its tracks, pushed copper, via and refill in one undo transaction. A partial/blocked route or failed document commit does not insert a misplaced via or switch the active layer. Cancellation during via lookup leaves the document untouched. Regression coverage includes exact endpoint placement, blocked routing and rejected commits.
+
+Public import, library, export and About wording uses neutral format descriptions. The repository instructions record the public-presentation policy, and regression checks cover UI wording and published Markdown. Reference comparisons and copied designs remain local and Git-ignored.
 
 ## Usage
 

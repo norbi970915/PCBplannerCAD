@@ -89,7 +89,7 @@ export function ComponentsPanel() {
         <button className="flex h-7 w-full items-center gap-1 px-2 text-muted-foreground hover:text-ink" onClick={() => setShowMore(!showMore)}>
           {showMore ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           <span className="eyebrow">Get more parts</span>
-          <span className="ml-1 text-[11px]">structured format · XML design libraries</span>
+          <span className="ml-1 text-[11px]">External libraries</span>
         </button>
         {showMore && <LibraryBrowser />}
       </div>
@@ -144,7 +144,7 @@ function ComponentPreview({ entry }: { entry: ComponentEntry }) {
   );
 }
 
-/** Lists the stock structured format libraries installed on this PC for one-click import. */
+/** Lists the installed external libraries installed on this PC for one-click import. */
 function LibraryBrowser() {
   const [paths, setPaths] = useState<{ symbols: string | null; footprints: string | null } | null>(null);
   const [files, setFiles] = useState<string[]>([]);
@@ -167,13 +167,13 @@ function LibraryBrowser() {
     <div className="grid gap-1.5 px-2 pb-2">
       <div className="flex flex-wrap gap-1">
         <Button variant="outline" size="sm" onClick={() => void importLibrary("structuredSymbols")}>
-          <Download /> structured format symbols…
+          <Download /> Symbol library…
         </Button>
         <Button variant="outline" size="sm" onClick={() => void importLibrary("structuredFootprints")}>
-          <Download /> structured format footprints…
+          <Download /> Footprint folder…
         </Button>
         <Button variant="outline" size="sm" onClick={() => void importLibrary("xmlLibrary")}>
-          <Download /> XML design / XML .lbr…
+          <Download /> XML library (.lbr)…
         </Button>
       </div>
       {paths && (paths.symbols || paths.footprints) ? (
@@ -192,7 +192,7 @@ function LibraryBrowser() {
             <InputGroupAddon>
               <Search className="size-3.5" />
             </InputGroupAddon>
-            <InputGroupInput className="text-xs" placeholder="Filter structured format libraries…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <InputGroupInput className="text-xs" placeholder="Filter installed libraries…" value={filter} onChange={(e) => setFilter(e.target.value)} />
           </InputGroup>
           <div className="max-h-52 overflow-auto rounded-[5px] border border-line bg-field py-0.5">
             {shown.map((f) => (
@@ -209,7 +209,7 @@ function LibraryBrowser() {
           </div>
         </>
       ) : (
-        <p className="text-[11px] text-muted-foreground">No structured format installation found. Use the buttons above to import library files.</p>
+        <p className="text-[11px] text-muted-foreground">No installed library folders found. Use the buttons above to import library files.</p>
       )}
     </div>
   );
