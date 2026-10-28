@@ -394,3 +394,41 @@ test('a late move plan cannot clear or commit over a newer via preview',async()=
   assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),preview);assert.deepEqual([...h.tool.excluded!()],excluded);
  }finally{clearMocks();}
 });
+
+
+test('a blocked connected move keeps its preview for retry and commits only the legal retry',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});let requests=0;
+ mockIPC(()=>++requests===1?{replace:[],add:[],delete:[],rerouted:0,blocked:1,failure:'unroutable'}:{replace:[{id:1,item:via(6,5)}],add:[],delete:[],rerouted:0,blocked:0});
+ try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);await new Promise(r=>setTimeout(r,0));
+  assert.deepEqual(h.commands,[]);assert(h.tool.preview!(h.env).some(i=>i.kind==='via'));assert(h.tool.excluded!().has(12));
+  h.move(6,5);h.click(6,5);await new Promise(r=>setTimeout(r,0));assert.equal(requests,2);assert.equal(h.commands.length,1);assert.equal(h.commands[0].op,'route');assert.deepEqual(h.tool.preview!(h.env),[]);
+ }finally{clearMocks();}
+});
+
+test('a fast rejected floating drop does not submit again on the physical pointer release',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});let requests=0;
+ mockIPC(()=>{requests++;return{replace:[],add:[],delete:[],rerouted:0,blocked:1,failure:'locked'};});
+ try{const h=routedVia();const before=h.env.doc().items;h.move(3,3);h.key('m');h.move(5,4);
+  const event={sx:50,sy:40,ctrl:false,shift:false,alt:false}as never;h.tool.down!(h.env,event);await new Promise(r=>setTimeout(r,0));
+  assert(h.tool.preview!(h.env).length);h.tool.up!(h.env,event);await new Promise(r=>setTimeout(r,0));assert.equal(requests,1);assert.deepEqual(h.commands,[]);
+  assert(h.tool.cancel(h.env));assert.equal(h.env.doc().items,before);assert.equal(h.tool.excluded!().size,0);
+ }finally{clearMocks();}
+});
+
+test('changed move settings discard a pending route and let the user place again',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let settle!:(value:unknown)=>void;mockIPC(()=>new Promise(resolve=>settle=resolve));
+ try{const h=routedVia();useEditor.setState({drcEnforce:false});h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);useEditor.setState({drcEnforce:true});
+  settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));
+  assert.deepEqual(h.commands,[]);assert(h.tool.preview!(h.env).some(i=>i.kind==='via'));assert(h.tool.cancel(h.env));
+ }finally{useEditor.setState({drcEnforce:true});clearMocks();}
+});
+
+test('changed footprint geometry invalidates a connected plan even with the same item map',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let settle!:(value:unknown)=>void;mockIPC(()=>new Promise(resolve=>settle=resolve));
+ try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);
+  useEditor.getState().patchDoc('test',{footprints:{...h.env.doc().footprints}});
+  settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),[]);
+ }finally{clearMocks();}
+});

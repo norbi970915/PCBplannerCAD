@@ -154,7 +154,7 @@ export function distToSegment(p: Point, a: Point, b: Point): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
-export function inTriangles(p: Point, tris: number[]): boolean {
+export function inTriangles(p: Point, tris: ArrayLike<number>): boolean {
   for (let i = 0; i + 5 < tris.length; i += 6) {
     if (pointInTri(p, { x: tris[i], y: tris[i + 1] }, { x: tris[i + 2], y: tris[i + 3] }, { x: tris[i + 4], y: tris[i + 5] })) return true;
   }

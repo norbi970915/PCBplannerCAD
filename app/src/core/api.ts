@@ -11,6 +11,7 @@ import type {
   EcoChange,
   Mesh3d,
   Point,
+  PcbDragPlan,
   RouteRequest,
   RouteResult,
   TrackItem,
@@ -33,7 +34,6 @@ import type {
   ReportLine,
   Snapshot,
   Update,
-  IdItem,
   Item,
   RouteMode,
   CornerStyle,
@@ -136,7 +136,7 @@ export const api = {
   pcbRepour: (id: string, zone: ItemId | null) => invoke<Update>("pcb_repour", { id, zone }),
   /** Moving footprints with their tracks kept connected, as a `route` command plan. */
   pcbDragFootprints: (id: string, req: { ids: ItemId[]; delta: Point; angle?: number; flipped?: boolean; center?: Point; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
-    invoke<{ replace: IdItem[]; delete: ItemId[]; add: Item[]; rerouted: number; blocked: number }>("pcb_drag_footprints", { id, req }),
+    invoke<PcbDragPlan>("pcb_drag_footprints", { id, req }),
   /** Cleanup Tracks & Vias plan; commit it as a `route` command. */
   /** Teardrop regeneration plan (replaces all teardrops); commit it as a `route` command. */
   pcbTeardrops: (id: string, opts: TeardropOptions) => invoke<{ delete: ItemId[]; add: Item[]; vias: number; pads: number }>("pcb_teardrops", { id, opts }),
@@ -148,7 +148,7 @@ export const api = {
   },
   /** Several footprints, each by its own offset, with tracks kept connected (Pack & Move), as a `route` command plan. */
   pcbDragEach: (id: string, req: { moves: { id: ItemId; delta: Point }[]; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
-    invoke<{ replace: IdItem[]; delete: ItemId[]; add: Item[]; rerouted: number; blocked: number }>("pcb_drag_each", { id, req }),
+    invoke<PcbDragPlan>("pcb_drag_each", { id, req }),
   pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
   pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number): Promise<[RouteResult, RouteResult]> => {
     const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap });

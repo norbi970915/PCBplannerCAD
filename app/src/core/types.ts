@@ -408,6 +408,16 @@ export interface IdItem {
   item: Item;
 }
 
+/** Connected move plan; failure means the entire plan is rejected. */
+export interface PcbDragPlan {
+  replace: IdItem[];
+  delete: ItemId[];
+  add: Item[];
+  rerouted: number;
+  blocked: number;
+  failure?: "locked" | "unroutable";
+}
+
 // ---------- Library ----------
 
 export interface SymbolUnit {

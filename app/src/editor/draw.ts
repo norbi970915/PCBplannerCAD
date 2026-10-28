@@ -1,3 +1,4 @@
+import type { Triangles } from "./pourTriangles";
 // Converts items into colorless primitives (stroked segments and filled
 // triangles) tagged with a *role*; the theme maps roles to colors. The same
 // primitives drive rendering, hit testing and bounds.
@@ -16,6 +17,7 @@ import type {
   Point,
   PortShape,
   VAlign,
+  ZonePolygon,
 } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import { layerVisible, type ViewSettings } from "../core/view";
@@ -41,13 +43,15 @@ export interface Seg {
 }
 
 export interface Fill {
-  tris: number[];
+  tris: Triangles;
   role: Role;
 }
 
 export interface Prims {
   segs: Seg[];
   fills: Fill[];
+  pendingFills?: ZonePolygon[];
+  fillPolygons?: ZonePolygon[];
 }
 
 export interface DrawContext {
@@ -60,6 +64,7 @@ export interface DrawContext {
   /** PCB: false draws pours as outlines only. */
   pourFills?: boolean;
   view?: ViewSettings;
+  getFillTriangles?: (polygon: ZonePolygon) => Triangles | null;
 }
 
 const mm = (v: number) => v * NM_PER_MM;
@@ -88,6 +93,8 @@ const norm = (a: number) => ((a % 360) + 360) % 360;
 class Out implements Prims {
   segs: Seg[] = [];
   fills: Fill[] = [];
+  pendingFills?: ZonePolygon[];
+  fillPolygons?: ZonePolygon[];
 
   seg(a: Point, b: Point, w: number, role: Role) {
     this.segs.push({ a, b, w, role });
@@ -574,7 +581,7 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
       out.fill(circlePoints(item.pos, item.drill / 2, 16), "hole");
       break;
     case "zone":
-      drawZone(out, item, ctx.pourFills !== false);
+      drawZone(out, item, ctx.pourFills !== false, ctx.getFillTriangles);
       break;
     case "dimension":
       for (const p of dimensionPrims(item)) drawGraphic(out, p, ctx, `L${item.layer}`, `L${item.layer}`);
@@ -620,9 +627,9 @@ function drawFootprint(out: Out, fp: ItemOf<"footprint">, ctx: DrawContext) {
 }
 
 /** Pour fills are large and immutable; a repour replaces the polygons, so earcut runs once per fill. */
-const fillTriangles = new WeakMap<object, number[]>();
+const fillTriangles = new WeakMap<object, Triangles>();
 
-function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean) {
+function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean, prepare?: DrawContext["getFillTriangles"]) {
   // Outlines are construction lines, not copper: 1 px at any zoom.
   const outline = 0;
   if (z.keepout) {
@@ -641,8 +648,12 @@ function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean) {
   // Teardrops are part of the track joint: always shown, no construction outline.
   for (const poly of fills || z.teardrop ? z.fill : []) {
     let tris = fillTriangles.get(poly);
-    if (!tris) fillTriangles.set(poly, (tris = triangulateWithHoles(poly.outer, poly.holes)));
-    if (tris.length) out.fills.push({ tris, role: `L${z.layer}` });
+    if (!tris) {
+      const prepared = prepare ? prepare(poly) : triangulateWithHoles(poly.outer, poly.holes);
+      if (prepared === null) { (out.pendingFills ??= []).push(poly); (out.fillPolygons ??= []).push(poly); continue; }
+      fillTriangles.set(poly, tris = prepared);
+    }
+    if (tris.length) { out.fills.push({ tris, role: `L${z.layer}` }); (out.fillPolygons ??= []).push(poly); }
   }
   if (!z.teardrop) out.path(z.outline, outline, `Z${z.layer}`, true);
 }

@@ -1,3 +1,4 @@
+import { PourTriangles } from "./pourTriangles";
 import { useEffect, useRef, useState } from "react";
 import { execute, undo } from "../core/actions";
 import { bus } from "../core/bus";
@@ -6,14 +7,14 @@ import { useEditor } from "../core/store";
 import { useTheme } from "../core/theme";
 import { selectable, useSelectFilter } from "../core/selectFilter";
 import { useContextMenu } from "../shell/ContextMenu";
-import type { ItemId, LibSymbol, Point } from "../core/types";
+import type { ItemId, LibSymbol, Point, ZonePolygon } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import { ViaLayerPicker, type ViaLayerRequest } from "./ViaLayerPicker";
 import { ActiveBar, PolygonEditBar, RoutingBar } from "./ActiveBar";
 import { Camera } from "./camera";
 import { InteractionFrame } from "./interactionFrame";
 import { CanvasTimings } from "./canvasTimings";
-import { cursorPoint } from "../core/view";
+import { cursorPoint, layerVisible } from "../core/view";
 import { connectionPoints, snapPoints, type DrawContext } from "./draw";
 import { LayerTabs } from "./LayerTabs";
 import { toolButton } from "./profiles";
@@ -39,6 +40,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
   const symbolRef = useRef(symbol);
   const rebuildRef = useRef<() => void>(() => {});
   const [box, setBox] = useState<ScreenRect | null>(null);
+  const [drawingPours, setDrawingPours] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const kind = useEditor((s) => s.docs[docId]?.info.kind);
 
@@ -48,6 +50,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
   }, [symbol]);
 
   useEffect(() => {
+    setDrawingPours(false);
     const host = hostRef.current!;
     const canvas = canvasRef.current!;
     let renderer: Renderer;
@@ -79,6 +82,11 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     const doc = () => st().docs[docId];
     const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
     const isActive = () => st().activeDocId === docId;
+    const pours = new PourTriangles(() => { if (isActive() && doc()) rebuildRef.current(); }, {
+      onBusy: setDrawingPours,
+      onFallback: () => st().log("warning", "Background copper preparation is unavailable; drawing fills directly.", { source: "Performance" }),
+    });
+    const sceneCtx = (): DrawContext => ({ ...ctx(), getFillTriangles: pours.read });
 
     const frames = new InteractionFrame<{ point: { x: number; y: number }; event: PointerInfo }>(
       ({ point, event }) => processPointerMove(point, event),
@@ -107,7 +115,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const ui = useTheme.getState().resolved;
       const key = [d.info.kind, d.activeLayer, d.layerMode, ui].join("/");
       if (key !== themeKey) { theme = themeFor(d.info.kind, d.activeLayer, d.layerMode, ui); themeKey = key; }
-      scene.update(d.items, ctx());
+      const visiblePolygons = new Set<ZonePolygon>();
+      if (isActive()) for (const item of d.items.values()) {
+        if (item.kind === "zone" && !item.keepout && (st().showPourFills || item.teardrop) && layerVisible(d.view, item.layer) && (d.layerMode !== "only" || item.layer === d.activeLayer)) {
+          for (const polygon of item.fill) visiblePolygons.add(polygon);
+        }
+      }
+      pours.retain(visiblePolygons);
+      scene.update(d.items, sceneCtx());
       renderer.setScene(scene.build(theme, { selection: new Set(), hover: null, excluded: tool.excluded?.() }));
       rebuildHighlights();
       analysisDirty = true;
@@ -124,7 +139,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       overlayDirty = false;
       const d = doc();
       if (!d) return;
-      const groups: DrawGroup[] = buildPreview(tool.preview?.(env) ?? [], ctx(), theme, toolId === "select" ? 0.5 : 0.25);
+      const groups: DrawGroup[] = buildPreview(tool.preview?.(env) ?? [], { ...ctx(), getFillTriangles: pours.peek }, theme, toolId === "select" ? 0.5 : 0.25);
       const lines: DrawLine[] = [...(tool.overlay?.(env) ?? [])];
       if (cursorScreen) {
         const arm = CURSOR_ARM_PX / cam.scale;
@@ -503,7 +518,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (d.view !== p?.view && cursorScreen) computeCursor(cursorScreen.x, cursorScreen.y);
       if (d.airwires !== p?.airwires || d.drc !== p?.drc) { analysisDirty = true; requestRender(); }
       if (d.epoch !== p?.epoch) {
-        scene.update(d.items, ctx());
+        scene.update(d.items, sceneCtx());
         fit();
       }
       if (d.focus && d.focus !== p?.focus) {
@@ -520,7 +535,10 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         updateHint();
       }
       if (s.placement !== prev.placement || d.items !== p?.items || d.selection !== p?.selection || d.view !== p?.view) rebuildOverlay();
-      if (s.activeDocId !== prev.activeDocId && s.activeDocId === docId) updateHint();
+      if (s.activeDocId !== prev.activeDocId) {
+        if (isActive()) { rebuildScene(); updateHint(); }
+        else pours.retain(new Set());
+      }
     });
 
     const stopTimings = () => {
@@ -593,6 +611,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const pendingChoice=viaChoice.current;viaChoice.current=null;pendingChoice?.(null);
       offTimings();
       stopTimings();
+      pours.dispose();
       frames.dispose();
       resize.disconnect();
       unsubscribe();
@@ -618,6 +637,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     <div className="canvas-view">
       <div className="canvas-host" ref={hostRef} tabIndex={-1}>
         <canvas ref={canvasRef} className="canvas" />
+        {drawingPours && <div role="status" className="pointer-events-none absolute bottom-2 left-2 rounded border border-line bg-panel px-2 py-1 text-xs text-muted-foreground">Preparing copper display…</div>}
         {box && <div className={`select-box ${box.touching ? "touching" : "inside"}`} style={{ left: box.x, top: box.y, width: box.w, height: box.h }} />}
         <ActiveBar docId={docId} />
         <PolygonEditBar docId={docId} />

@@ -49,6 +49,10 @@ pub struct DragRequest {
     pub corner: CornerStyle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DragFailure { Locked, Unroutable }
+
 /// The drag as a `Route` command: same-ID replacements, removals and new copper.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,8 +62,15 @@ pub struct DragResult {
     pub add: Vec<Item>,
     /// Connections re-routed with the router.
     pub rerouted: usize,
-    /// Connections the router could not complete; joined straight instead (DRC will flag them).
+    /// Blocked connections, or direct fallbacks when Ignore mode was explicitly requested.
     pub blocked: usize,
+    /// A rejected plan contains no edits and must not be committed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<DragFailure>,
+}
+
+fn rejected(failure: DragFailure) -> DragResult {
+    DragResult { blocked: 1, failure: Some(failure), ..DragResult::default() }
 }
 
 struct Reroute {
@@ -204,7 +215,7 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
             (gap<=radius).then_some((u,v.pos))
         }).collect();
         if joints.is_empty(){continue;}
-        if t.locked{return DragResult{blocked:1,..DragResult::default()};}
+        if t.locked{return rejected(DragFailure::Locked);}
         joints.sort_by(|a,b|a.0.total_cmp(&b.0));joints.dedup_by_key(|j|j.1);
         let mut points=vec![t.a];points.extend(joints.into_iter().map(|(_,p)|p));points.push(t.b);
         for (index,pair) in points.windows(2).enumerate(){
@@ -238,7 +249,7 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
     let mut pads = Vec::new();
     for &id in &req.ids {
         let Some(item) = doc.get(id) else { continue };
-        if crate::command::is_locked(item) { return DragResult { blocked: 1, ..DragResult::default() }; }
+        if crate::command::is_locked(item) { return rejected(DragFailure::Locked); }
         pads.extend(drag_anchors(doc, id, item, board));
         if !matches!(item, Item::Board(_)) {
             edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) });
@@ -264,7 +275,7 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
                 continue;
             }
             let (on_a, on_b) = (on_moved_pad(t.a, t.layer, &t.net, t.width), on_moved_pad(t.b, t.layer, &t.net, t.width));
-            if (on_a || on_b) && t.locked { return DragResult { blocked: 1, ..DragResult::default() }; }
+            if (on_a || on_b) && t.locked { return rejected(DragFailure::Locked); }
             match (on_a, on_b) {
                 (false, false) => {}
                 // Between two moved pads: the whole segment moves with them.
@@ -316,7 +327,7 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
             let at = |degrees: f64| { let r=degrees.to_radians(); Point::new(arc.center.x+(arc.radius as f64*r.cos()).round() as i64, arc.center.y+(arc.radius as f64*r.sin()).round() as i64) };
             let (a,b)=(at(arc.start_angle),at(arc.start_angle+arc.sweep));
             if on_moved_pad(a,arc.layer,&arc.net,arc.width) && on_moved_pad(b,arc.layer,&arc.net,arc.width) {
-                if arc.locked { return DragResult { blocked: 1, ..DragResult::default() }; }
+                if arc.locked { return rejected(DragFailure::Locked); }
                 edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) });
                 continue;
             }
@@ -365,10 +376,13 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
     // Shorter connections first: they have the least room to detour.
     reroutes.sort_by_key(|r| (r.to.x - r.from.x).abs() + (r.to.y - r.from.y).abs());
     for r in reroutes {
+        if r.from == r.to { continue; }
         let request = RouteRequest { net: r.net.clone(), layer: r.layer, start: r.from, end: r.to, width: r.width, mode: req.route_mode, corner: req.corner, ignore: vec![], posture_flip: false };
         let mut result = route(&work, &request);
         if !result.reached || result.tracks.is_empty() {
-            // Keep the connection: a direct 45° path, reported as blocked.
+            // Avoid/push modes must not silently fall back to crossing obstacles.
+            if req.route_mode != RouteMode::Ignore { return rejected(DragFailure::Unroutable); }
+            // Explicit ignore mode permits the direct connection and reports it.
             out.blocked += 1;
             result = route(&work, &RouteRequest { mode: RouteMode::Ignore, ..request });
         } else {
@@ -436,6 +450,7 @@ pub fn drag_each(doc: &Document, req: &MultiDragRequest) -> DragResult {
             continue;
         }
         let step = drag_footprints(&work, &DragRequest { angle: 0.0, flipped: false, center: Point::default(), ids: vec![m.id], delta: m.delta, mode: req.mode, route_mode: req.route_mode, corner: req.corner });
+        if step.failure.is_some() { return step; }
         out.rerouted += step.rerouted;
         out.blocked += step.blocked;
         let mut edits: Vec<Edit> = step.replace.into_iter().map(|r| Edit { id: r.id, before: work.get(r.id).cloned(), after: Some(r.item) }).collect();
@@ -623,15 +638,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pad_dropped_onto_another_net_keeps_its_connection_and_reports_the_conflict() {
-        // The moved pad lands on a long net-B track: no clean route exists to it.
+    fn blocked_clean_reroute_is_rejected_and_explicit_ignore_remains_available() {
         let d = doc(vec![track(p(-30.0, -1.0), p(60.0, -1.0), "B")]);
-        let r = drag_footprints(&d, &req(vec![id_of(&d, "U2")], p(0.0, -0.6), MoveMode::PreserveAngles));
-        assert_eq!((r.rerouted, r.blocked), (0, 1));
-        let mut s = Session::with_document(d);
-        s.execute(Command::Route { delete: r.delete, add: r.add, replace: r.replace }).unwrap();
-        assert!(connected(s.document()), "joined directly instead of left open");
-        assert!(copper_violations(s.document()) > 0, "and DRC reports the overlap");
+        let before=crate::io::document_to_string(&d).unwrap();
+        for mode in [RouteMode::Walkaround,RouteMode::Shove] {
+            let mut request=req(vec![id_of(&d,"U2")],p(0.,-0.6),MoveMode::PreserveAngles);request.route_mode=mode;
+            let plan=drag_footprints(&d,&request);
+            assert_eq!(plan.failure,Some(DragFailure::Unroutable));
+            assert!(plan.replace.is_empty()&&plan.add.is_empty()&&plan.delete.is_empty());
+            assert_eq!(crate::io::document_to_string(&d).unwrap(),before);
+        }
+        let mut request=req(vec![id_of(&d,"U2")],p(0.,-0.6),MoveMode::PreserveAngles);request.route_mode=RouteMode::Ignore;
+        let plan=drag_footprints(&d,&request);assert_eq!(plan.failure,None);
+        let mut session=Session::with_document(d);
+        session.execute(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace}).unwrap();
+        assert!(connected(session.document()));assert!(copper_violations(session.document())>0);
     }
 
     #[test]
@@ -836,4 +857,38 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn multi_move_rejection_discards_earlier_steps_and_preserves_ids_history_and_dirty_state() {
+        for locked in [false,true] {
+            let mut extra=vec![track(p(-30.,-1.),p(60.,-1.),"B")];
+            if locked { let mut attached=track(p(20.,0.),p(25.,0.),"A");if let Item::Track(t)=&mut attached{t.locked=true;}extra.push(attached); }
+            let d=doc(extra);let (first,second)=(id_of(&d,"U3"),id_of(&d,"U2"));
+            let mut session=Session::with_document(d);
+            session.execute(Command::Add{items:vec![track(p(80.,80.),p(81.,80.),"X")]}).unwrap();session.undo().unwrap();session.mark_saved();
+            let before=session.document().clone();
+            let plan=drag_each(session.document(),&MultiDragRequest{moves:vec![FootprintMove{id:first,delta:p(2.,0.)},FootprintMove{id:second,delta:p(0.,-0.6)}],mode:MoveMode::PreserveAngles,route_mode:RouteMode::Walkaround,corner:CornerStyle::Diagonal45});
+            assert_eq!(plan.failure,Some(if locked{DragFailure::Locked}else{DragFailure::Unroutable}));
+            assert!(plan.replace.is_empty()&&plan.add.is_empty()&&plan.delete.is_empty(),"no partial move plan escapes");
+            assert_eq!(session.document(),&before);assert!(session.can_redo());assert!(!session.can_undo());assert!(!session.is_dirty());
+            let encoded=serde_json::to_value(&plan).unwrap();assert_eq!(encoded["failure"],if locked {"locked"} else {"unroutable"});
+        }
+    }
+
+    #[test]
+    fn distinct_alignment_offsets_preserve_connections_and_one_step_recovery() {
+        let d=doc(vec![]);let (u1,u2)=(id_of(&d,"U1"),id_of(&d,"U2"));
+        let before=crate::io::document_to_string(&d).unwrap();
+        let plan=drag_each(&d,&MultiDragRequest{moves:vec![FootprintMove{id:u1,delta:p(0.,-2.)},FootprintMove{id:u2,delta:p(3.,-1.)}],mode:MoveMode::PreserveAngles,route_mode:RouteMode::Walkaround,corner:CornerStyle::Diagonal45});
+        assert_eq!(plan.failure,None);assert!(serde_json::to_value(&plan).unwrap().get("failure").is_none());
+        let mut session=Session::with_document(d);
+        session.execute(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace}).unwrap();
+        assert!(connected(session.document()));assert_eq!(copper_violations(session.document()),0);
+        assert!(matches!(session.document().get(u1),Some(Item::Footprint(fp))if fp.pos==p(0.,-2.)));
+        assert!(matches!(session.document().get(u2),Some(Item::Footprint(fp))if fp.pos==p(23.,-1.)));
+        let after=crate::io::document_to_string(session.document()).unwrap();
+        session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);assert!(!session.can_undo());
+        session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+        assert!(connected(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()));
+    }
 }

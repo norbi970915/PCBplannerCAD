@@ -1,3 +1,4 @@
+import { moveRejection } from "../connectedMove";
 import { api } from "../../core/api";
 import { highlightNet, navigateTo, report } from "../../core/actions";
 import { toast } from "sonner";
@@ -103,6 +104,7 @@ export function selectTool(): Tool {
   let s: State = { kind: "idle" };
   let excluded: ReadonlySet<ItemId> = new Set();
   let generation = 0;
+  let ignoreRelease = false;
 
   const far = (e: PointerInfo, sx: number, sy: number) => Math.hypot(e.sx - sx, e.sy - sy) > DRAG_PX;
 
@@ -144,9 +146,11 @@ export function selectTool(): Tool {
       excluded = new Set();
     },
     down(env, e) {
+      ignoreRelease = false;
       generation++;
       if (s.kind === "drag" && s.floating) {
         tool.up?.(env, e);
+        ignoreRelease = true;
         return;
       }
       const doc = env.doc();
@@ -245,6 +249,7 @@ export function selectTool(): Tool {
       }
     },
     up(env, e) {
+      if (ignoreRelease) { ignoreRelease = false; return; }
       const done = s;
       s = { kind: "idle" };
       if (done.kind === "vertex" || done.kind === "edge") {
@@ -292,18 +297,34 @@ export function selectTool(): Tool {
           // Routed parts: the backend re-routes their attached segments and pushes violators, as one undo step.
           const pl = useEditor.getState().placement;
           const at = done.delta;
+          const routeMode = violatorModeOf(useEditor.getState());
           const originalItems = env.doc().items;
+          const originalFootprints = env.doc().footprints, originalEpoch = env.doc().epoch;
           const token = generation;
-          void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode: violatorModeOf(useEditor.getState()), corner: pl.cornerStyle })
+          let retrying = false;
+          const retry = () => {
+            if (token !== generation || env.doc()?.items !== originalItems || env.doc()?.footprints !== originalFootprints || env.doc()?.epoch !== originalEpoch) return;
+            s = { ...done, floating: true, attached: undefined, arcs: undefined, tracks: undefined };
+            retrying = true;
+            excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a => a.whole).map(a => a.id)]);
+            env.redraw(true);
+          };
+          void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode, corner: pl.cornerStyle })
             .then(async (r) => {
               if (token !== generation) return;
-              if (env.doc()?.items !== originalItems) { useEditor.getState().setHint("Board changed while planning the move; try again."); return; }
-              if (r.blocked && !r.replace.length && !r.add.length && !r.delete.length) { toast.warning("Move blocked by locked connected copper; unlock it first."); return; }
+              if (env.doc()?.items !== originalItems || env.doc()?.footprints !== originalFootprints || env.doc()?.epoch !== originalEpoch) { useEditor.getState().setHint("Board changed while planning the move; try again."); return; }
+              const current = useEditor.getState();
+              if (current.placement.moveMode !== pl.moveMode || violatorModeOf(current) !== routeMode || current.placement.cornerStyle !== pl.cornerStyle) {
+                useEditor.getState().setHint("Move settings changed while planning; choose a position again."); retry(); return;
+              }
+              const rejection = moveRejection(r, routeMode);
+              if (rejection) { toast.warning(rejection); useEditor.getState().setHint(rejection); retry(); return; }
               const ok = await env.exec({ op: "route", delete: r.delete, add: r.add, replace: r.replace });
+              if (!ok) retry();
               if (ok && r.blocked) toast.warning(`${r.blocked} connection${r.blocked === 1 ? "" : "s"} could not be re-routed cleanly; joined directly (run DRC to see the conflicts).`);
             })
             .catch(report)
-            .finally(() => { if (token === generation) finish(); });
+            .finally(() => { if (token === generation && !retrying) finish(); });
           return;
         }
         if (plan) {

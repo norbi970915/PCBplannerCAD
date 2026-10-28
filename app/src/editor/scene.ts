@@ -1,11 +1,12 @@
+import { pointInRing } from "./polyedit";
 import { BoundsIndex } from "./boundsIndex";
 // Per-document cache of drawn primitives plus hit testing and bounds.
 
-import type { Item, ItemId, Point } from "../core/types";
+import type { Item, ItemId, Point, ZonePolygon } from "../core/types";
 import type { Bounds } from "./camera";
 import { drawItem, type DrawContext, type Prims } from "./draw";
 import type { DrawLine, DrawGroup, Rgba } from "./renderer";
-import { distToSegment, inTriangles } from "./shapes";
+import { distToSegment, inTriangles, onSegment } from "./shapes";
 import { mix, type Theme } from "./theme";
 
 interface Entry {
@@ -13,6 +14,27 @@ interface Entry {
   prims: Prims;
   bounds: Bounds;
   style: number;
+}
+
+const fillGeometryCache = new WeakMap<ZonePolygon, { bounds: Bounds; holes: { ring: Point[]; bounds: Bounds }[] }>();
+function ringBounds(ring: Point[]): Bounds {
+  const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const p of ring) { bounds.minX = Math.min(bounds.minX, p.x); bounds.minY = Math.min(bounds.minY, p.y); bounds.maxX = Math.max(bounds.maxX, p.x); bounds.maxY = Math.max(bounds.maxY, p.y); }
+  return bounds;
+}
+function fillGeometry(polygon: ZonePolygon) {
+  let geometry = fillGeometryCache.get(polygon);
+  if (!geometry) fillGeometryCache.set(polygon, geometry = { bounds: ringBounds(polygon.outer), holes: polygon.holes.map(ring => ({ ring, bounds: ringBounds(ring) })) });
+  return geometry;
+}
+const containsPoint = (bounds: Bounds, p: Point) => p.x >= bounds.minX && p.x <= bounds.maxX && p.y >= bounds.minY && p.y <= bounds.maxY;
+function fillContains(polygon: ZonePolygon, p: Point): boolean {
+  const geometry = fillGeometry(polygon);
+  if (!containsPoint(geometry.bounds, p) || !pointInRing(polygon.outer, p)) return false;
+  for (const hole of geometry.holes) if (containsPoint(hole.bounds, p) && pointInRing(hole.ring, p)) {
+    if (!hole.ring.some((a, i) => onSegment(p, a, hole.ring[(i + 1) % hole.ring.length]))) return false;
+  }
+  return true;
 }
 
 function primBounds(p: Prims): Bounds {
@@ -27,13 +49,18 @@ function primBounds(p: Prims): Bounds {
     maxX = Math.max(maxX, s.a.x + h, s.b.x + h);
     maxY = Math.max(maxY, s.a.y + h, s.b.y + h);
   }
-  for (const f of p.fills) {
+  for (const f of p.fillPolygons ? [] : p.fills) {
     for (let i = 0; i < f.tris.length; i += 2) {
       minX = Math.min(minX, f.tris[i]);
       maxX = Math.max(maxX, f.tris[i]);
       minY = Math.min(minY, f.tris[i + 1]);
       maxY = Math.max(maxY, f.tris[i + 1]);
     }
+  }
+  for (const polygon of p.fillPolygons ?? []) {
+    const bounds = fillGeometry(polygon).bounds;
+    minX = Math.min(minX, bounds.minX); minY = Math.min(minY, bounds.minY);
+    maxX = Math.max(maxX, bounds.maxX); maxY = Math.max(maxY, bounds.maxY);
   }
   return { minX, minY, maxX, maxY };
 }
@@ -105,7 +132,7 @@ export class Scene {
     for (const id of this.entries.keys()) if (!items.has(id)) { this.entries.delete(id); rebuildIndex = true; }
     for (const [id, item] of items) {
       const e = this.entries.get(id);
-      if (e && e.item === item && !(fillsChanged && item.kind === "zone")) continue;
+      if (e && e.item === item && !e.prims.pendingFills?.length && !(fillsChanged && item.kind === "zone")) continue;
       const prims = drawItem(item, ctx);
       const bounds = primBounds(prims);
       this.entries.set(id, { item, prims, bounds, style: e?.style ?? this.nextStyle++ });
@@ -143,7 +170,9 @@ export class Scene {
     if (!e) return Infinity;
     let best = Infinity;
     for (const s of e.prims.segs) best = Math.min(best, Math.max(0, distToSegment(p, s.a, s.b) - s.w / 2));
-    for (const f of e.prims.fills) if (inTriangles(p, f.tris)) return 0;
+    if (e.prims.fillPolygons) {
+      if (e.prims.fillPolygons.some(polygon => fillContains(polygon, p))) return 0;
+    } else for (const f of e.prims.fills) if (inTriangles(p, f.tris)) return 0;
     return best;
   }
 
@@ -182,13 +211,18 @@ export class Scene {
       const hit =
         contains(r, e.bounds) ||
         e.prims.segs.some((s) => segHitsRect(s.a, s.b, r)) ||
-        e.prims.fills.some((f) => {
+        (!e.prims.fillPolygons && e.prims.fills.some((f) => {
           for (let i = 0; i < f.tris.length; i += 2) {
             const x = f.tris[i];
             const y = f.tris[i + 1];
             if (x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY) return true;
           }
           return inTriangles({ x: r.minX, y: r.minY }, f.tris);
+        })) || (e.prims.fillPolygons ?? []).some(polygon => {
+          const corners = [{ x: r.minX, y: r.minY }, { x: r.maxX, y: r.minY }, { x: r.maxX, y: r.maxY }, { x: r.minX, y: r.maxY }];
+          if (corners.some(p => fillContains(polygon, p)) || polygon.outer.some(p => containsPoint(r, p))) return true;
+          const boundaryHits = (ring: Point[]) => ring.some((p, i) => segHitsRect(p, ring[(i + 1) % ring.length], r));
+          return boundaryHits(polygon.outer) || fillGeometry(polygon).holes.some(h => overlaps(h.bounds, r) && boundaryHits(h.ring));
         });
       if (hit) out.push(id);
     }

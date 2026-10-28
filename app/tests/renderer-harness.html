@@ -1,5 +1,6 @@
 <!doctype html><html><body style="margin:0"><canvas id="canvas" width="640" height="480"></canvas>
 <script type="module">
+import {PourTriangles} from '/src/editor/pourTriangles.ts';
 import {Renderer} from '/src/editor/renderer.ts';
 import {Scene,highlightDimming} from '/src/editor/scene.ts';
 import {Camera} from '/src/editor/camera.ts';
@@ -56,12 +57,38 @@ window.runRendererChecks=async()=>{
  check(sample(4.5,1.4)[0]<80,'removing a layer left stale pooled geometry');
  items.set(3,{...zone,fill:[]});scene.update(items,context);renderer.setScene(scene.build(changedTheme,{selection:new Set(),hover:null}));renderer.render(cam,grid);
  check(sample(4.5,2.5)[0]<80&&gl.getError()===gl.NO_ERROR,'removing a fill left stale triangles');
+ // Exercise the actual module worker, transferred doubles and hole-aware rendering.
+ const workerScene=new Scene(),workerRing=[p(.5,.5),p(5.5,.5),p(5.5,3.5),p(.5,3.5)];
+ const workerHoles=[];for(let row=0;row<8;row++)for(let col=0;col<8;col++){const x=1+col*.5,y=.75+row*.35;workerHoles.push([p(x-.06,y-.06),p(x+.06,y-.06),p(x+.06,y+.06),p(x-.06,y+.06)]);}
+ const workerPolygon={outer:workerRing,holes:workerHoles},workerItems=new Map([[20,{...zone,outline:workerRing,fill:[workerPolygon]}]]);
+ let workerFallbacks=0,workerUpdates=0;
+ const workerCache=new PourTriangles(()=>{workerUpdates++;workerScene.update(workerItems,workerContext);renderer.setScene(workerScene.build(theme,{selection:new Set(),hover:null}));},{onFallback:()=>workerFallbacks++});
+ const workerContext={kind:'pcb',cache:{},footprints:{},view:DEFAULT_VIEW,pourFills:true,getFillTriangles:workerCache.read};
+ workerCache.retain(new Set([workerPolygon]));workerScene.update(workerItems,workerContext);
+ check(workerCache.pendingCount===1&&workerScene.prims(20).fills.length===0,'large fill did not defer');
+ check(workerScene.pick(p(1.25,.75),1000)===20&&workerScene.pick(p(1,.75),1000)===null,'pending fill lost hole-aware picking');
+ renderer.setScene(workerScene.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),workerScene.styleCount);renderer.setOverlay([]);renderer.render(cam,grid);
+ const workerStarted=performance.now();while(workerCache.pendingCount){check(performance.now()-workerStarted<30000,'fill worker timed out');await new Promise(requestAnimationFrame);}
+ await new Promise(requestAnimationFrame);renderer.render(cam,grid);
+ check(workerFallbacks===0&&workerUpdates>0,'module worker failed and fell back');
+ check(sample(1.25,.75)[0]>120&&sample(1,.75)[0]<80,'worker triangles lost copper or a hole');
+ check(workerScene.prims(20).fills[0].tris instanceof Float64Array,'worker result was not transferred doubles');
+ workerCache.dispose();check(gl.getError()===gl.NO_ERROR,'deferred fill WebGL error');
  const ext=gl.getExtension('WEBGL_debug_renderer_info');const device=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
- const result={checks:18,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
+ const result={checks:24,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
  if(new URL(location.href).searchParams.has('fixture')){
   const data=await(await fetch('/__fixture')).json(),dense=new Scene(),entries=new Map(data.items.map(e=>[e.id,e.item]));
-  const t=performance.now(),denseContext={kind:'pcb',cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true};dense.update(entries,denseContext);
-  cam.fit(dense.bounds());bytes=0;uploads=0;renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));const initialUploadBytes=bytes;renderer.setHighlights(new Map(),dense.styleCount);renderer.setOverlay([]);
+  const deferred=!new URL(location.href).searchParams.has('syncFills');let fallbacks=0,fillUpdates=0;
+  const denseCache=new PourTriangles(()=>{fillUpdates++;dense.update(entries,denseContext);renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));},{onFallback:()=>fallbacks++});
+  const denseContext={kind:'pcb',cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true,...(deferred?{getFillTriangles:denseCache.read}:{})};
+  denseCache.retain(new Set([...entries.values()].filter(i=>i.kind==='zone'&&!i.keepout).flatMap(i=>i.fill)));
+  const t=performance.now();dense.update(entries,denseContext);cam.fit(dense.bounds());bytes=0;uploads=0;
+  renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),dense.styleCount);renderer.setOverlay([]);renderer.render(cam,grid);
+  const firstSceneCpuMs=performance.now()-t,firstPending=denseCache.pendingCount;let framesWhilePreparing=0,maxFrameGapMs=0,lastFrame=performance.now();const pendingPicks=[],navigationBounds=dense.bounds(),navigationPoint={x:(navigationBounds.minX+navigationBounds.maxX)/2,y:(navigationBounds.minY+navigationBounds.maxY)/2};
+  while(denseCache.pendingCount){check(performance.now()-t<60000,'dense fill preparation timed out');await new Promise(requestAnimationFrame);const now=performance.now();maxFrameGapMs=Math.max(maxFrameGapMs,now-lastFrame);lastFrame=now;framesWhilePreparing++;cam.panBy(framesWhilePreparing%2?1:-1,0);cam.zoomAt(320,240,framesWhilePreparing%2?1.001:1/1.001);
+   const at=navigationPoint,pickStart=performance.now();dense.pick(at,100000);if(framesWhilePreparing%8===0)dense.inRect({minX:at.x-1e6,minY:at.y-1e6,maxX:at.x+1e6,maxY:at.y+1e6},true);pendingPicks.push(performance.now()-pickStart);renderer.render(cam,grid);}
+  await new Promise(requestAnimationFrame);const fillsReadyMs=performance.now()-t,initialUploadBytes=bytes;
+  check(fallbacks===0,'dense module worker failed');
   const cpu=[];for(let i=0;i<8;i++){cam.panBy(i%2?10:-10,0);cam.zoomAt(320,240,i%2?1/1.01:1.01);const start=performance.now();renderer.render(cam,grid);cpu.push(performance.now()-start);await new Promise(requestAnimationFrame);}
   const denseEdit=[];let editUploadBytes=0,editUploads=0;
   const id=[...entries].find(([,i])=>i.kind==='track')?.[0];
@@ -71,7 +98,7 @@ window.runRendererChecks=async()=>{
    renderer.render(cam,grid);await new Promise(requestAnimationFrame);
   }
   check(editUploads===1&&editUploadBytes<initialUploadBytes/10,'dense track edit repacked unaffected layers or fills');
-  check(gl.getError()===gl.NO_ERROR,'dense-board WebGL error');denseEdit.sort((a,b)=>a-b);cpu.sort((a,b)=>a-b);result.dense={objects:entries.size,initialUploadBytes,editUploadBytes,editUploads,editCpuMedianMs:denseEdit[4],loadAndChecksMs:performance.now()-t,renderSubmissionMedianMs:cpu[4],note:'CPU submission only; GPU completion/presentation excluded.'};
+  check(gl.getError()===gl.NO_ERROR,'dense-board WebGL error');denseEdit.sort((a,b)=>a-b);cpu.sort((a,b)=>a-b);result.dense={objects:entries.size,deferred,firstSceneCpuMs,firstPending,fillsReadyMs,framesWhilePreparing,maxFrameGapMs,pendingPickMedianMs:pendingPicks.sort((a,b)=>a-b)[pendingPicks.length>>1]??null,fillUpdates,initialUploadBytes,editUploadBytes,editUploads,editCpuMedianMs:denseEdit[4],loadAndChecksMs:performance.now()-t,renderSubmissionMedianMs:cpu[4],note:'CPU submission only; GPU completion/presentation excluded.'};denseCache.dispose();
  }
  renderer.dispose();return result;
 };

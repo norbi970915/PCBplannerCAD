@@ -1,3 +1,4 @@
+import type { Triangles } from "./pourTriangles";
 import type { Coord, Point } from "../core/types";
 import { NM_PER_MM } from "../core/units";
 import type { Camera } from "./camera";
@@ -15,7 +16,7 @@ export interface DrawLine {
 
 export interface DrawFill {
   /** Flat triangle list [x,y, x,y, x,y, …] in nanometers. */
-  tris: number[];
+  tris: Triangles;
   color: Rgba;
   style?: number;
 }

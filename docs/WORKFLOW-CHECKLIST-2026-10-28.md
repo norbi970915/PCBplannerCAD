@@ -103,3 +103,24 @@ Background verification updated **2026-10-28 12:38 (Europe/Bucharest)**: 164 edi
 - [ ] Select multiple vias with both endpoint and interior contacts on one segment; compare preview and final connectivity.
 - [ ] After a small track edit, change active layer, hide/show layers, toggle pour fills and Undo/Redo; confirm no old tracks/fills remain on screen.
 - [ ] Record timings after warm edits and separately record initial opening time; cold filled-pour triangulation is still a known source of delay.
+
+## Deferred filled-pour display — pending home acceptance
+
+- [ ] Rebuild, then open a large saved board. Confirm other geometry responds while “Preparing copper display…” is shown and fills arrive without changing the document's saved/dirty state.
+- [ ] Pan/zoom, pick copper inside pours and avoid holes, and use crossing boxes at hole boundaries while preparation is pending and after it finishes.
+- [ ] Hide/show layers, toggle filled pours, change active-layer-only mode, and switch documents during preparation. Cancelled/hidden jobs must not reappear or overwrite the current view.
+- [ ] Refill, edit a pour, Undo/Redo and close/reopen a document while work is pending; verify geometry, selection and history remain correct.
+- [ ] Move a large pour and inspect its outline preview; after placement, wait for its final fill display. Esc must leave the saved geometry unchanged.
+- [ ] Print a board after deferred preparation and inspect copper/holes independently. Confirm normal printing still works before a display mesh has been cached.
+
+Background checks for this batch: 174 editor tests, 24 headless WebGL checks, a bundled-worker check under the app's security policy, TypeScript and the frontend build passed. These do not check off the pending native interaction tests above.
+
+## Connected alignment and rejected-move retry — pending home acceptance
+
+- [ ] Align and Distribute routed footprints using different offsets; confirm routing stays physically attached, other components stay fixed, and Undo/Redo/save/reopen recover exactly.
+- [ ] Check Preserve angles, Free and explicit Disconnect. Tab changes the connection behavior during an M move.
+- [ ] Pack parts where a later part has locked or blocked attached copper; confirm no earlier part moves and no cursor pickup starts on failure.
+- [ ] Attempt a blocked M/drop in Avoid/Push mode, choose a legal location and place again. Esc must cancel without adding a history step.
+- [ ] Hold/release the pointer across a fast rejected floating placement; verify there is no duplicate plan or commit.
+- [ ] Change rules/move settings, selections, footprint geometry or the active document while planning; stale results must not overwrite current work.
+- [ ] Run full DRC after testing Free/Ignore and direct component edits; clean-route rejection does not replace whole-board review.

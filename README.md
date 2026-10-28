@@ -65,7 +65,7 @@ For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/pC
 
 ## View controls
 
-With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design.
+With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design. Large copper fills prepare in the background: the canvas shows outlines first and a preparation status until their display is ready. Pours remain selectable around their holes during preparation. This changes display preparation only; saved geometry and design-rule checks are unchanged.
 
 For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow and editing update](docs/PROGRESS-2026-10-27-WORKFLOW.md) for continuation on another computer. The [next feature priorities](docs/NEXT-FEATURES-2026-10-27.md) describe the proposed development order and implementation starting points.
 
@@ -112,7 +112,7 @@ Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb)
 
 Board selection filters are in the right **View** tab and stay available with an active selection. Drag empty space left to right to select enclosed objects, or right to left to select touching objects. Ctrl+click toggles individual objects; Shift adds, Ctrl toggles, and Ctrl+Shift subtracts box selections.
 
-**PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Tools → Teardrops can persist automatic updates after routing and connected moves.
+**PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Align, Distribute and Pack & Move use the current connected-move behavior; Tab changes that behavior during an M move. Blocked connected moves can be placed again or cancelled with Esc. An incomplete multi-part plan applies no changes. Tools → Teardrops can persist automatic updates after routing and connected moves.
 
 ## Local diagnostics
 

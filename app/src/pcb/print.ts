@@ -57,7 +57,7 @@ export function buildPrint(doc: DocState, opts: PrintOptions): Uint8Array {
       // Mono: symbol bodies and sheets stay white, everything else prints black.
       const paperFill = f.role === "bodyFill" || f.role === "sheetFill" || f.role === "graphicFill" || f.role === "hole";
       const color: PdfRgba = opts.mono ? (paperFill ? [1, 1, 1, 1] : BLACK) : board ? (f.role === "hole" ? [1, 1, 1, 1] : onPaper(c)) : c;
-      group(theme.rank(f.role)).fills.push({ tris: f.tris, color });
+      group(theme.rank(f.role)).fills.push({ tris: Array.isArray(f.tris) ? f.tris : Array.from(f.tris), color });
       for (let i = 0; i < f.tris.length; i += 2) grow(f.tris[i], f.tris[i + 1]);
     }
   }
