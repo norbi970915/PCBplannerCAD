@@ -1,5 +1,7 @@
 # PCBPlannerCAD Roadmap
 
+> Current priorities and verified status: [development and validation plan, 2026-10-28](DEVELOPMENT-PLAN-2026-10-28.md). This document retains historical phase/proposal details; some unchecked items and known gaps have since been implemented. See the current plan and handoff before starting work.
+
 Target platform: **Windows desktop** (installable `.msi` / `.exe`). macOS/Linux are possible later with the same stack but are out of scope for now.
 
 ## Phase 0: Foundations ✅

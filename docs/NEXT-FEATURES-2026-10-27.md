@@ -1,5 +1,7 @@
 # PCBPlannerCAD next feature priorities — 2026-10-27
 
+> Current priorities and verified status: [development and validation plan, 2026-10-28](DEVELOPMENT-PLAN-2026-10-28.md). This document retains historical phase/proposal details; some unchecked items and known gaps have since been implemented. See the current plan and handoff before starting work.
+
 The pour manager, bulk editing, copper locking, automatic teardrops, connected rotation/flip, spatial hit testing and bounded via shoving are now implemented. See [the editing update](PROGRESS-2026-10-27-EDITING.md) for validation and limits. The table below records the earlier proposal; rectangular/circular arrays are also implemented in [the workflow update](PROGRESS-2026-10-27-WORKFLOW.md). Custom pads, persistent groups and differential-pair tuning remain future work.
 
 ## Where to continue

@@ -67,7 +67,7 @@ For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/pC
 
 With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design. Large copper fills prepare in the background: the canvas shows outlines first and a preparation status until their display is ready. Pours remain selectable around their holes during preparation. This changes display preparation only; saved geometry and design-rule checks are unchanged.
 
-For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow and editing update](docs/PROGRESS-2026-10-27-WORKFLOW.md) for continuation on another computer. The [next feature priorities](docs/NEXT-FEATURES-2026-10-27.md) describe the proposed development order and implementation starting points.
+For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow and editing update](docs/PROGRESS-2026-10-27-WORKFLOW.md) for continuation on another computer. The [current development and validation plan](docs/DEVELOPMENT-PLAN-2026-10-28.md) records implementation status, use cases, priorities and acceptance gates. The [earlier feature proposal](docs/NEXT-FEATURES-2026-10-27.md) remains historical context.
 
 ## Bringing designs in
 
