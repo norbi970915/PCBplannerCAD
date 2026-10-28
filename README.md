@@ -117,3 +117,5 @@ Board selection filters are in the right **View** tab and stay available with an
 ## Local diagnostics
 
 Use Help → **Record/Stop Canvas Timings** for a 30-second local CPU timing report in Messages. For background checks, `pnpm.cmd -C app test:editor` runs editor regressions; `pnpm.cmd -C app test:renderer` runs the optional isolated headless rendering check when Playwright is available. Read-only board profiling is available through `pnpm.cmd -C app benchmark:navigation <absolute-native-board-path>`. See [the latest handoff](docs/HANDOFF-2026-10-28.md) for setup, measured limits and home-laptop acceptance steps.
+
+Library folders are discovered by their layout. Set `PCAD_LIBRARY_ROOT` to a data folder containing `symbols`, `footprints` or `3dmodels` to select one explicitly. The naming check scans source paths, identifiers, messages, metadata and documentation; only exact file-compatibility markers and required notices are exempt.
