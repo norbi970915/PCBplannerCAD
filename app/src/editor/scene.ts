@@ -73,20 +73,28 @@ export interface HighlightState {
   dimOthers?: boolean;
 }
 
+/** Board-wide fading is a shader uniform, leaving only explicit highlights in the table. */
+export function highlightDimming(theme: Theme, hl: HighlightState): Rgba {
+  return hl.dimOthers && hl.marked?.size ? [theme.background[0], theme.background[1], theme.background[2], 0.75] : [0, 0, 0, 0];
+}
+
 export class Scene {
   private entries = new Map<ItemId, Entry>();
   private index = new BoundsIndex();
   private ctxSignature: unknown[] = [];
   private pourFills: boolean | undefined;
   private nextStyle = 1;
+  private compiled = new WeakMap<Entry, { theme: Theme; groups: DrawGroup[] }>();
+  private built = new Map<number, { sources: DrawGroup[]; group: DrawGroup }>();
   get styleCount() { return this.nextStyle; }
 
   /** Syncs with the document; only changed items are redrawn. */
   update(items: ReadonlyMap<ItemId, Item>, ctx: DrawContext) {
-    let boundsChanged = false;
+    let rebuildIndex = false;
+    const moved: { id: ItemId; bounds: Bounds }[] = [];
     const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.view];
     if (sig.some((v, i) => v !== this.ctxSignature[i])) {
-      boundsChanged = true;
+      rebuildIndex = true;
       this.entries.clear();
       this.nextStyle = 1;
       this.ctxSignature = sig;
@@ -94,15 +102,18 @@ export class Scene {
     // Showing or hiding pour fills only changes zones.
     const fillsChanged = ctx.pourFills !== this.pourFills;
     this.pourFills = ctx.pourFills;
-    for (const id of this.entries.keys()) if (!items.has(id)) { this.entries.delete(id); boundsChanged = true; }
+    for (const id of this.entries.keys()) if (!items.has(id)) { this.entries.delete(id); rebuildIndex = true; }
     for (const [id, item] of items) {
       const e = this.entries.get(id);
       if (e && e.item === item && !(fillsChanged && item.kind === "zone")) continue;
-      boundsChanged = true;
       const prims = drawItem(item, ctx);
-      this.entries.set(id, { item, prims, bounds: primBounds(prims), style: e?.style ?? this.nextStyle++ });
+      const bounds = primBounds(prims);
+      this.entries.set(id, { item, prims, bounds, style: e?.style ?? this.nextStyle++ });
+      if (!e) rebuildIndex = true;
+      else if (bounds.minX !== e.bounds.minX || bounds.minY !== e.bounds.minY || bounds.maxX !== e.bounds.maxX || bounds.maxY !== e.bounds.maxY) moved.push({ id, bounds });
     }
-    if (boundsChanged) this.index.rebuild([...this.entries].map(([id,e])=>({id,bounds:e.bounds})));
+    if (!rebuildIndex) for (const entry of moved) if (!this.index.update(entry.id, entry.bounds)) { rebuildIndex = true; break; }
+    if (rebuildIndex) this.index.rebuild([...this.entries].map(([id,e])=>({id,bounds:e.bounds})));
   }
 
   prims(id: ItemId): Prims | undefined {
@@ -191,11 +202,6 @@ export class Scene {
       const e = this.entries.get(id);
       if (e && !hl.excluded?.has(id)) out.set(e.style, [tint[0], tint[1], tint[2], amount]);
     };
-    // Net highlight: everything outside the marked set fades toward the background.
-    if (hl.dimOthers && hl.marked?.size) {
-      const bg = theme.background;
-      for (const [id, e] of this.entries) if (!hl.marked.has(id) && !hl.excluded?.has(id)) out.set(e.style, [bg[0], bg[1], bg[2], 0.75]);
-    }
     if (hl.hover !== null) add(hl.hover, 0.3, [1, 1, 1, 1]);
     for (const id of hl.marked ?? []) add(id, 0.4, theme.selectTint);
     for (const id of hl.selection) add(id, 0.55, theme.selectTint);
@@ -204,6 +210,8 @@ export class Scene {
 
   /** Builds render groups ordered by theme rank. */
   build(theme: Theme, hl: HighlightState): DrawGroup[] {
+    // Interactive highlights use a texture; the scene itself normally has no tint.
+    if (!hl.selection.size && hl.hover === null && !hl.marked?.size) return this.buildCached(theme, hl.excluded);
     const groups = new Map<number, DrawGroup>();
     const group = (rank: number) => {
       let g = groups.get(rank);
@@ -218,6 +226,48 @@ export class Scene {
     }
     return [...groups.values()].sort((a, b) => a.rank - b.rank);
   }
+
+  /** Reuses unchanged layer batches and their fill/line arrays independently. */
+  private buildCached(theme: Theme, excluded?: ReadonlySet<ItemId>): DrawGroup[] {
+    const sources = new Map<number, DrawGroup[]>();
+    for (const [id, entry] of this.entries) {
+      if (excluded?.has(id)) continue;
+      let cached = this.compiled.get(entry);
+      if (!cached || cached.theme !== theme) {
+        const groups = new Map<number, DrawGroup>();
+        pushPrims(entry.prims, theme, rank => {
+          let group = groups.get(rank);
+          if (!group) groups.set(rank, group = { rank, lines: [], fills: [] });
+          return group;
+        }, 0, theme.selectTint, entry.style);
+        cached = { theme, groups: [...groups.values()] };
+        this.compiled.set(entry, cached);
+      }
+      for (const group of cached.groups) {
+        let list = sources.get(group.rank);
+        if (!list) sources.set(group.rank, list = []);
+        list.push(group);
+      }
+    }
+    const built = new Map<number, { sources: DrawGroup[]; group: DrawGroup }>();
+    const same = <T,>(a: readonly T[], b: readonly T[]) => a.length === b.length && a.every((value, i) => value === b[i]);
+    for (const [rank, list] of sources) {
+      const previous = this.built.get(rank);
+      if (previous && same(previous.sources, list)) { built.set(rank, previous); continue; }
+      const group: DrawGroup = { rank, lines: [], fills: [] };
+      for (const source of list) {
+        for (const line of source.lines) group.lines.push(line);
+        for (const fill of source.fills) group.fills.push(fill);
+      }
+      // Editing a track must not re-upload the unchanged pours on that layer.
+      if (previous && same(previous.group.lines, group.lines)) group.lines = previous.group.lines;
+      if (previous && same(previous.group.fills, group.fills)) group.fills = previous.group.fills;
+      built.set(rank, { sources: list, group });
+    }
+    this.built = built;
+    return [...built.values()].map(b => b.group).sort((a, b) => a.rank - b.rank);
+  }
+
 }
 
 export function pushPrims(prims: Prims, theme: Theme, group: (rank: number) => DrawGroup, k: number, tint: Rgba, style = 0) {

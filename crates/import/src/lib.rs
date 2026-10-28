@@ -1,11 +1,10 @@
-//! Importers that turn foreign design files into PCBPlannerCAD core types.
+//! Importers that turn foreign design files into pCAD core types.
 //!
-//! - [`structured`]: structured format 6+ S-expression files (`.kicad_sym`, `.kicad_mod`, `.kicad_sch`, `.kicad_pro`).
-//! - [`xml`]: XML 6+ XML files (`.lbr`, `.sch`), which is also what
-//!   XML design exports.
+//! - [`structured`]: S-expression projects, sheets, boards and libraries.
+//! - [`xml`]: XML designs and libraries.
 
-pub mod xml;
 pub mod paths;
+pub mod xml;
 pub mod structured;
 mod report;
 

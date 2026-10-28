@@ -511,7 +511,7 @@ fn box_symbol_validation_and_width_override() {
 #[test]
 fn starter_library_is_consistent() {
     let lib = starter_library();
-    assert_eq!(lib.name, "PCBPlannerCAD Basic");
+    assert_eq!(lib.name, "pCAD Basic");
     let uniq = |v: Vec<&str>| v.len() == v.iter().collect::<HashSet<_>>().len();
     assert!(uniq(lib.symbols.iter().map(|s| s.name.as_str()).collect()));
     assert!(uniq(lib.footprints.iter().map(|s| s.name.as_str()).collect()));

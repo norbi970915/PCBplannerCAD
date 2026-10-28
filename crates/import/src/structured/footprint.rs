@@ -153,7 +153,7 @@ pub fn read_footprint(root: &List, name: &str, f: &Frame, notes: &mut Notes) -> 
     fp
 }
 
-/// structured format layer name → PCBPlannerCAD layer; `None` (with a note) for layers we skip.
+/// structured format layer name → pCAD layer; `None` (with a note) for layers we skip.
 pub fn map_layer(name: &str, notes: &mut Notes) -> Option<LayerId> {
     Some(match name {
         "F.Cu" => layer::TOP_COPPER,

@@ -67,3 +67,57 @@ test('moving a part previews its pad segment sliding at the same angle along its
   const [plain] = stretchAttached(att, p(0, -3), false);
   assert.deepEqual([plain.a, plain.b], [p(15, 5), p(20, -3)], 'Free mode stretches straight');
 });
+
+test('via previews keep both layers attached and split a trace passing through the via',async()=>{
+ const {attachedTracks,stretchAttached}=await import('../src/editor/trackDrag.ts');
+ const v:Item={kind:'via',pos:p(5,5),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'};
+ const items=new Map<number,Item>([[1,v],[2,tr(p(0,0),p(5,5))],[3,{...tr(p(5,5),p(9,9)),layer:1}as Item],[4,tr(p(5,5),p(9,5),'OTHER')]]);
+ const attached=attachedTracks(items,{},[1]);assert.deepEqual(attached.map(a=>a.id),[2,3]);
+ const preview=stretchAttached(attached,p(2,1));assert.deepEqual(preview[0].b,p(7,6));assert.deepEqual(preview[1].a,p(7,6));
+ const inside=new Map<number,Item>([[1,v],[2,tr(p(0,0),p(10,10))]]);
+ const split=stretchAttached(attachedTracks(inside,{},[1]),p(0,2));assert.equal(split.length,2);
+ assert.deepEqual([split[0].a,split[0].b,split[1].a,split[1].b],[p(0,0),p(5,7),p(5,7),p(10,10)]);
+});
+
+test('arc attachment preview matches only the via net and physical layer span',async()=>{
+ const {attachedViaArcs}=await import('../src/editor/trackDrag.ts');
+ const arc={kind:'arcTrack',center:p(5,0),radius:mm(5),startAngle:90,sweep:90,width:mm(.2),layer:0,net:'N'}as Item;
+ const items=new Map<number,Item>([[1,{kind:'via',pos:p(5,5),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'}],[2,arc],[3,{...arc,net:'OTHER'}as Item]]);
+ const attached=attachedViaArcs(items,[1]);assert.equal(attached.length,1);assert.deepEqual(attached[0].contacts,[{at:p(5,5),anchor:p(5,5)}]);
+});
+
+test('curved-track preview follows interior via contacts across wrapped and clockwise sweeps',async()=>{
+ const {attachedViaArcs}=await import('../src/editor/trackDrag.ts');
+ for(const[startAngle,sweep]of [[0,180],[330,180],[150,-180]]){
+  const arc:Item={kind:'arcTrack',center:p(15,10),radius:mm(5),startAngle,sweep,width:mm(.2),layer:0,net:'N'};
+  const items=new Map<number,Item>([[1,{kind:'via',pos:p(15,15.2),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'}],[2,arc]]);
+  const attached=attachedViaArcs(items,[1]);assert.equal(attached.length,1);assert.equal(attached[0].whole,false);
+  assert.deepEqual(attached[0].contacts,[{at:p(15,15),anchor:p(15,15.2)}]);
+ }
+ const arc:Item={kind:'arcTrack',center:p(10,10),radius:mm(5),startAngle:330,sweep:60,width:mm(.2),layer:0,net:'N'};
+ const opposite=new Map<number,Item>([[1,{kind:'via',pos:p(5,10),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'}],[2,arc]]);
+ assert.deepEqual(attachedViaArcs(opposite,[1]),[],'the missing part of a circle cannot attach');
+});
+
+test('a locked neighboring track is excluded from angle-preserving preview adjustment',async()=>{
+ const {attachedTracks,stretchAttached}=await import('../src/editor/trackDrag.ts');
+ const items=new Map<number,Item>([[1,{kind:'via',pos:p(8,0),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'}],[2,tr(p(6,2),p(8,0))],[3,{...tr(p(2,2),p(6,2)),locked:true}as Item]]);
+ const attached=attachedTracks(items,{},[1]);assert.equal(attached.length,1);assert.equal(attached[0].neighbour,undefined);
+ const preview=stretchAttached(attached,p(0,1),true);assert.equal(preview.length,1);assert.deepEqual(preview[0].a,p(6,2));
+});
+
+
+test('multi-via preview splits an interior contact even when another selected via holds an endpoint',async()=>{
+ const {attachedTracks,stretchAttached}=await import('../src/editor/trackDrag.ts');
+ const via=(x:number):Item=>({kind:'via',pos:p(x,0),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'N'});
+ const items=new Map<number,Item>([[1,via(0)],[2,via(5)],[3,via(10)],[4,tr(p(0,0),p(10,0))]]);
+ const attached=attachedTracks(items,{},[1,2]);assert.equal(attached.length,2);
+ const preview=stretchAttached(attached,p(0,2));assert.deepEqual(preview.map(t=>[t.a,t.b]),[[p(0,2),p(5,2)],[p(5,2),p(10,0)]]);
+});
+
+test('dragging a track tethers a locked neighbor without hiding or changing it',()=>{
+ const items=board();items.set(3,{...items.get(3)!,locked:true}as Item);
+ const plan=planTrackDrag(items,{},[2])!;assert(!trackDragIds(plan).includes(3),'locked neighbor stays visible');
+ const result=applyTrackDrag(plan,p(0,1));assert(!result.replace.some(r=>r.id===3),'locked neighbor stays exact');
+ assert(result.add.some(t=>JSON.stringify(t.a)===JSON.stringify(p(6,2))&&JSON.stringify(t.b)===JSON.stringify(p(6,3))),'old junction is joined to the new segment');
+});

@@ -40,6 +40,7 @@ layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_color;
 layout(location = 2) in uint a_style;
 uniform sampler2D u_highlights;
+uniform vec4 u_unmarkedTint;
 uniform vec2 u_center;
 uniform float u_scale;
 uniform vec2 u_res;
@@ -48,6 +49,7 @@ void main() {
   ivec2 size = textureSize(u_highlights, 0);
   int id = int(a_style);
   vec4 tint = texelFetch(u_highlights, ivec2(id % size.x, id / size.x), 0);
+  if (id > 0 && tint.a == 0.0) tint = u_unmarkedTint;
   v_color = vec4(mix(a_color.rgb, tint.rgb, tint.a * 0.3), a_color.a);
   gl_Position = vec4((a_pos - u_center) * u_scale / (u_res * 0.5), 0.0, 1.0);
 }`;
@@ -99,6 +101,7 @@ layout(location = 2) in float a_hw;
 layout(location = 3) in vec4 a_color;
 layout(location = 4) in uint a_style;
 uniform sampler2D u_highlights;
+uniform vec4 u_unmarkedTint;
 uniform vec2 u_center;
 uniform float u_scale;
 uniform vec2 u_res;
@@ -124,6 +127,7 @@ void main() {
   ivec2 size = textureSize(u_highlights, 0);
   int id = int(a_style);
   vec4 tint = texelFetch(u_highlights, ivec2(id % size.x, id / size.x), 0);
+  if (id > 0 && tint.a == 0.0) tint = u_unmarkedTint;
   v_color = vec4(mix(a_color.rgb, tint.rgb, tint.a), a_color.a);
   gl_Position = vec4((A + t * u + n * v) / (u_res * 0.5), 0.0, 1.0);
 }`;
@@ -296,39 +300,32 @@ class FillBatch {
 
 /** GPU buffers for a list of groups; buffers are pooled and reused. */
 class GroupSet {
-  private pool: { lines: LineBatch; fills: FillBatch }[] = [];
-  private used = 0;
+  private pool = new Map<number, { lines: LineBatch; fills: FillBatch; lineData?: readonly DrawLine[]; fillData?: readonly DrawFill[] }>();
+  private active: { lines: LineBatch; fills: FillBatch }[] = [];
 
   constructor(private gl: WebGL2RenderingContext) {}
 
+  /** Submitted arrays are immutable; unchanged batches need no packing or upload. */
   upload(groups: readonly DrawGroup[]) {
-    while (this.pool.length < groups.length) this.pool.push({ lines: new LineBatch(this.gl), fills: new FillBatch(this.gl) });
-    groups.forEach((g, i) => {
-      this.pool[i].fills.upload(g.fills);
-      this.pool[i].lines.upload(g.lines);
+    this.active = groups.map(group => {
+      let batch = this.pool.get(group.rank);
+      if (!batch) this.pool.set(group.rank, batch = { lines: new LineBatch(this.gl), fills: new FillBatch(this.gl) });
+      if (batch.fillData !== group.fills) { batch.fills.upload(group.fills); batch.fillData = group.fills; }
+      if (batch.lineData !== group.lines) { batch.lines.upload(group.lines); batch.lineData = group.lines; }
+      return batch;
     });
-    this.used = groups.length;
   }
 
   draw(useLines: () => void, useFills: () => void) {
-    for (let i = 0; i < this.used; i++) {
-      const b = this.pool[i];
-      if (b.fills.count) {
-        useFills();
-        b.fills.draw();
-      }
-      if (b.lines.count) {
-        useLines();
-        b.lines.draw();
-      }
+    for (const batch of this.active) {
+      if (batch.fills.count) { useFills(); batch.fills.draw(); }
+      if (batch.lines.count) { useLines(); batch.lines.draw(); }
     }
   }
 
   dispose() {
-    for (const b of this.pool) {
-      b.lines.dispose();
-      b.fills.dispose();
-    }
+    for (const batch of this.pool.values()) { batch.lines.dispose(); batch.fills.dispose(); }
+    this.pool.clear(); this.active = [];
   }
 }
 
@@ -343,6 +340,7 @@ export class Renderer {
   private analysis: GroupSet;
   private highlights: HighlightTexture;
   private dpr = 1;
+  private unmarkedTint: Rgba = [0, 0, 0, 0];
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -377,7 +375,7 @@ export class Renderer {
     this.scene.upload(groups);
   }
 
-  setHighlights(styles: ReadonlyMap<number, Rgba>, count: number) { this.highlights.set(styles, count); }
+  setHighlights(styles: ReadonlyMap<number, Rgba>, count: number, unmarkedTint: Rgba = [0, 0, 0, 0]) { this.highlights.set(styles, count); this.unmarkedTint = unmarkedTint; }
 
   setAnalysis(groups: readonly DrawGroup[]) { this.analysis.upload(groups); }
 
@@ -430,6 +428,7 @@ export class Renderer {
       gl.uniform2f(this.u(p, "u_center"), cam.cx / NM_PER_MM, cam.cy / NM_PER_MM);
       gl.uniform1f(this.u(p, "u_scale"), s * NM_PER_MM);
       gl.uniform2f(this.u(p, "u_res"), W, H);
+      gl.uniform4fv(this.u(p, "u_unmarkedTint"), this.unmarkedTint);
     }
     this.highlights.bind();
     let current: WebGLProgram | null = null;

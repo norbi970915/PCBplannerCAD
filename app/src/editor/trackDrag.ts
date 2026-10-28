@@ -4,6 +4,7 @@
 
 import type { Footprint, Item, ItemId, Point, TrackItem } from "../core/types";
 import { place } from "./draw";
+import { viaSpan } from "../pcb/vias";
 
 type Pt = { x: number; y: number };
 
@@ -75,7 +76,7 @@ export function planTrackDrag(items: ReadonlyMap<ItemId, Item>, footprints: Reco
         if (same(n.a, at)) neighbours.push({ id: nid, track: n, end: "a" });
         else if (same(n.b, at)) neighbours.push({ id: nid, track: n, end: "b" });
       }
-      ends.push({ track: id, end, at, neighbours, anchored: anchorAt(items, footprints, at, t.layer) });
+      ends.push({ track: id, end, at, neighbours, anchored: neighbours.some(n=>n.track.locked) || anchorAt(items, footprints, at, t.layer) });
     }
   }
   let normal: Pt | null = null;
@@ -145,9 +146,16 @@ export interface Attached {
 }
 
 export function attachedTracks(items: ReadonlyMap<ItemId, Item>, footprints: Record<string, Footprint>, ids: readonly ItemId[]): Attached[] {
-  const pads: { at: Point; net: string; reach: number; layers: number[] }[] = [];
+  const pads: { at: Point; net: string; reach: number; layers: number[]; via?: boolean }[] = [];
+  const board = [...items.values()].find(i => i.kind === "board");
+  const copper = board?.kind === "board" ? board.stackup.layers.filter(l => l.kind === "copper" && l.layer !== null).map(l => l.layer!) : [0, 1];
   for (const id of ids) {
     const fp = items.get(id);
+    if (fp?.kind === "via") {
+      const layers=viaSpan(copper, fp.fromLayer, fp.toLayer);
+      if (fp.net && layers.length) pads.push({ at: fp.pos, net: fp.net, reach: fp.diameter / 2, layers, via:true });
+      continue;
+    }
     if (fp?.kind !== "footprint") continue;
     const geom = footprints[fp.footprint];
     if (!geom) continue;
@@ -161,12 +169,28 @@ export function attachedTracks(items: ReadonlyMap<ItemId, Item>, footprints: Rec
     }
   }
   const moving = new Set(ids);
-  const on = (p: Point, t: TrackItem) => pads.some((pad) => pad.net === t.net && (!pad.layers.length || pad.layers.includes(t.layer)) && Math.hypot(pad.at.x - p.x, pad.at.y - p.y) <= pad.reach);
+  const on = (p: Point, t: TrackItem) => pads.some((pad) => pad.net === t.net && (!pad.layers.length || pad.layers.includes(t.layer)) && Math.hypot(pad.at.x - p.x, pad.at.y - p.y) <= pad.reach + (pad.via ? t.width / 2 : 0));
   const out: Attached[] = [];
   for (const [id, t] of items) {
     if (t.kind !== "track" || moving.has(id) || !t.net) continue;
     const a = on(t.a, t), b = on(t.b, t);
-    if (!a && !b) continue;
+    // Split every interior contact, even when another selected via holds an endpoint.
+    const dx=t.b.x-t.a.x,dy=t.b.y-t.a.y,len2=dx*dx+dy*dy;
+    const joints=pads.filter(pad=>pad.via&&pad.net===t.net&&pad.layers.includes(t.layer)).map(pad=>{
+      const u=((pad.at.x-t.a.x)*dx+(pad.at.y-t.a.y)*dy)/len2;
+      const gap=Math.hypot(pad.at.x-t.a.x-u*dx,pad.at.y-t.a.y-u*dy);
+      const endpoint=Math.min(Math.hypot(pad.at.x-t.a.x,pad.at.y-t.a.y),Math.hypot(pad.at.x-t.b.x,pad.at.y-t.b.y));
+      return {pad,u,gap,endpoint};
+    }).filter(j=>j.u>0&&j.u<1&&j.gap<=j.pad.reach+t.width/2&&j.endpoint>j.pad.reach+t.width/2).sort((x,y)=>x.u-y.u);
+    if(joints.length){
+      const points=[t.a,...joints.filter((j,i)=>!i||!same(j.pad.at,joints[i-1].pad.at)).map(j=>j.pad.at),t.b];
+      for(let i=1;i<points.length;i++){
+        const nearA=i>1||a,nearB=i<points.length-1||b;
+        out.push({id,track:{...t,a:points[i-1],b:points[i]},end:nearA&&nearB?'both':nearA?'a':'b'});
+      }
+      continue;
+    }
+    if(!a&&!b)continue;
     const entry: Attached = { id, track: t, end: a && b ? "both" : a ? "a" : "b" };
     if (entry.end !== "both") {
       const far = entry.end === "a" ? t.b : t.a;
@@ -177,7 +201,7 @@ export function attachedTracks(items: ReadonlyMap<ItemId, Item>, footprints: Rec
         if (same(n.a, far)) next.push({ id: nid, track: n, end: "a" });
         else if (same(n.b, far)) next.push({ id: nid, track: n, end: "b" });
       }
-      if (!via && next.length === 1) entry.neighbour = next[0];
+      if (!via && next.length === 1 && !next[0].track.locked) entry.neighbour = next[0];
     }
     out.push(entry);
   }
@@ -216,5 +240,51 @@ export function attachedIds(attached: readonly Attached[]): ItemId[] {
 
 /** Items a drag hides from the scene while its preview is shown. */
 export function trackDragIds(plan: TrackDragPlan): ItemId[] {
-  return [...plan.tracks.keys(), ...plan.ends.flatMap((e) => e.neighbours.map((n) => n.id))];
+  return [...plan.tracks.keys(), ...plan.ends.flatMap((e) => e.anchored ? [] : e.neighbours.map((n) => n.id))];
+}
+
+export interface ViaArcAttachment {
+  id: ItemId;
+  arc: Extract<Item, { kind: "arcTrack" }>;
+  /** Fixed points on the curve and original positions of the via anchors. */
+  contacts: { at: Point; anchor: Point }[];
+  /** Both endpoints follow selected vias, so the entire curve moves. */
+  whole: boolean;
+}
+
+/** Closest centreline point, including endpoints and clockwise/wrapped sweeps. */
+function nearestOnArc(arc: ViaArcAttachment["arc"], p: Point): Point {
+  const at=(degrees:number):Point=>({x:Math.round(arc.center.x+arc.radius*Math.cos(degrees*Math.PI/180)),y:Math.round(arc.center.y+arc.radius*Math.sin(degrees*Math.PI/180))});
+  const distance=(q:Point)=>Math.hypot(q.x-p.x,q.y-p.y);
+  const a=at(arc.startAngle),b=at(arc.startAngle+arc.sweep);
+  let nearest=distance(a)<=distance(b)?a:b;
+  const angle=Math.atan2(p.y-arc.center.y,p.x-arc.center.x)*180/Math.PI;
+  const mod=(a:number)=>((a%360)+360)%360;
+  const offset=arc.sweep>=0?mod(angle-arc.startAngle):mod(arc.startAngle-angle);
+  if(Math.abs(arc.sweep)>=360||offset<=Math.abs(arc.sweep)+1e-9){
+    const radial=at(angle);if(distance(radial)<distance(nearest))nearest=radial;
+  }
+  return nearest;
+}
+
+/** Curves stay fixed and get joining tracks, including contacts along their interior. */
+export function attachedViaArcs(items: ReadonlyMap<ItemId, Item>, ids: readonly ItemId[]): ViaArcAttachment[] {
+  const moving=new Set(ids),vias=ids.map(id=>items.get(id)).filter((i):i is Extract<Item,{kind:"via"}>=>i?.kind==="via");
+  if(!vias.length)return[];
+  const board=[...items.values()].find(i=>i.kind==="board");
+  const copper=board?.kind==="board"?board.stackup.layers.filter(l=>l.kind==="copper"&&l.layer!==null).map(l=>l.layer!):[0,1];
+  const out:ViaArcAttachment[]=[];
+  for(const[id,arc]of items){
+    if(arc.kind!=="arcTrack"||moving.has(id)||!arc.net)continue;
+    const candidates=vias.filter(v=>v.net===arc.net&&viaSpan(copper,v.fromLayer,v.toLayer).includes(arc.layer));
+    const on=(p:Point)=>candidates.some(v=>Math.hypot(v.pos.x-p.x,v.pos.y-p.y)<=(v.diameter+arc.width)/2);
+    const at=(a:number)=>({x:Math.round(arc.center.x+arc.radius*Math.cos(a*Math.PI/180)),y:Math.round(arc.center.y+arc.radius*Math.sin(a*Math.PI/180))});
+    const whole=on(at(arc.startAngle))&&on(at(arc.startAngle+arc.sweep));
+    const contacts=candidates.flatMap(v=>{
+      const at=nearestOnArc(arc,v.pos);
+      return Math.hypot(v.pos.x-at.x,v.pos.y-at.y)<=(v.diameter+arc.width)/2?[{at,anchor:v.pos}]:[];
+    });
+    if(contacts.length)out.push({id,arc,contacts,whole});
+  }
+  return out;
 }

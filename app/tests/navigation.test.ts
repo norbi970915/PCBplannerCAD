@@ -1,8 +1,9 @@
+import { CanvasTimings } from '../src/editor/canvasTimings.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { InteractionFrame } from '../src/editor/interactionFrame.ts';
 import { HighlightTexture } from '../src/editor/highlightTexture.ts';
-import { Scene } from '../src/editor/scene.ts';
+import { Scene, highlightDimming } from '../src/editor/scene.ts';
 import { drawItem, type DrawContext } from '../src/editor/draw.ts';
 import { boardTheme } from '../src/editor/theme.ts';
 import { DEFAULT_VIEW, cursorPoint, gridPoint, normalizeView } from '../src/core/view.ts';
@@ -52,6 +53,76 @@ test('toggling pour fills redraws only zones and reuses their triangulation',()=
  scene.update(items,at(true));const trackPrims=scene.prims(1),tris=scene.prims(2)!.fills[0].tris;
  scene.update(items,at(false));assert.equal(scene.prims(1),trackPrims);assert.equal(scene.prims(2)!.fills.length,0);
  scene.update(items,at(true));assert.equal(scene.prims(1),trackPrims);assert.equal(scene.prims(2)!.fills[0].tris,tris);});
-test('a board net highlight fades every unmarked object toward the background',()=>{const scene=new Scene(),items=new Map<number,Item>([[1,track],[2,{...track,net:'VCC'} as Item]]);scene.update(items,ctx());const theme=boardTheme(0,'all');
- const styles=scene.highlights(theme,{selection:new Set(),hover:null,marked:new Set([1]),dimOthers:true});assert.equal(styles.size,2);const faded=[...styles.values()].find(t=>t[3]===.75)!;assert.deepEqual(faded.slice(0,3),theme.background.slice(0,3));
- assert.equal(scene.highlights(theme,{selection:new Set(),hover:null,marked:new Set(),dimOthers:true}).size,0,'no highlight, nothing fades');});
+test('net highlight fades unmarked objects with a uniform and keeps hover/selection sparse',()=>{
+ const scene=new Scene(),items=new Map<number,Item>();
+ for(let id=1;id<=34000;id++)items.set(id,track);
+ scene.update(items,ctx());const theme=boardTheme(0,'all');
+ const state={selection:new Set([3]),hover:2,marked:new Set([1]),dimOthers:true};
+ const styles=scene.highlights(theme,state);
+ assert.equal(styles.size,3,'only marked, hovered and selected objects need texture entries');
+ assert.deepEqual([...styles.values()].map(v=>v[3]),[.3,.4,.55]);
+ assert.deepEqual(highlightDimming(theme,state),[...theme.background.slice(0,3),.75]);
+ assert.deepEqual(highlightDimming(theme,{...state,marked:new Set()}),[0,0,0,0]);
+ assert.deepEqual(highlightDimming(theme,{...state,dimOthers:false}),[0,0,0,0]);
+});
+test('index refits follow far moves, eventual rebalance, removals and hidden layers',()=>{
+ const items=new Map<number,Item>();for(let id=0;id<80;id++)items.set(id,{...track,a:p(id*5,0),b:p(id*5+3,0)});
+ const scene=new Scene(),view=ctx();scene.update(items,view);
+ for(let step=0;step<300;step++){
+  const id=step%80,x=500+(step%31)*7,y=10+(step%11)*5;
+  const moved={...track,a:p(x,y),b:p(x+3,y)} as Item;items.set(id,moved);scene.update(items,view);
+  const point=p(x+1,y);assert.notEqual(scene.pick(point,mm(.01)),null);
+  const box={minX:point.x-mm(.1),minY:point.y-mm(.1),maxX:point.x+mm(.1),maxY:point.y+mm(.1)};
+  const linear=[...items].filter(([,it])=>it.kind==='track'&&it.a.x<=box.maxX&&it.b.x>=box.minX&&it.a.y>=box.minY&&it.a.y<=box.maxY).map(([id])=>id).sort((a,b)=>a-b);
+  assert.deepEqual(scene.inRect(box,true).sort((a,b)=>a-b),linear);
+ }
+ items.clear();scene.update(items,view);assert.deepEqual(scene.inRect({minX:-1e12,minY:-1e12,maxX:1e12,maxY:1e12},true),[]);
+ items.set(1,track);scene.update(items,view);assert.equal(scene.pick(p(1,0),mm(.01)),1);
+ scene.update(items,ctx({hiddenLayers:[0]}));assert.equal(scene.pick(p(1,0),mm(.01)),null);
+ scene.update(items,view);assert.equal(scene.pick(p(1,0),mm(.01)),1);
+});
+test('local canvas timing recordings bound memory, report quantiles and reset cleanly',()=>{
+ let now=100;const timings=new CanvasTimings(()=>now);assert.equal(timings.stop(),null);
+ timings.start();for(let i=0;i<9000;i++)timings.frame(2);timings.frame(NaN);timings.frame(-1);
+ now=110;assert.equal(timings.scene(()=>{now=115;return 'result';}),'result');
+ const result=timings.stop()!;assert.equal(result.elapsedMs,15);assert.equal(result.frameCpu.count,9000);assert.equal(result.frameCpu.samples,8192);assert.equal(result.frameCpu.p95Ms,2);assert.equal(result.sceneCpu.medianMs,5);
+ timings.frame(100);timings.start();assert.equal(timings.stop()!.frameCpu.count,0);
+});
+
+test('frame observers measure one coalesced frame and can be disabled',()=>{
+ const f=frames(),samples:number[]=[];f.loop.setFrameObserver(ms=>samples.push(ms));
+ f.loop.queue(1);f.loop.queue(2);f.tick();assert.equal(samples.length,1);assert(samples[0]>=0);
+ f.loop.setFrameObserver(null);f.loop.queue(3);f.tick();assert.equal(samples.length,1);
+});
+
+
+test('render batches retain unchanged layers and pours while edits refresh only affected data',()=>{
+ const outline=[p(0,0),p(10,0),p(10,10),p(0,10)];
+ const zone:Item={kind:'zone',outline,fill:[{outer:outline,holes:[]}],layer:0,net:'GND',name:'',priority:0,clearance:0,minWidth:0,connect:'solid',thermalGap:0,spokeWidth:0,keepout:false,removeIslands:false};
+ const items=new Map<number,Item>([[1,track],[2,{...track,layer:1}as Item],[3,zone]]),scene=new Scene(),context=ctx(),theme=boardTheme(0,'all'),hl={selection:new Set<number>(),hover:null};
+ scene.update(items,context);const first=scene.build(theme,hl),snapshot=structuredClone(first);
+ const second=scene.build(theme,hl);assert(first.every((g,i)=>g===second[i]),'unchanged batches are retained');
+ const beforeTop=first.find(g=>g.rank===700)!,beforeOther=first.find(g=>g.rank!==700)!;
+ items.set(1,{...track,a:p(0,2),b:p(3,2)}as Item);scene.update(items,context);
+ const edited=scene.build(theme,hl),afterTop=edited.find(g=>g.rank===700)!;
+ assert.notEqual(afterTop.lines,beforeTop.lines);assert.equal(afterTop.fills,beforeTop.fills,'unchanged pour triangles need no upload');
+ assert(edited.includes(beforeOther),'other layer batch remains unchanged');assert.deepEqual(first,snapshot,'old submitted arrays remain immutable');
+ const oracle=scene.build(theme,{selection:new Set([-1]),hover:null});assert.deepEqual(edited,oracle,'cached and independent assembly agree');
+ for(const excluded of [new Set([1]),new Set([2,3]),new Set<number>()]){
+  assert.deepEqual(scene.build(theme,{...hl,excluded}),scene.build(theme,{selection:new Set([-1]),hover:null,excluded}));
+ }
+ const changedTheme=boardTheme(1,'only');assert.deepEqual(scene.build(changedTheme,hl),scene.build(changedTheme,{selection:new Set([-1]),hover:null}));
+ items.delete(3);scene.update(items,context);assert.deepEqual(scene.build(theme,hl),scene.build(theme,{selection:new Set([-1]),hover:null}));
+ items.clear();scene.update(items,context);assert.deepEqual(scene.build(theme,hl),[]);
+});
+
+test('cached rendering follows hidden layers, pour toggles and restored geometry',()=>{
+ const outline=[p(0,0),p(5,0),p(5,5),p(0,5)];
+ const zone:Item={kind:'zone',outline,fill:[{outer:outline,holes:[]}],layer:0,net:'GND',name:'',priority:0,clearance:0,minWidth:0,connect:'solid',thermalGap:0,spokeWidth:0,keepout:false,removeIslands:false};
+ const items=new Map<number,Item>([[1,track],[2,zone]]),scene=new Scene(),context=ctx(),theme=boardTheme(0,'all'),hl={selection:new Set<number>(),hover:null};
+ scene.update(items,context);const original=structuredClone(scene.build(theme,hl));
+ scene.update(items,{...context,pourFills:false});assert.equal(scene.build(theme,hl).flatMap(g=>g.fills).length,0);
+ scene.update(items,{...context,pourFills:true});assert.deepEqual(scene.build(theme,hl),original);
+ scene.update(items,ctx({hiddenLayers:[0]}));assert.deepEqual(scene.build(theme,hl),[]);
+ scene.update(items,context);assert.deepEqual(scene.build(theme,hl),original);
+});

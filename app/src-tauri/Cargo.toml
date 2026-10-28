@@ -1,14 +1,14 @@
 [package]
 name = "pcbplannercad"
-default-run = "PCBPlannerCAD"
+default-run = "pCAD"
 autobins = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PCBPlannerCAD PCB design suite"
+description = "pCAD PCB design suite"
 
 [[bin]]
-name = "PCBPlannerCAD"
+name = "pCAD"
 path = "src/main.rs"
 
 [lib]

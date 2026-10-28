@@ -188,9 +188,9 @@ pub fn write_layer(doc: &Document, f: LayerFunction, opts: &GerberOptions) -> Re
         w.set_obj(Vec::new());
         ctx.graphics(&mut w, layer::BOARD_OUTLINE, "Profile", false);
     }
-    let project = if opts.project_name.trim().is_empty() { "PCBPlannerCAD" } else { opts.project_name.trim() };
+    let project = if opts.project_name.trim().is_empty() { "pCAD" } else { opts.project_name.trim() };
     let mut head = String::new();
-    let _ = writeln!(head, "%TF.GenerationSoftware,PCBPlannerCAD,PCBPlannerCAD,{VERSION}*%");
+    let _ = writeln!(head, "%TF.GenerationSoftware,pCAD,pCAD,{VERSION}*%");
     let _ = writeln!(head, "%TF.CreationDate,{}*%", creation_date());
     let _ = writeln!(head, "%TF.ProjectId,{},{},rev1*%", escape(project), project_guid(project));
     let _ = writeln!(head, "%TF.SameCoordinates,Original*%");

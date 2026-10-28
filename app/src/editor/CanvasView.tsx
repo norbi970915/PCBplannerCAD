@@ -12,12 +12,13 @@ import { ViaLayerPicker, type ViaLayerRequest } from "./ViaLayerPicker";
 import { ActiveBar, PolygonEditBar, RoutingBar } from "./ActiveBar";
 import { Camera } from "./camera";
 import { InteractionFrame } from "./interactionFrame";
+import { CanvasTimings } from "./canvasTimings";
 import { cursorPoint } from "../core/view";
 import { connectionPoints, snapPoints, type DrawContext } from "./draw";
 import { LayerTabs } from "./LayerTabs";
 import { toolButton } from "./profiles";
 import { Renderer, type DrawGroup, type DrawLine } from "./renderer";
-import { buildPreview, Scene } from "./scene";
+import { buildPreview, highlightDimming, Scene } from "./scene";
 import { themeFor, type Theme } from "./theme";
 import { makeTool } from "./tools/place";
 import { selectTool } from "./tools/select";
@@ -59,6 +60,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const cam = new Camera();
     const scene = new Scene();
+    const timings = new CanvasTimings();
+    let performanceTimer: number | undefined;
     let tool: Tool = selectTool();
     let toolId = "select";
     let hover: ItemId | null = null;
@@ -71,6 +74,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     let analysisDirty = true;
     let fitted = false;
     let theme: Theme = themeFor("schematic", 0, "all");
+    let themeKey = "";
 
     const doc = () => st().docs[docId];
     const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
@@ -92,20 +96,23 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     const rebuildHighlights = () => {
       const d = doc();
       if (!d) return;
-      renderer.setHighlights(scene.highlights(theme, { selection: d.selection, marked: d.marked, hover, excluded: tool.excluded?.(), dimOthers: d.info.kind === "pcb" }), scene.styleCount);
+      const highlights = { selection: d.selection, marked: d.marked, hover, excluded: tool.excluded?.(), dimOthers: d.info.kind === "pcb" };
+      renderer.setHighlights(scene.highlights(theme, highlights), scene.styleCount, highlightDimming(theme, highlights));
       requestRender();
     };
 
-    const rebuildScene = () => {
+    const rebuildScene = () => timings.scene(() => {
       const d = doc();
       if (!d) return;
-      theme = themeFor(d.info.kind, d.activeLayer, d.layerMode, useTheme.getState().resolved);
+      const ui = useTheme.getState().resolved;
+      const key = [d.info.kind, d.activeLayer, d.layerMode, ui].join("/");
+      if (key !== themeKey) { theme = themeFor(d.info.kind, d.activeLayer, d.layerMode, ui); themeKey = key; }
       scene.update(d.items, ctx());
       renderer.setScene(scene.build(theme, { selection: new Set(), hover: null, excluded: tool.excluded?.() }));
       rebuildHighlights();
       analysisDirty = true;
       requestRender();
-    };
+    });
     rebuildRef.current = () => {
       rebuildScene();
       rebuildOverlay();
@@ -516,6 +523,21 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (s.activeDocId !== prev.activeDocId && s.activeDocId === docId) updateHint();
     });
 
+    const stopTimings = () => {
+      window.clearTimeout(performanceTimer);
+      frames.setFrameObserver(null);
+      const result=timings.stop();
+      if(result) st().log("info", "Canvas timings: "+JSON.stringify({...result,objects:doc()?.items.size??0,viewport:[cam.width,cam.height],pixelRatio:window.devicePixelRatio||1}), {source:"Performance"});
+    };
+    const offTimings = bus.on("canvasTimings", ({docId:target}) => {
+      if(target!==docId||!isActive())return;
+      if(timings.active){stopTimings();return;}
+      timings.start();frames.setFrameObserver(ms=>timings.frame(ms));
+      performanceTimer=window.setTimeout(stopTimings,30000);
+      st().log("info","Recording canvas CPU timings for 30 seconds. Pan, zoom, select and drag; use Help → Record/Stop Canvas Timings to finish early.",{source:"Performance"});
+      requestRender();
+    });
+
     const offTheme = useTheme.subscribe(() => {
       rebuildScene();
       rebuildOverlay();
@@ -569,6 +591,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     return () => {
       const pendingChoice=viaChoice.current;viaChoice.current=null;pendingChoice?.(null);
+      offTimings();
+      stopTimings();
       frames.dispose();
       resize.disconnect();
       unsubscribe();

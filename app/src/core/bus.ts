@@ -13,6 +13,7 @@ export interface BusEvents {
   view: { action: "fit" | "zoomIn" | "zoomOut" | "fitSelection" };
   /** Attach items of a document to its canvas cursor as a floating move. */
   pickUp: { docId: string; ids: number[] };
+  canvasTimings: { docId: string };
   resetLayout: Record<string, never>;
   showPanel: { id: "projects" | "components" | "properties" | "messages" | "scripts" | "pcb" };
   /** Open the 3D viewer for a board. */

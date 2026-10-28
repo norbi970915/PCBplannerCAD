@@ -1,4 +1,4 @@
-//! Outputs generated from PCBPlannerCAD boards and schematics.
+//! Outputs generated from pCAD boards and schematics.
 //!
 //! - [`gerber`], [`excellon`], [`assembly`] (pick-and-place, BOM), [`fab`] (zipped fab package)
 //! - [`gerber_read`]: parses Gerber/Excellon back for the built-in viewer

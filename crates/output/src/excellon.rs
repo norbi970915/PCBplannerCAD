@@ -72,10 +72,10 @@ pub fn write_drill(doc: &Document, plated: bool) -> Result<String, OutputError> 
     let date = creation_date();
     let mut s = String::new();
     s.push_str("M48\n");
-    let _ = writeln!(s, "; DRILL file {{PCBPlannerCAD {VERSION}}} date {date}");
+    let _ = writeln!(s, "; DRILL file {{pCAD {VERSION}}} date {date}");
     s.push_str("; FORMAT={-:-/ absolute / metric / decimal}\n");
     let _ = writeln!(s, "; #@! TF.CreationDate,{date}");
-    let _ = writeln!(s, "; #@! TF.GenerationSoftware,PCBPlannerCAD,PCBPlannerCAD,{VERSION}");
+    let _ = writeln!(s, "; #@! TF.GenerationSoftware,pCAD,pCAD,{VERSION}");
     if plated {
         let _ = writeln!(s, "; #@! TF.FileFunction,Plated,1,{layers},PTH");
     } else {

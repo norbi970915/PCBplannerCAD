@@ -596,3 +596,17 @@ test('standalone via placement uses the same guarded, refilling route transactio
   assert.equal(h.commands.length,1);assert.equal(h.commands[0].op,'route');
   if(h.commands[0].op==='route')assert.equal(h.commands[0].add[0].kind,'via');
 });
+
+test('paste, bulk properties and transforms forward the explicit rules setting',async()=>{
+  const commands:Command[]=[
+    {op:'add',items:[{...via,kind:'via'}]},
+    {op:'change',delete:[],add:[{...via,kind:'via'}]},
+    {op:'replaceMany',items:[{id:1,item:{...via,kind:'via'}}]},
+    {op:'move',ids:[1],dx:1,dy:0},
+    {op:'rotate',ids:[1],center:{x:0,y:0},angle:90},
+    {op:'mirror',ids:[1],center:{x:0,y:0}},
+  ];
+  await withIPC((cmd,args)=>{assert.equal(cmd,'doc_execute');assert.equal(args!.enforceVias,false);},async()=>{
+    for(const command of commands)await api.execute('board',command,false);
+  });
+});

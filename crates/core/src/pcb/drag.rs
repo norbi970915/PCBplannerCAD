@@ -1,4 +1,4 @@
-//! Moving placed footprints while their routing stays connected.
+//! Moving placed footprints and vias while their routing stays connected.
 //!
 //! Tracks ending on a moved pad follow it. In `PreserveAngles` mode the segment
 //! touching the pad keeps its angle and slides with the pad, while its neighbour
@@ -84,6 +84,20 @@ fn intersect(p: (f64, f64), d: (f64, f64), q: (f64, f64), e: (f64, f64)) -> Opti
     Some((p.0 + d.0 * t, p.1 + d.1 * t))
 }
 
+/// Closest point on the arc centreline, including its round-capped endpoints.
+fn nearest_on_arc(arc: &super::items::ArcTrack, p: Point) -> Point {
+    let at = |angle: f64| { let r=angle.to_radians(); Point::new(arc.center.x+(arc.radius as f64*r.cos()).round() as i64,arc.center.y+(arc.radius as f64*r.sin()).round() as i64) };
+    let distance = |q: Point| ((q.x-p.x) as f64).hypot((q.y-p.y) as f64);
+    let a=at(arc.start_angle);let b=at(arc.start_angle+arc.sweep);
+    let mut nearest=if distance(a)<=distance(b){a}else{b};
+    let angle=((p.y-arc.center.y) as f64).atan2((p.x-arc.center.x) as f64).to_degrees();
+    let offset=if arc.sweep>=0. {(angle-arc.start_angle).rem_euclid(360.)} else {(arc.start_angle-angle).rem_euclid(360.)};
+    if arc.sweep.abs()>=360. || offset<=arc.sweep.abs()+1e-9 {
+        let radial=at(angle);if distance(radial)<distance(nearest){nearest=radial;}
+    }
+    nearest
+}
+
 /// The pad segment `t` moved by `delta` keeping its angle, with its far end slid
 /// along the single neighbour it joins (which keeps its angle as well).
 /// None when that is impossible: a via or junction at the far end, a parallel
@@ -94,8 +108,21 @@ fn slide(doc: &Document, moving: &std::collections::HashSet<ItemId>, id: ItemId,
     let mut neighbours = Vec::new();
     for (nid, item) in doc.items() {
         match item {
-            Item::Via(v) if v.pos == far => return None,
-            Item::Track(n) if nid != id && !moving.contains(&nid) && n.layer == t.layer && n.net == t.net && (n.a == far || n.b == far) => neighbours.push((nid, n)),
+            Item::Via(v) if !moving.contains(&nid) && v.net==t.net => {
+                let fallback=BoardSettings::default();let board=board_settings(doc).map_or(&fallback,|(_,b)|b);
+                if board.stackup.span(v.from_layer,v.to_layer).contains(&t.layer) && ((v.pos.x-far.x) as f64).hypot((v.pos.y-far.y) as f64)<=(v.diameter+t.width) as f64/2. {return None;}
+            }
+            Item::ArcTrack(a) if !moving.contains(&nid) && a.net==t.net && a.layer==t.layer => {
+                let q=nearest_on_arc(a,far);
+                if ((q.x-far.x) as f64).hypot((q.y-far.y) as f64)<=(a.width+t.width) as f64/2. {return None;}
+            }
+            Item::Track(n) if nid != id && !moving.contains(&nid) && n.layer == t.layer && n.net == t.net => {
+                if n.a==far || n.b==far {neighbours.push((nid,n));}
+                else {
+                    let (gap,_)=super::connectivity::geo::point_seg(super::connectivity::pt(far),super::connectivity::pt(n.a),super::connectivity::pt(n.b));
+                    if gap<=(n.width+t.width) as f64/2. {return None;}
+                }
+            }
             _ => {}
         }
     }
@@ -106,6 +133,7 @@ fn slide(doc: &Document, moving: &std::collections::HashSet<ItemId>, id: ItemId,
         // A dangling end: the whole segment translates.
         [] => Some((rebuild(near2, shifted(far, delta)), None)),
         [(nid, n)] => {
+            if n.locked { return None; }
             let other = if n.a == far { n.b } else { n.a };
             let f = |p: Point| (p.x as f64, p.y as f64);
             let dir = (f(far).0 - f(near).0, f(far).1 - f(near).1);
@@ -140,8 +168,61 @@ fn on_fixed_pad(doc: &Document, moving: &std::collections::HashSet<ItemId>, p: P
     })
 }
 
-/// Plans a drag of `req.ids` by `req.delta`; nothing is changed in `doc`.
+struct DragAnchor { owner: ItemId, number: String, net: String, pos: Point, copper: Vec<LayerId>, reach: f64, via: bool }
+
+fn drag_anchors(doc: &Document, id: ItemId, item: &Item, board: &BoardSettings) -> Vec<DragAnchor> {
+    match item {
+        Item::Footprint(fp) => doc.cached_footprint(&fp.footprint).map(|g| world_pads(id, fp, g, board)
+            .into_iter().map(|p| DragAnchor { owner: id, number: p.number, net: p.net, pos: p.pos,
+                copper: p.copper, reach: p.width.max(p.height) as f64 / 2.0, via: false }).collect()).unwrap_or_default(),
+        Item::Via(v) => vec![DragAnchor { owner: id, number: String::new(), net: v.net.clone(), pos: v.pos,
+            copper: board.stackup.span(v.from_layer, v.to_layer), reach: v.diameter as f64 / 2.0, via: true }],
+        _ => Vec::new(),
+    }
+}
+
+/// Split tracks passing through a selected via so their two sides remain attached.
+/// The preparation lives only in the candidate; cancellation/rejection cannot split the board.
 pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
+    if req.mode == MoveMode::Disconnect { return drag_connected(doc,req); }
+    let fallback=BoardSettings::default();let board=board_settings(doc).map_or(&fallback,|(_,b)|b);
+    let vias:Vec<_>=req.ids.iter().filter_map(|id|match doc.get(*id){Some(Item::Via(v))=>Some(v),_=>None}).collect();
+    if vias.is_empty(){return drag_connected(doc,req);}
+    let mut edits=Vec::new();let mut work=doc.clone();
+    for (id,item) in doc.items() {
+        let Item::Track(t)=item else {continue};
+        if req.ids.contains(&id)||t.net.is_empty(){continue;}
+        let dx=(t.b.x-t.a.x)as f64;let dy=(t.b.y-t.a.y)as f64;let len2=dx*dx+dy*dy;
+        if len2==0. {continue;}
+        let mut joints:Vec<_>=vias.iter().filter_map(|v|{
+            if v.net!=t.net||!board.stackup.span(v.from_layer,v.to_layer).contains(&t.layer){return None;}
+            let radius=(v.diameter+t.width)as f64/2.;
+            if ((v.pos.x-t.a.x)as f64).hypot((v.pos.y-t.a.y)as f64)<=radius||((v.pos.x-t.b.x)as f64).hypot((v.pos.y-t.b.y)as f64)<=radius{return None;}
+            let u=((v.pos.x-t.a.x)as f64*dx+(v.pos.y-t.a.y)as f64*dy)/len2;
+            if u<=0.||u>=1. {return None;}
+            let gap=((v.pos.x-t.a.x)as f64-u*dx).hypot((v.pos.y-t.a.y)as f64-u*dy);
+            (gap<=radius).then_some((u,v.pos))
+        }).collect();
+        if joints.is_empty(){continue;}
+        if t.locked{return DragResult{blocked:1,..DragResult::default()};}
+        joints.sort_by(|a,b|a.0.total_cmp(&b.0));joints.dedup_by_key(|j|j.1);
+        let mut points=vec![t.a];points.extend(joints.into_iter().map(|(_,p)|p));points.push(t.b);
+        for (index,pair) in points.windows(2).enumerate(){
+            edits.push(Edit{id:if index==0{id}else{work.alloc_id()},before:if index==0{Some(item.clone())}else{None},after:Some(Item::Track(Track{a:pair[0],b:pair[1],..t.clone()}))});
+        }
+    }
+    if edits.is_empty(){return drag_connected(doc,req);}
+    work.apply(&edits);let plan=drag_connected(&work,req);
+    if plan.blocked>0&&plan.replace.is_empty()&&plan.add.is_empty()&&plan.delete.is_empty(){return plan;}
+    let mut out=DragResult{rerouted:plan.rerouted,blocked:plan.blocked,..DragResult::default()};
+    let mut changes:Vec<_>=plan.replace.into_iter().map(|r|Edit{id:r.id,before:work.get(r.id).cloned(),after:Some(r.item)}).collect();
+    changes.extend(plan.delete.into_iter().map(|id|Edit{id,before:work.get(id).cloned(),after:None}));work.apply(&changes);
+    let added:Vec<_>=plan.add.into_iter().map(|item|Edit{id:work.alloc_id(),before:None,after:Some(item)}).collect();work.apply(&added);
+    diff_into(doc,&work,&mut out);out
+}
+
+/// Plans a connected drag; nothing is changed in the source document.
+fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
     let fallback = BoardSettings::default();
     let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
     let moving: std::collections::HashSet<ItemId> = req.ids.iter().copied().collect();
@@ -158,22 +239,18 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
     for &id in &req.ids {
         let Some(item) = doc.get(id) else { continue };
         if crate::command::is_locked(item) { return DragResult { blocked: 1, ..DragResult::default() }; }
-        if let Item::Footprint(fp) = item {
-            if let Some(geom) = doc.cached_footprint(&fp.footprint) {
-                pads.extend(world_pads(id, fp, geom, board));
-            }
-        }
+        pads.extend(drag_anchors(doc, id, item, board));
         if !matches!(item, Item::Board(_)) {
             edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) });
         }
     }
     let new_pads: Vec<_> = edits.iter().flat_map(|edit| match &edit.after {
-        Some(Item::Footprint(fp)) => doc.cached_footprint(&fp.footprint).map(|g| world_pads(edit.id, fp, g, board)).unwrap_or_default(),
+        Some(item) => drag_anchors(doc, edit.id, item, board),
         _ => vec![],
     }).collect();
-    let on_moved_pad = |p: Point, layer: LayerId, net: &str| {
+    let on_moved_pad = |p: Point, layer: LayerId, net: &str, width: i64| {
         pads.iter().any(|pad| {
-            pad.net == net && pad.copper.contains(&layer) && ((pad.pos.x - p.x) as f64).hypot((pad.pos.y - p.y) as f64) <= pad.width.max(pad.height) as f64 / 2.0
+            pad.net == net && pad.copper.contains(&layer) && ((pad.pos.x - p.x) as f64).hypot((pad.pos.y - p.y) as f64) <= pad.reach + if pad.via { width as f64 / 2.0 } else { 0.0 }
         })
     };
 
@@ -186,15 +263,15 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
             if moving.contains(&id) || t.net.is_empty() {
                 continue;
             }
-            let (on_a, on_b) = (on_moved_pad(t.a, t.layer, &t.net), on_moved_pad(t.b, t.layer, &t.net));
+            let (on_a, on_b) = (on_moved_pad(t.a, t.layer, &t.net, t.width), on_moved_pad(t.b, t.layer, &t.net, t.width));
             if (on_a || on_b) && t.locked { return DragResult { blocked: 1, ..DragResult::default() }; }
             match (on_a, on_b) {
                 (false, false) => {}
                 // Between two moved pads: the whole segment moves with them.
-                (true, true) => edits.push(Edit { id, before: Some(item.clone()), after: Some(item.translated(req.delta.x, req.delta.y)) }),
+                (true, true) => edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) }),
                 _ => {
                     let (far, near) = if on_a { (t.b, t.a) } else { (t.a, t.b) };
-                    let pad = pads.iter().find(|pad| pad.net == t.net && pad.copper.contains(&t.layer) && ((pad.pos.x-near.x) as f64).hypot((pad.pos.y-near.y) as f64) <= pad.width.max(pad.height) as f64/2.0);
+                    let pad = pads.iter().find(|pad| pad.net == t.net && pad.copper.contains(&t.layer) && ((pad.pos.x-near.x) as f64).hypot((pad.pos.y-near.y) as f64) <= pad.reach + if pad.via { t.width as f64 / 2.0 } else { 0.0 });
                     let target = pad.and_then(|pad| new_pads.iter().find(|p| p.owner == pad.owner && p.number == pad.number));
                     let to = target.map_or_else(|| shifted(near, req.delta), |p| p.pos);
                     // A flipped SMD connection needs a transition back to its existing routing layer.
@@ -207,6 +284,10 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
                                 edits.push(Edit { id: work.alloc_id(), before: None, after: Some(Item::Via(via)) });
                             }
                         }
+                    }
+                    if on_fixed_pad(doc, &moving, near, t) {
+                        reroutes.push(Reroute { net:t.net.clone(),layer:t.layer,width:t.width,from:near,to });
+                        continue;
                     }
                     if req.mode == MoveMode::Free {
                         let moved = if on_a { Track { a: to, ..t.clone() } } else { Track { b: to, ..t.clone() } };
@@ -221,6 +302,31 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
                     } else {
                         edits.push(Edit { id, before: Some(item.clone()), after: None });
                         reroutes.push(Reroute { net: t.net.clone(), layer: t.layer, width: t.width, from: far, to });
+                    }
+                }
+            }
+        }
+    }
+    // Keep the curve fixed and join every moved contact, including via contacts
+    // along the interior. A curve between two moved endpoints transforms whole.
+    if req.mode != MoveMode::Disconnect {
+        for (id, item) in doc.items() {
+            let Item::ArcTrack(arc) = item else { continue };
+            if moving.contains(&id) || arc.net.is_empty() { continue; }
+            let at = |degrees: f64| { let r=degrees.to_radians(); Point::new(arc.center.x+(arc.radius as f64*r.cos()).round() as i64, arc.center.y+(arc.radius as f64*r.sin()).round() as i64) };
+            let (a,b)=(at(arc.start_angle),at(arc.start_angle+arc.sweep));
+            if on_moved_pad(a,arc.layer,&arc.net,arc.width) && on_moved_pad(b,arc.layer,&arc.net,arc.width) {
+                if arc.locked { return DragResult { blocked: 1, ..DragResult::default() }; }
+                edits.push(Edit { id, before: Some(item.clone()), after: Some(transform(item)) });
+                continue;
+            }
+            for anchor in pads.iter().filter(|p| p.net==arc.net && p.copper.contains(&arc.layer)) {
+                let contacts=if anchor.via { vec![nearest_on_arc(arc,anchor.pos)] } else { vec![a,b] };
+                for from in contacts {
+                    let reach=anchor.reach+if anchor.via {arc.width as f64/2.}else{0.};
+                    if ((anchor.pos.x-from.x)as f64).hypot((anchor.pos.y-from.y)as f64)>reach {continue;}
+                    if let Some(target)=new_pads.iter().find(|p|p.owner==anchor.owner&&p.number==anchor.number) {
+                        if from!=target.pos {reroutes.push(Reroute {net:arc.net.clone(),layer:arc.layer,width:arc.width,from,to:target.pos});}
                     }
                 }
             }
@@ -542,4 +648,192 @@ mod tests {
             session.undo();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),crate::io::document_to_string(&d).unwrap());
         }
     }
+    fn via_fixture(from: LayerId, to: LayerId) -> (Document, ItemId) {
+        use crate::pcb::connectivity::fixtures::{doc, outline};
+        let via=|pos| Item::Via(crate::pcb::Via { pos,diameter:mm(0.6),drill:mm(0.3),from_layer:from,to_layer:to,net:"A".into(),locked:false });
+        let mut d=doc(vec![outline(0.,0.,30.,30.),via(p(15.,15.)),via(p(5.,10.)),via(p(25.,20.)),via(p(15.,5.))]);
+        let board=d.items().find(|(_,i)|matches!(i,Item::Board(_))).unwrap().0;
+        let mut session=Session::with_document(d);
+        let settings=BoardSettings { stackup:Stackup::with_copper(6),via_types:vec![super::super::board::ViaType{name:"Test span".into(),from_layer:from,to_layer:to,diameter:mm(0.6),drill:mm(0.3)}],..BoardSettings::default() };
+        session.execute(Command::Replace{id:board,item:Item::Board(settings)}).unwrap();
+        d=session.document().clone();
+        let id=d.items().find(|(_,i)|matches!(i,Item::Via(v) if v.pos==p(15.,15.))).unwrap().0;
+        (d,id)
+    }
+
+    #[test]
+    fn dragging_a_via_keeps_straight_tracks_connected_on_every_spanned_layer() {
+        use crate::pcb::{connectivity, connectivity::fixtures::track as segment};
+        for mode in [MoveMode::Free,MoveMode::PreserveAngles] {
+            let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+            let mut session=Session::with_document(d);
+            session.execute(Command::Add{items:vec![
+                segment((5.,10.),(15.,15.),0.2,layer::TOP_COPPER,"A"),
+                segment((15.,15.),(25.,20.),0.2,layer::inner_copper(2),"A"),
+                segment((15.,15.),(15.,5.),0.2,layer::BOTTOM_COPPER,"A"),
+            ]}).unwrap();
+            let before=crate::io::document_to_string(session.document()).unwrap();
+            let plan=drag_footprints(session.document(),&req(vec![id],p(1.,1.),mode));assert_eq!(plan.blocked,0);
+            session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+            assert!(matches!(session.document().get(id),Some(Item::Via(v)) if v.pos==p(16.,16.)));
+            let conn=connectivity::analyze(session.document());
+            for object in conn.objects().iter().filter(|o|o.net=="A") {assert!(conn.connected((id,None),(object.item,object.pad.as_deref())),"disconnected object {:?} in {mode:?}",object.item);}
+            let after=crate::io::document_to_string(session.document()).unwrap();
+            session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+            session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+        }
+    }
+
+    #[test]
+    fn via_drag_ignores_other_nets_and_layers_outside_its_span() {
+        use crate::pcb::connectivity::fixtures::track as segment;
+        let (d,id)=via_fixture(layer::inner_copper(1),layer::inner_copper(2));
+        let mut session=Session::with_document(d);
+        let ids=session.execute(Command::Add{items:vec![segment((5.,10.),(15.,15.),0.2,layer::inner_copper(1),"A"),segment((15.,15.),(25.,20.),0.2,layer::BOTTOM_COPPER,"A"),segment((15.,15.),(15.,5.),0.2,layer::inner_copper(2),"B")]}).unwrap().upserted.into_iter().map(|e|e.id).collect::<Vec<_>>();
+        let plan=drag_footprints(session.document(),&req(vec![id],p(1.,0.),MoveMode::Free));
+        assert!(plan.replace.iter().any(|e|e.id==ids[0]));
+        for untouched in &ids[1..] { assert!(!plan.replace.iter().any(|e|e.id==*untouched));assert!(!plan.delete.contains(untouched)); }
+    }
+
+    #[test]
+    fn locked_attached_track_blocks_a_connected_via_drag() {
+        let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+        let mut t=track(p(5.,10.),p(15.,15.),"A");if let Item::Track(t)=&mut t {t.locked=true;}
+        let mut session=Session::with_document(d);session.execute(Command::Add{items:vec![t]}).unwrap();
+        let plan=drag_footprints(session.document(),&req(vec![id],p(1.,0.),MoveMode::PreserveAngles));
+        assert_eq!(plan.blocked,1);assert!(plan.replace.is_empty()&&plan.add.is_empty()&&plan.delete.is_empty());
+    }
+
+    #[test]
+    fn arc_connected_to_a_dragged_via_keeps_its_curve_and_gets_a_joining_route() {
+        let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+        let mut session=Session::with_document(d);
+        let arc=Item::ArcTrack(crate::pcb::ArcTrack{center:p(15.,10.),radius:mm(5.),start_angle:90.,sweep:90.,width:mm(0.2),layer:layer::TOP_COPPER,net:"A".into(),locked:false});
+        let arc_id=session.execute(Command::Add{items:vec![arc.clone()]}).unwrap().upserted[0].id;
+        let plan=drag_footprints(session.document(),&req(vec![id],p(1.,1.),MoveMode::PreserveAngles));
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        assert_eq!(session.document().get(arc_id),Some(&arc));
+        assert!(crate::pcb::connectivity::analyze(session.document()).connected((id,None),(arc_id,None)));
+    }
+
+    #[test]
+    fn two_selected_vias_keep_the_track_between_them_connected_after_rotation() {
+        let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+        let other=d.items().find(|(_,i)|matches!(i,Item::Via(v) if v.pos==p(5.,10.))).unwrap().0;
+        let mut session=Session::with_document(d);
+        let tid=session.execute(Command::Add{items:vec![track(p(5.,10.),p(15.,15.),"A")]}).unwrap().upserted[0].id;
+        let mut request=req(vec![id,other],p(0.,0.),MoveMode::PreserveAngles);request.angle=90.;request.center=p(15.,15.);
+        let plan=drag_footprints(session.document(),&request);
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        let conn=crate::pcb::connectivity::analyze(session.document());assert!(conn.connected((id,None),(tid,None)));assert!(conn.connected((other,None),(tid,None)));
+    }
+
+    #[test]
+    fn via_in_the_middle_of_a_trace_drags_both_sides_in_one_transaction() {
+        let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+        let left=d.items().find(|(_,i)|matches!(i,Item::Via(v) if v.pos==p(5.,10.))).unwrap().0;
+        let right=d.items().find(|(_,i)|matches!(i,Item::Via(v) if v.pos==p(25.,20.))).unwrap().0;
+        let mut session=Session::with_document(d);
+        session.execute(Command::Add{items:vec![track(p(5.,10.),p(25.,20.),"A")]}).unwrap();
+        let before=session.document().clone();
+        let plan=drag_footprints(session.document(),&req(vec![id],p(0.,2.),MoveMode::PreserveAngles));
+        assert_eq!(session.document(),&before,"planning must not split the source");
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        let conn=crate::pcb::connectivity::analyze(session.document());
+        assert!(conn.connected((id,None),(left,None)));assert!(conn.connected((id,None),(right,None)));
+        session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),crate::io::document_to_string(&before).unwrap());
+    }
+
+    #[test]
+    fn moving_a_via_off_a_fixed_pad_keeps_the_pad_and_its_trace_joined() {
+        use crate::pcb::connectivity::fixtures::{doc,fp,outline};
+        let d=doc(vec![outline(0.,0.,30.,30.),fp("R1","L/R",10.8,10.,&[("1","A"),("2","B")]),Item::Via(crate::pcb::Via{pos:p(10.,10.),diameter:mm(0.6),drill:mm(0.3),from_layer:layer::TOP_COPPER,to_layer:layer::BOTTOM_COPPER,net:"A".into(),locked:false}),track(p(10.,10.),p(20.,10.),"A")]);
+        let via=d.items().find(|(_,i)|matches!(i,Item::Via(_))).unwrap().0;
+        let fp=d.items().find(|(_,i)|matches!(i,Item::Footprint(_))).unwrap().0;
+        let tid=d.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap().0;
+        let mut session=Session::with_document(d);
+        let plan=drag_footprints(session.document(),&req(vec![via],p(0.,3.),MoveMode::PreserveAngles));
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        let conn=crate::pcb::connectivity::analyze(session.document());
+        assert!(conn.connected((via,None),(fp,Some("1"))));assert!(conn.connected((via,None),(tid,None)));
+    }
+
+    #[test]
+    fn via_drag_keeps_a_trace_whose_copper_touches_the_via_edge_connected() {
+        use crate::pcb::connectivity::fixtures::{doc,outline};
+        let v=Item::Via(crate::pcb::Via{pos:p(15.,15.),diameter:mm(0.6),drill:mm(0.3),from_layer:layer::TOP_COPPER,to_layer:layer::BOTTOM_COPPER,net:"A".into(),locked:false});
+        let d=doc(vec![outline(0.,0.,30.,30.),v,track(p(20.,15.),p(15.35,15.),"A")]);
+        let via=d.items().find(|(_,i)|matches!(i,Item::Via(_))).unwrap().0;
+        let tid=d.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap().0;
+        assert!(crate::pcb::connectivity::analyze(&d).connected((via,None),(tid,None)));
+        let mut session=Session::with_document(d);let plan=drag_footprints(session.document(),&req(vec![via],p(0.,2.),MoveMode::Free));
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        assert!(crate::pcb::connectivity::analyze(session.document()).connected((via,None),(tid,None)));
+    }
+
+
+    #[test]
+    fn via_drag_keeps_arc_interior_contacts_and_undo_redo_without_mutating_the_curve() {
+        for (start,sweep) in [(0.,180.),(330.,180.),(150.,-180.)] {
+            for mode in [MoveMode::Free,MoveMode::PreserveAngles] {
+                let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+                let arc=Item::ArcTrack(crate::pcb::ArcTrack{center:p(15.,10.),radius:mm(5.),start_angle:start,sweep,width:mm(0.2),layer:layer::TOP_COPPER,net:"A".into(),locked:true});
+                let mut session=Session::with_document(d);
+                let arc_id=session.execute(Command::Add{items:vec![arc.clone()]}).unwrap().upserted[0].id;
+                assert!(crate::pcb::connectivity::analyze(session.document()).connected((id,None),(arc_id,None)));
+                let before=crate::io::document_to_string(session.document()).unwrap();
+                let plan=drag_footprints(session.document(),&req(vec![id],p(2.,2.),mode));
+                assert_eq!(plan.blocked,0);assert!(!plan.add.is_empty());
+                assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before,"planning changes nothing");
+                session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+                assert_eq!(session.document().get(arc_id),Some(&arc),"locked curve remains exact");
+                assert!(crate::pcb::connectivity::analyze(session.document()).connected((id,None),(arc_id,None)),"start={start} sweep={sweep} mode={mode:?}");
+                let after=crate::io::document_to_string(session.document()).unwrap();
+                session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+                session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+                let reopened=crate::io::document_from_str(DocKind::Pcb,&after).unwrap();
+                assert!(crate::pcb::connectivity::analyze(&reopened).connected((id,None),(arc_id,None)));
+            }
+        }
+    }
+
+    #[test]
+    fn arc_contact_projection_respects_sweep_and_round_endcaps() {
+        let arc=crate::pcb::ArcTrack{center:p(10.,10.),radius:mm(5.),start_angle:330.,sweep:60.,width:mm(0.2),layer:layer::TOP_COPPER,net:"A".into(),locked:false};
+        assert_eq!(nearest_on_arc(&arc,p(16.,10.)),p(15.,10.));
+        let opposite=nearest_on_arc(&arc,p(5.,10.));
+        assert!(opposite.x>mm(14.),"missing half of circle must not be treated as copper");
+        let end=nearest_on_arc(&arc,p(14.,14.));
+        assert_eq!(end,p(10.+5.*30_f64.to_radians().cos(),12.5));
+    }
+
+    #[test]
+    fn via_drag_reroutes_instead_of_sliding_a_locked_neighbor() {
+        let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+        let mut locked=track(p(5.,10.),p(10.,10.),"A");if let Item::Track(t)=&mut locked{t.locked=true;}
+        let mut session=Session::with_document(d);
+        let locked_id=session.execute(Command::Add{items:vec![locked.clone(),track(p(10.,10.),p(15.,15.),"A")]}).unwrap().upserted[0].id;
+        let plan=drag_footprints(session.document(),&req(vec![id],p(0.,2.),MoveMode::PreserveAngles));
+        assert!(!plan.replace.iter().any(|r|r.id==locked_id));assert!(!plan.delete.contains(&locked_id));
+        session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+        assert_eq!(session.document().get(locked_id),Some(&locked));
+        assert!(crate::pcb::connectivity::analyze(session.document()).connected((id,None),(locked_id,None)));
+    }
+
+    #[test]
+    fn via_drag_preserves_a_far_connection_to_a_curve_or_segment_interior() {
+        for fixed in [
+            Item::ArcTrack(crate::pcb::ArcTrack{center:p(20.,5.),radius:mm(5.),start_angle:90.,sweep:90.,width:mm(0.2),layer:layer::TOP_COPPER,net:"A".into(),locked:false}),
+            track(p(18.,10.),p(23.,10.),"A"),
+        ] {
+            let (d,id)=via_fixture(layer::TOP_COPPER,layer::BOTTOM_COPPER);
+            let mut session=Session::with_document(d);
+            let fixed_id=session.execute(Command::Add{items:vec![fixed.clone(),track(p(15.,15.),p(20.,10.),"A")]}).unwrap().upserted[0].id;
+            let plan=drag_footprints(session.document(),&req(vec![id],p(0.,2.),MoveMode::PreserveAngles));
+            session.execute_with_via_checks(Command::Route{delete:plan.delete,add:plan.add,replace:plan.replace},true).unwrap();
+            assert_eq!(session.document().get(fixed_id),Some(&fixed));
+            assert!(crate::pcb::connectivity::analyze(session.document()).connected((id,None),(fixed_id,None)));
+        }
+    }
+
 }

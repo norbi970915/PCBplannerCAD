@@ -6,7 +6,7 @@ import { cursorPoint } from "../../core/view";
 import { useEditor, violatorModeOf } from "../../core/store";
 import type { IdItem, Item, ItemId, ItemOf, Point } from "../../core/types";
 import { connectionPoints } from "../draw";
-import { applyTrackDrag, attachedIds, attachedTracks, planTrackDrag, stretchAttached, trackDragIds, type Attached, type TrackDragPlan } from "../trackDrag";
+import { applyTrackDrag, attachedIds, attachedTracks, planTrackDrag, stretchAttached, trackDragIds, type Attached, attachedViaArcs, type ViaArcAttachment, type TrackDragPlan } from "../trackDrag";
 import { rotatePoint } from "../shapes";
 import { constrain45, deleteVertex, editableRing, insertVertex, isValidRing, moveEdge, moveVertex, nearestOnRing, vertexAt, withRing } from "../polyedit";
 import { commitRing, HANDLE_PX, ringHandles } from "./polygon";
@@ -20,7 +20,7 @@ const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.
 function movableIds(env: ToolEnv, ids: ItemId[]): ItemId[] {
   const items = env.doc().items;
   const free = ids.filter((id) => { const it = items.get(id); return !it || !("locked" in it && it.locked); });
-  if (free.length < ids.length) useEditor.getState().setHint(free.length ? `${ids.length - free.length} locked footprint${ids.length - free.length === 1 ? "" : "s"} left in place (unlock in Properties)` : "Locked: unlock the footprint in Properties to move it");
+  if (free.length < ids.length) useEditor.getState().setHint(free.length ? `${ids.length - free.length} locked item${ids.length - free.length === 1 ? "" : "s"} left in place (unlock in Properties)` : "Locked: unlock the item in Properties to move it");
   return free;
 }
 
@@ -38,7 +38,7 @@ function combineSelection(current: ReadonlySet<ItemId>, ids: Iterable<ItemId>, m
 type State =
   | { kind: "idle" }
   | { kind: "box"; sx: number; sy: number; mode: SelectionMode; shown: boolean }
-  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; angle?: number; flipped?: boolean; tracks?: TrackDragPlan | null; attached?: Attached[] }
+  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; angle?: number; flipped?: boolean; tracks?: TrackDragPlan | null; attached?: Attached[]; arcs?: ViaArcAttachment[] }
   /** Dragging one outline vertex (also a freshly inserted one). */
   | { kind: "vertex"; id: ItemId; item: Item; ring: Point[]; index: number; ring2: Point[]; sx: number; sy: number; moved: boolean }
   /** Dragging an outline edge parallel to itself. */
@@ -102,6 +102,7 @@ function stretched(r: Attach["stretch"][number], dx: number, dy: number): ItemOf
 export function selectTool(): Tool {
   let s: State = { kind: "idle" };
   let excluded: ReadonlySet<ItemId> = new Set();
+  let generation = 0;
 
   const far = (e: PointerInfo, sx: number, sy: number) => Math.hypot(e.sx - sx, e.sy - sy) > DRAG_PX;
 
@@ -109,7 +110,7 @@ export function selectTool(): Tool {
     id: "select",
     hint: (env) =>
       s.kind === "drag" && s.moved && env.doc().info.kind === "pcb"
-        ? `Moving${s.angle ? ` · rotated ${s.angle}°` : ""}${s.flipped ? " · flipped to the other side" : ""}${s.ids.some((id) => env.doc().items.get(id)?.kind === "footprint")
+        ? `Moving${s.angle ? ` · rotated ${s.angle}°` : ""}${s.flipped ? " · flipped to the other side" : ""}${s.ids.some((id) => ["footprint", "via"].includes(env.doc().items.get(id)?.kind ?? ""))
             ? ` · ${MOVE_MODE_LABEL[useEditor.getState().placement.moveMode]}${useEditor.getState().placement.moveMode === "preserveAngles" ? `, ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]}${useEditor.getState().drcEnforce ? "" : " (design rules off)"}` : ""} (Tab / Shift+Tab)`
             : ""} · R or right-click rotates 90° · middle-click flips components · release / click to place · Esc cancels`
         : editedPolygon(env)
@@ -138,10 +139,12 @@ export function selectTool(): Tool {
       return true;
     },
     reset() {
+      generation++;
       s = { kind: "idle" };
       excluded = new Set();
     },
     down(env, e) {
+      generation++;
       if (s.kind === "drag" && s.floating) {
         tool.up?.(env, e);
         return;
@@ -236,7 +239,7 @@ export function selectTool(): Tool {
         if (s.moved && (!wasMoved || !s.attach)) {
           s.attach = attachedTo(env, s.ids);
           const plan = trackPlan(env, s);
-          excluded = new Set([...s.ids, ...s.attach.follow, ...s.attach.stretch.map((r) => r.id), ...(plan ? trackDragIds(plan) : []), ...attachedIds(partTracks(env, s))]);
+          excluded = new Set([...s.ids, ...s.attach.follow, ...s.attach.stretch.map((r) => r.id), ...(plan ? trackDragIds(plan) : []), ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
           env.redraw(true);
         }
       }
@@ -285,17 +288,22 @@ export function selectTool(): Tool {
         const { x: dx, y: dy } = done.delta;
         const plan = !done.angle && !done.flipped ? trackPlan(env, done) : null;
         const attached = partTracks(env, done);
-        if (attached.length) {
+        if (attached.length || (env.doc().info.kind === "pcb" && useEditor.getState().placement.moveMode !== "disconnect" && done.ids.some(id => env.doc().items.get(id)?.kind === "via"))) {
           // Routed parts: the backend re-routes their attached segments and pushes violators, as one undo step.
           const pl = useEditor.getState().placement;
           const at = done.delta;
+          const originalItems = env.doc().items;
+          const token = generation;
           void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode: violatorModeOf(useEditor.getState()), corner: pl.cornerStyle })
             .then(async (r) => {
+              if (token !== generation) return;
+              if (env.doc()?.items !== originalItems) { useEditor.getState().setHint("Board changed while planning the move; try again."); return; }
+              if (r.blocked && !r.replace.length && !r.add.length && !r.delete.length) { toast.warning("Move blocked by locked connected copper; unlock it first."); return; }
               const ok = await env.exec({ op: "route", delete: r.delete, add: r.add, replace: r.replace });
               if (ok && r.blocked) toast.warning(`${r.blocked} connection${r.blocked === 1 ? "" : "s"} could not be re-routed cleanly; joined directly (run DRC to see the conflicts).`);
             })
             .catch(report)
-            .finally(finish);
+            .finally(() => { if (token === generation) finish(); });
           return;
         }
         if (plan) {
@@ -343,6 +351,7 @@ export function selectTool(): Tool {
       if (item?.kind === "sheet") void navigateTo({ sheet: item.file });
     },
     pickUp(env, list) {
+      generation++;
       const ids = movableIds(env, list.filter((id) => env.doc().items.has(id)));
       const b = env.scene.bounds(ids);
       if (!ids.length || !b) return;
@@ -352,7 +361,7 @@ export function selectTool(): Tool {
       const origin = { x: Math.round((b.minX + b.maxX) / 2 / g) * g, y: Math.round((b.minY + b.maxY) / 2 / g) * g };
       const c = editCursor(env);
       s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x - origin.x, y: c.y - origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
-      excluded = new Set(ids);
+      excluded = new Set([...ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
       env.redraw(true);
     },
     key(env, key, event) {
@@ -365,6 +374,7 @@ export function selectTool(): Tool {
         return true;
       }
       if (board && s.kind === "idle" && ["m", "r"].includes(key.toLowerCase())) {
+        generation++;
         if (!doc.selection.size) {
           const hit = env.scene.pick(env.raw(), PICK_PX / env.scale(), item => selectable(doc.info.kind, item));
           if (hit === null) return false;
@@ -379,7 +389,7 @@ export function selectTool(): Tool {
         } else {
           const c = editCursor(env);
           s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x-origin.x, y: c.y-origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
-          excluded = new Set(ids);
+          excluded = new Set([...ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
           env.redraw(true);
         }
         return true;
@@ -403,7 +413,7 @@ export function selectTool(): Tool {
           env.setPlacement({ moveMode: order[(order.indexOf(pl.moveMode) + 1) % order.length] });
           // The attached tracks depend on the mode; show them again (or release them) right away.
           s.attached = undefined;
-          excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s))]);
+          excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
         }
         env.redraw(true);
         return true;
@@ -435,6 +445,7 @@ export function selectTool(): Tool {
       return false;
     },
     cancel(env, source) {
+      generation++;
       if (s.kind === "idle") {
         // Esc first clears a net highlight, then (next press) the selection as before;
         // a right-click leaves it and opens the context menu.
@@ -443,6 +454,7 @@ export function selectTool(): Tool {
         return true;
       }
       if (s.kind === "box") env.setBox(null);
+      generation++;
       s = { kind: "idle" };
       excluded = new Set();
       env.redraw(true);
@@ -471,6 +483,14 @@ export function selectTool(): Tool {
         const transform=(p:Point)=>{const r=s.kind==='drag'?rotatePoint(p,s.origin,s.angle??0):p;return {x:Math.round((drag.flipped?2*drag.origin.x-r.x:r.x)+dx),y:Math.round(r.y+dy)};};
         return {...t,a:a.end==='b'?t.a:transform(t.a),b:a.end==='a'?t.b:transform(t.b)};
       }));
+      for (const {arc,contacts,whole} of partArcs(env,s)) {
+        if (whole) moved.push(translate(dragTransform(arc,drag),dx,dy));
+        else for (const {at:end,anchor} of contacts) {
+          const rotated=rotatePoint(anchor,drag.origin,drag.angle??0);
+          const to={x:Math.round((drag.flipped?2*drag.origin.x-rotated.x:rotated.x)+dx),y:Math.round(rotated.y+dy)};
+          moved.push({kind:"track",a:end,b:to,width:arc.width,layer:arc.layer,net:arc.net});
+        }
+      }
       return [...moved, ...attach.stretch.map((r) => stretched(r, dx, dy))];
     },
     excluded: () => excluded,
@@ -520,6 +540,12 @@ function partTracks(env: ToolEnv, d: { ids: ItemId[]; attached?: Attached[] }): 
   if (doc.info.kind !== "pcb" || useEditor.getState().placement.moveMode === "disconnect") return [];
   d.attached ??= attachedTracks(doc.items, doc.footprints, d.ids);
   return d.attached;
+}
+
+function partArcs(env: ToolEnv, d: { ids: ItemId[]; arcs?: ViaArcAttachment[] }): ViaArcAttachment[] {
+  if (env.doc().info.kind !== "pcb" || useEditor.getState().placement.moveMode === "disconnect") return [];
+  d.arcs ??= attachedViaArcs(env.doc().items, d.ids);
+  return d.arcs;
 }
 
 const MOVE_MODE_LABEL = { disconnect: "disconnect tracks", free: "free (stretch)", preserveAngles: "preserve angles" } as const;

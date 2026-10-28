@@ -93,7 +93,7 @@ fn footprint_name(key: &str) -> &str {
     }
 }
 
-/// Generated names for unnamed nets (PCBPlannerCAD/structured format "Net-(…)", XML "N$12").
+/// Generated names for unnamed nets (`Net-(…)` or `N$12`).
 fn is_auto_net(name: &str) -> bool {
     name.starts_with("Net-(") || name.starts_with("N$") || name.starts_with("unconnected-(")
 }

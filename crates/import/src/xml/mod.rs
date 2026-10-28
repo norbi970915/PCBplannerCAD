@@ -1,8 +1,7 @@
 //! XML importer.
 //!
-//! Reads XML 6–9 XML (`.lbr` libraries and `.sch` schematics, which is
-//! also what XML design exports, and `.brd` boards). XML shares
-//! PCBPlannerCAD's Y-up, CCW-degree conventions, but a mirrored placement `MRa`
+//! Reads `.lbr` libraries, `.sch` schematics and `.brd` boards. Coordinates
+//! use Y-up and counter-clockwise degrees. A mirrored placement `MRa`
 //! rotates *then* mirrors, which in core terms (mirror, then rotate) is a
 //! rotation by `-a`; mirrored texts instead keep `a` and flip alignment.
 //!

@@ -306,7 +306,7 @@ export function App() {
       if (s.project?.path !== prev.project?.path) rememberProject(s.project?.path ?? null);
       const active = s.activeDocId ? s.docs[s.activeDocId] : undefined;
       const title = `${s.project ? `${s.project.name} — ` : ""}${active ? active.info.title : ""}${active?.info.dirty ? " *" : ""}`;
-      void getCurrentWindow().setTitle(`${title ? `${title} — ` : ""}PCBPlannerCAD`).catch(() => {});
+      void getCurrentWindow().setTitle(`${title ? `${title} — ` : ""}pCAD`).catch(() => {});
     });
 
     // The close listener registers asynchronously; if the effect is torn down
@@ -318,7 +318,7 @@ export function App() {
         const unsaved = await anyUnsaved().catch(() => []);
         if (!unsaved.length) return;
         const ok = await ask(`Unsaved changes in: ${unsaved.slice(0, 6).join(", ")}${unsaved.length > 6 ? "…" : ""}. Quit anyway?`, {
-          title: "PCBPlannerCAD",
+          title: "pCAD",
           kind: "warning",
           okLabel: "Quit",
           cancelLabel: "Cancel",

@@ -110,5 +110,5 @@ pub fn run() {
             outputs::resolve_model_path,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running PCBPlannerCAD");
+        .expect("error while running pCAD");
 }

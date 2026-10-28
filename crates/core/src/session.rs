@@ -117,30 +117,59 @@ impl Session {
         Ok(self.record(edits))
     }
 
-    /// Validate routed vias on their actual copper span before publishing edits.
-    /// The candidate includes shoved copper and refilled pours. Rejection leaves
-    /// the document, allocated IDs, dirty state and both history stacks intact.
+    /// Validate added or changed board vias on their actual copper span before
+    /// publishing an edit. Includes paste/arrays, properties and transforms.
+    /// Rejection preserves geometry, allocated IDs, dirty state and both histories.
     pub fn execute_with_via_checks(&mut self, cmd: Command, enforce: bool) -> Result<Delta, CoreError> {
-        let check = enforce && matches!(&cmd, Command::Route { add, replace, .. }
-            if add.iter().any(|i| matches!(i, Item::Via(_)))
-                || replace.iter().any(|i| matches!(i.item, Item::Via(_))));
-        if !check { return self.execute(cmd); }
+        let contains_via = |items: &[Item]| items.iter().any(|i| matches!(i, Item::Via(_)));
+        let replaces_via = |items: &[IdItem]| items.iter().any(|i| matches!(i.item, Item::Via(_)));
+        let moves_via = |ids: &[ItemId]| ids.iter().any(|id| matches!(self.doc.get(*id), Some(Item::Via(_))));
+        let touches_via = match &cmd {
+            Command::Add { items } => contains_via(items),
+            Command::Change { delete, add } => contains_via(add) || moves_via(delete),
+            Command::Delete { ids } => moves_via(ids),
+            Command::Replace { id, item } => matches!(item, Item::Via(_)) || moves_via(&[*id]),
+            Command::ReplaceMany { items } => replaces_via(items) || items.iter().any(|i| matches!(self.doc.get(i.id), Some(Item::Via(_)))),
+            Command::Move { ids, .. } | Command::Rotate { ids, .. } | Command::Mirror { ids, .. } => moves_via(ids),
+            Command::Route { add, replace, .. } => contains_via(add) || replaces_via(replace),
+            _ => false,
+        };
+        if self.doc.kind() != DocKind::Pcb || !touches_via { return self.execute(cmd); }
+        let routed = matches!(&cmd, Command::Route { .. });
         let mut planned = Self::with_document(self.doc.clone());
         let delta = planned.execute(cmd)?;
         let vias: Vec<_> = delta.upserted.iter().filter_map(|entry| {
             let Item::Via(via) = &entry.item else { return None; };
             if let Some(Item::Via(before)) = self.doc.get(entry.id) {
-                // Unlocking an existing violation must remain possible so it can
-                // be repaired. Only geometry/net changes need placement checks.
+                // Existing violations can still be locked/unlocked for repair.
                 let mut unchanged = before.clone();
                 unchanged.locked = via.locked;
                 if unchanged == *via { return None; }
             }
             Some(entry.id)
         }).collect();
-        if let Some(violation) = crate::pcb::drc::run_near(&planned.doc, &vias).into_iter()
-            .find(|v| v.severity == crate::pcb::drc::Severity::Error) {
-            return Err(CoreError::ViaBlocked(violation.message));
+        let removed_via = delta.removed.iter().any(|id| matches!(self.doc.get(*id), Some(Item::Via(_))))
+            || delta.upserted.iter().any(|i| matches!(self.doc.get(i.id), Some(Item::Via(_))) && !matches!(i.item, Item::Via(_)));
+        if (!vias.is_empty() || removed_via) && !routed {
+            // Generic edits need the same final poured copper as routing. Refill
+            // first so a legal via can clear a foreign-net pour.
+            let mut refill = Vec::new();
+            for (id, fill) in crate::pcb::fill::fill_all(&planned.doc) {
+                if let Some(Item::Zone(zone)) = planned.doc.get(id) {
+                    if zone.fill == fill { continue; }
+                    let mut next = zone.clone();
+                    next.fill = fill;
+                    refill.push(Edit { id, before: Some(Item::Zone(zone.clone())), after: Some(Item::Zone(next)) });
+                }
+            }
+            planned.doc.apply(&refill);
+            if let Some(transaction) = planned.undo.last_mut() { transaction.edits.extend(refill); }
+        }
+        if enforce && !vias.is_empty() {
+            if let Some(violation) = crate::pcb::drc::run_near(&planned.doc, &vias).into_iter()
+                .find(|v| v.severity == crate::pcb::drc::Severity::Error) {
+                return Err(CoreError::ViaBlocked(violation.message));
+            }
         }
         if let Some(transaction) = planned.undo.pop() {
             self.doc = planned.doc;
@@ -148,7 +177,6 @@ impl Session {
         }
         Ok(delta)
     }
-
     fn record(&mut self, edits: Vec<Edit>) -> Delta {
         let delta = Delta::from_edits(&edits);
         self.undo.push(Transaction { serial: self.next_serial, edits });

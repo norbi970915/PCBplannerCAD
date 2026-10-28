@@ -1,0 +1,78 @@
+<!doctype html><html><body style="margin:0"><canvas id="canvas" width="640" height="480"></canvas>
+<script type="module">
+import {Renderer} from '/src/editor/renderer.ts';
+import {Scene,highlightDimming} from '/src/editor/scene.ts';
+import {Camera} from '/src/editor/camera.ts';
+import {boardTheme} from '/src/editor/theme.ts';
+import {DEFAULT_VIEW} from '/src/core/view.ts';
+const mm=n=>n*1e6,p=(x,y)=>({x:mm(x),y:mm(y)});
+window.runRendererChecks=async()=>{
+ const canvas=document.querySelector('canvas'),renderer=new Renderer(canvas),cam=new Camera();
+ cam.width=640;cam.height=480;cam.cx=mm(3);cam.cy=mm(2);cam.scale=100/1e6;renderer.resize(640,480,1);
+ const gl=canvas.getContext('webgl2'),scene=new Scene(),theme=boardTheme(0,'all');
+ const track=(a,b,net)=>({kind:'track',a:p(...a),b:p(...b),width:mm(.12),layer:0,net});
+ const ring=[p(3.5,2),p(5.5,2),p(5.5,3),p(3.5,3)];
+ const zone={kind:'zone',outline:ring,fill:[{outer:ring,holes:[]}],layer:0,net:'B',name:'',priority:0,clearance:0,minWidth:0,connect:'solid',thermalGap:0,spokeWidth:0,keepout:false,removeIslands:false};
+ const items=new Map([[1,track([1,1],[2,1],'A')],[2,track([4,1],[5,1],'B')],[3,zone]]);
+ scene.update(items,{kind:'pcb',cache:{},footprints:{},view:DEFAULT_VIEW,pourFills:true});
+ renderer.setScene(scene.build(theme,{selection:new Set(),hover:null}));
+ renderer.setOverlay([{rank:1e6,lines:[{a:p(1,3),b:p(2,3),width:mm(.12),color:[0,1,0,1]}],fills:[]}]);
+ const grid={step:100000,background:theme.background,dot:[0,0,0,0],major:[0,0,0,0],axis:[0,0,0,0]};
+ const sample=(x,y)=>{const pixel=new Uint8Array(4);const sx=canvas.width/2+(mm(x)-cam.cx)*cam.scale*(canvas.width/cam.width),sy=canvas.height/2+(mm(y)-cam.cy)*cam.scale*(canvas.height/cam.height);gl.readPixels(Math.floor(sx),Math.floor(sy),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return[...pixel];};
+ const draw=(marked=[],hover=null)=>{const state={selection:new Set(),marked:new Set(marked),hover,dimOthers:true};renderer.setHighlights(scene.highlights(theme,state),scene.styleCount,highlightDimming(theme,state));renderer.render(cam,grid);return{marked:sample(1.5,1),other:sample(4.5,1),fill:sample(4.5,2.5),overlay:sample(1.5,3)};};
+ const normal=draw(),dim=draw([1]),hover=draw([1],2),clear=draw();
+ const check=(ok,message)=>{if(!ok)throw Error(message);};
+ check(normal.other[0]>120,'track shader did not draw');
+ check(dim.other[0]<normal.other[0]-50,'unmarked track did not dim');
+ check(dim.fill[0]<normal.fill[0]-10,'unmarked fill did not dim');
+ check(hover.other[0]>dim.other[0]+50,'hover tint did not override dimming');
+ check(clear.other.every((v,i)=>Math.abs(v-normal.other[i])<=2),'clearing net highlight left stale tint');
+ check(dim.overlay[1]>220&&dim.overlay[0]<30,'overlay style zero was incorrectly dimmed');
+ renderer.resize(640,480,2);cam.panBy(20,10);cam.zoomAt(320,240,1.2);const resized=draw();
+ check(resized.other[0]>120,'pan/zoom/high-DPI render failed');
+ check(gl.getError()===gl.NO_ERROR,'WebGL reported an error');
+ // Count actual WebGL uploads and verify immutable cached batches render edits correctly.
+ let uploads=0,bytes=0;const originalData=gl.bufferData.bind(gl),originalSub=gl.bufferSubData.bind(gl);
+ gl.bufferData=(...args)=>{uploads++;bytes+=typeof args[1]==='number'?args[1]:args[1].byteLength;return originalData(...args);};
+ gl.bufferSubData=(...args)=>{uploads++;bytes+=args[2].byteLength;return originalSub(...args);};
+ renderer.setScene(scene.build(theme,{selection:new Set(),hover:null}));check(uploads===0,'unchanged scene uploaded buffers');
+ const context={kind:'pcb',cache:{},footprints:{},view:DEFAULT_VIEW,pourFills:true};
+ // Reuse the original context references so this is an ordinary geometry edit.
+ scene.update(items,context);renderer.setScene(scene.build(theme,{selection:new Set(),hover:null}));uploads=0;bytes=0;
+ items.set(1,track([1,1.4],[2,1.4],'A'));scene.update(items,context);renderer.setScene(scene.build(theme,{selection:new Set(),hover:null}));
+ check(uploads===1,'single-track edit uploaded unchanged fill data');
+ const editBytes=bytes;renderer.setHighlights(new Map(),scene.styleCount);renderer.render(cam,grid);
+ check(sample(1.5,1.4)[0]>120&&sample(1.5,1)[0]<80,'cached edit left stale track geometry');
+ const retained=scene.build(theme,{selection:new Set(),hover:null});uploads=0;
+ renderer.setScene([]);renderer.render(cam,grid);check(sample(1.5,1.4)[0]<80,'empty scene drew pooled geometry');
+ renderer.setScene(retained);renderer.render(cam,grid);check(uploads===0&&sample(1.5,1.4)[0]>120,'restoring cached scene failed');
+ const changedTheme=boardTheme(1,'all');renderer.setScene(scene.build(changedTheme,{selection:new Set(),hover:null}));renderer.render(cam,grid);
+ const matches=(pixel,color)=>color.slice(0,3).every((c,i)=>Math.abs(pixel[i]-Math.round(c*255))<=2);
+ check(matches(sample(1.5,1.4),changedTheme.color('L0'))&&gl.getError()===gl.NO_ERROR,'theme/rank change failed');
+ items.set(4,{...track([4,1.4],[5,1.4],'C'),layer:1});scene.update(items,context);renderer.setScene(scene.build(changedTheme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),scene.styleCount);renderer.render(cam,grid);
+ check(matches(sample(4.5,1.4),changedTheme.color('L1')),'inserting a layer batch drew the wrong buffer');
+ check(matches(sample(1.5,1.4),changedTheme.color('L0')),'inserting a layer damaged the retained batch');
+ items.delete(4);scene.update(items,context);renderer.setScene(scene.build(changedTheme,{selection:new Set(),hover:null}));renderer.render(cam,grid);
+ check(sample(4.5,1.4)[0]<80,'removing a layer left stale pooled geometry');
+ items.set(3,{...zone,fill:[]});scene.update(items,context);renderer.setScene(scene.build(changedTheme,{selection:new Set(),hover:null}));renderer.render(cam,grid);
+ check(sample(4.5,2.5)[0]<80&&gl.getError()===gl.NO_ERROR,'removing a fill left stale triangles');
+ const ext=gl.getExtension('WEBGL_debug_renderer_info');const device=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
+ const result={checks:18,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
+ if(new URL(location.href).searchParams.has('fixture')){
+  const data=await(await fetch('/__fixture')).json(),dense=new Scene(),entries=new Map(data.items.map(e=>[e.id,e.item]));
+  const t=performance.now(),denseContext={kind:'pcb',cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true};dense.update(entries,denseContext);
+  cam.fit(dense.bounds());bytes=0;uploads=0;renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));const initialUploadBytes=bytes;renderer.setHighlights(new Map(),dense.styleCount);renderer.setOverlay([]);
+  const cpu=[];for(let i=0;i<8;i++){cam.panBy(i%2?10:-10,0);cam.zoomAt(320,240,i%2?1/1.01:1.01);const start=performance.now();renderer.render(cam,grid);cpu.push(performance.now()-start);await new Promise(requestAnimationFrame);}
+  const denseEdit=[];let editUploadBytes=0,editUploads=0;
+  const id=[...entries].find(([,i])=>i.kind==='track')?.[0];
+  if(id!==undefined)for(let i=0;i<8;i++){
+   const old=entries.get(id);entries.set(id,{...old,a:{...old.a,x:old.a.x+1000},b:{...old.b,x:old.b.x+1000}});bytes=0;uploads=0;
+   const start=performance.now();dense.update(entries,denseContext);renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));denseEdit.push(performance.now()-start);editUploadBytes=bytes;editUploads=uploads;
+   renderer.render(cam,grid);await new Promise(requestAnimationFrame);
+  }
+  check(editUploads===1&&editUploadBytes<initialUploadBytes/10,'dense track edit repacked unaffected layers or fills');
+  check(gl.getError()===gl.NO_ERROR,'dense-board WebGL error');denseEdit.sort((a,b)=>a-b);cpu.sort((a,b)=>a-b);result.dense={objects:entries.size,initialUploadBytes,editUploadBytes,editUploads,editCpuMedianMs:denseEdit[4],loadAndChecksMs:performance.now()-t,renderSubmissionMedianMs:cpu[4],note:'CPU submission only; GPU completion/presentation excluded.'};
+ }
+ renderer.dispose();return result;
+};
+</script></body></html>

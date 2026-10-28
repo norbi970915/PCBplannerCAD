@@ -1,4 +1,4 @@
-//! XML `.brd` → one PCBPlannerCAD PCB document.
+//! XML `.brd` → one pCAD PCB document.
 //!
 //! Board settings come from `<designrules>` and `<classes>`, footprints from
 //! the embedded `<libraries>`, placed footprints from `<elements>` and copper
@@ -89,7 +89,7 @@ impl DesignRules {
 
 // ---------- Copper layers ----------
 
-/// XML copper layer numbers (1 = top, 2–15 inner, 16 = bottom) → PCBPlannerCAD layers.
+/// XML copper layer numbers (1 = top, 2–15 inner, 16 = bottom) → pCAD layers.
 pub(crate) struct CopperMap(BTreeMap<u32, LayerId>);
 
 impl CopperMap {

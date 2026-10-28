@@ -1,6 +1,6 @@
-# PCBPlannerCAD
+# pCAD
 
-PCBPlannerCAD is a desktop PCB design suite for Windows: schematic capture, component libraries, PCB layout, 3D visualization and manufacturing outputs.
+pCAD is a desktop PCB design suite for Windows: schematic capture, component libraries, PCB layout, 3D visualization and manufacturing outputs.
 
 **Status:** v0.6.0 — Phases 0–5 implemented: libraries, schematic capture and ERC, PCB layout (routing, pours, rules, DRC), manufacturing outputs (Gerber X2, Excellon, BOM, pick-and-place, IPC-2581, PDF, panels), 3D view with STEP export, and import of schematics, boards and libraries. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -59,9 +59,9 @@ pnpm test             # all Rust tests (core, importers, end-to-end on installed
 pnpm typecheck        # TypeScript checks
 ```
 
-In PowerShell use `pnpm.cmd dev`, or double-click `Start-PCBPlannerCAD.cmd` in the project folder. Keep the terminal open during development.
+In PowerShell use `pnpm.cmd dev`, or double-click `Start-pCAD.cmd` in the project folder. Keep the terminal open during development.
 
-For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/PCBPlannerCAD_0.6.0_x64-setup.exe` (or the MSI in the sibling `msi/` directory). The installed app starts from the Windows Start menu without a development server. Native `.arpcb`, `.arsch`, `.arlib` and `.arproj` extensions remain supported; existing files also load with their earlier format tags, and newly saved files use `pcbplannercad.*` tags.
+For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/pCAD_0.6.0_x64-setup.exe` (or the MSI in the sibling `msi/` directory). The installed app starts from the Windows Start menu without a development server. Native `.arpcb`, `.arsch`, `.arlib` and `.arproj` extensions remain supported; existing files also load with their earlier format tags, and newly saved files use `pcbplannercad.*` tags.
 
 ## View controls
 
@@ -71,7 +71,7 @@ For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow a
 
 ## Bringing designs in
 
-Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. PCBPlannerCAD stores its sheets, board and embedded libraries together.
+Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. pCAD stores its sheets, board and embedded libraries together.
 
 The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project.
 
@@ -113,3 +113,7 @@ Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb)
 Board selection filters are in the right **View** tab and stay available with an active selection. Drag empty space left to right to select enclosed objects, or right to left to select touching objects. Ctrl+click toggles individual objects; Shift adds, Ctrl toggles, and Ctrl+Shift subtracts box selections.
 
 **PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Tools → Teardrops can persist automatic updates after routing and connected moves.
+
+## Local diagnostics
+
+Use Help → **Record/Stop Canvas Timings** for a 30-second local CPU timing report in Messages. For background checks, `pnpm.cmd -C app test:editor` runs editor regressions; `pnpm.cmd -C app test:renderer` runs the optional isolated headless rendering check when Playwright is available. Read-only board profiling is available through `pnpm.cmd -C app benchmark:navigation <absolute-native-board-path>`. See [the latest handoff](docs/HANDOFF-2026-10-28.md) for setup, measured limits and home-laptop acceptance steps.

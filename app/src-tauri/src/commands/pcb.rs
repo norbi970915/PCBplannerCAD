@@ -172,7 +172,7 @@ pub fn pcb_cache_footprint(state: State<AppState>, id: String, library: String, 
 // ---------- schematic → board ----------
 
 /// Resolves a schematic part's footprint ("Lib:Name" or "Name") in open libraries.
-/// Boards imported from structured format key footprints "Lib:Name" while PCBPlannerCAD uses
+/// Boards imported from structured format key footprints "Lib:Name" while pCAD uses
 /// "Lib/Name"; an existing key of either form is reused so unchanged parts
 /// don't show up as footprint swaps.
 fn resolver<'a>(ws: &'a Workspace, board: &'a pcbplannercad_core::Document) -> impl Fn(&schematic::NetlistPart) -> Option<(String, Footprint)> + 'a {

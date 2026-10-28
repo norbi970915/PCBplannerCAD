@@ -64,7 +64,7 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
     { title: "Project", items: ["project.compile", "-", "project.annotate", "project.annotateAll", "-", "project.bom", "project.variants", "-", "project.addSheet", "project.board"] },
     { title: "Tools", items: ["tools.drc", "tools.drcResults", "tools.onlineDrc", "tools.measure", "tools.repour", "tools.tune", "tools.clearMarks", "-", "tools.pours", "tools.cleanup", "tools.teardrops", "tools.stitch", "tools.stats", "-", "tools.footprintWizard", "tools.symbolWizard", "-", "tools.panelize", "tools.scripts"] },
     { title: "Window", items: ["window.projects", "window.components", "window.pcb", "window.properties", "window.messages", "-", "window.resetLayout"] },
-    { title: "Help", items: ["help.about"] },
+    { title: "Help", items: ["help.canvasTimings", "-", "help.about"] },
   ];
 }
 
@@ -109,7 +109,7 @@ export function MenuBar() {
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line bg-chrome px-2">
       <span className="mr-2 pl-1 text-[13px] font-semibold tracking-tight text-ink">
-        PCBPlannerCAD<span className="title-dot">·</span>
+        pCAD<span className="title-dot">·</span>
       </span>
       <Menubar className="h-8">
         {menus(kind).map((menu) => (

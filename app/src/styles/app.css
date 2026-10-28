@@ -140,7 +140,7 @@
   background: var(--ui-copper);
 }
 
-/* Copper-colored accent used in titles ("PCBPlannerCAD·"). */
+/* Copper-colored accent used in titles ("pCAD·"). */
 .title-dot {
   color: var(--ui-copper);
 }

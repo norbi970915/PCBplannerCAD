@@ -230,7 +230,7 @@ fn file_attributes_per_layer() {
         let p = parse(&s);
         assert!(p.file_attrs.contains(&format!("TF.FileFunction,{e_fn}")), "{ext}: {:?}", p.file_attrs);
         assert!(p.file_attrs.contains(&format!("TF.FilePolarity,{e_pol}")));
-        assert!(p.file_attrs.iter().any(|a| a.starts_with("TF.GenerationSoftware,PCBPlannerCAD,PCBPlannerCAD,")));
+        assert!(p.file_attrs.iter().any(|a| a.starts_with("TF.GenerationSoftware,pCAD,pCAD,")));
         assert!(p.file_attrs.iter().any(|a| a.starts_with("TF.CreationDate,20")));
         assert!(p.file_attrs.iter().any(|a| a.starts_with("TF.ProjectId,Test,")));
         assert!(s.contains("%FSLAX46Y46*%\n") && s.contains("%MOMM*%\n%LPD*%\n"));

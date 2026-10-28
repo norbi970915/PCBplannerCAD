@@ -1,4 +1,4 @@
-//! XML `<library>` → PCBPlannerCAD [`Library`]: packages become footprints,
+//! XML `<library>` → pCAD [`Library`]: packages become footprints,
 //! each deviceset becomes one symbol (one unit per gate) and every
 //! device/technology combination becomes a component.
 
@@ -21,7 +21,7 @@ use crate::ImportReport;
 /// kept in XML terms so it can be composed with an instance placement.
 #[derive(Clone, Debug)]
 pub(crate) struct FieldTemplate {
-    /// PCBPlannerCAD field name (`Designator`, `Value`, or the XML attribute name).
+    /// pCAD field name (`Designator`, `Value`, or the XML attribute name).
     pub name: String,
     pub pos: Point,
     pub rot: Rot,
@@ -51,7 +51,7 @@ pub(crate) struct GateInfo {
     pub name: String,
     pub xml_symbol: String,
     pub fields: Vec<FieldTemplate>,
-    /// XML pin name → PCBPlannerCAD pin number.
+    /// XML pin name → pCAD pin number.
     pub pin_numbers: HashMap<String, String>,
 }
 

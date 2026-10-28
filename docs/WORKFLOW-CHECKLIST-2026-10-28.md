@@ -81,3 +81,25 @@ See [the results and issue log](WORKFLOW-RESULTS-2026-10-27.md) for evidence and
 - [ ] Complete differential-pair UI, keep-out/blocked endpoint, mixed-array placement DRC and live thermal/island/locking cases.
 
 See [the morning handoff](HANDOFF-2026-10-28.md) for changes, verification and the remaining priorities.
+
+## pCAD connected-via and navigation follow-up — pending home UI checks
+
+- [ ] Pull the latest source and rebuild before launching `target/release/pCAD.exe`; use saved disposable design copies.
+- [ ] Drag a via attached to straight tracks on top/inner/bottom layers; confirm every attached endpoint follows and its far fixed connection remains intact.
+- [ ] Repeat using M/click placement; cancel with Esc and confirm the saved board is unchanged.
+- [ ] Test a via in a straight segment interior and a via on a fixed pad; verify both original connections remain joined.
+- [ ] Check curved-track endpoints and interior via contacts, including clockwise/wrapped sweeps: the curve stays and a joining route reaches the moved via. Repeat with a locked curve, and with two selected endpoint vias.
+- [ ] Verify blind/buried spans and reversed layer endpoints; same-net copper outside the span and other nets stay fixed.
+- [ ] Check Preserve angles / Free / explicit Disconnect, locked attached tracks, blocked destinations and Rules off. Run full DRC after testing.
+- [ ] Verify one Undo restores via, routing, teardrops and fills together; Redo and save/reopen retain the result.
+- [ ] Paste/array vias and change diameter/drill/span/net in single/bulk properties. Invalid moves should not partly apply or consume IDs/history; legal edits should refill dependent copper.
+- [ ] Start a new operation or edit the board while a connected move plan is pending; its late reply must not overwrite newer geometry or hide the newer preview.
+- [ ] Use Help → Record/Stop Canvas Timings while panning/zooming/selecting/dragging. Save the Performance summary locally with display size, GPU and board size; CPU timings do not measure presented FPS.
+- [ ] Check net highlighting, hover, clearing highlights and high-DPI rendering; verify overlays stay readable.
+
+Background verification updated **2026-10-28 12:38 (Europe/Bucharest)**: 164 editor tests, 214 native tests and 18 headless renderer checks passed. These do not check off the pending native UI acceptance above.
+
+- [ ] Verify a locked neighboring straight track stays exact while an attached via/track moves; confirm the retained junction and undo result.
+- [ ] Select multiple vias with both endpoint and interior contacts on one segment; compare preview and final connectivity.
+- [ ] After a small track edit, change active layer, hide/show layers, toggle pour fills and Undo/Redo; confirm no old tracks/fills remain on screen.
+- [ ] Record timings after warm edits and separately record initial opening time; cold filled-pour triangulation is still a known source of delay.

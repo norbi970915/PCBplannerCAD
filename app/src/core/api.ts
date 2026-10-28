@@ -72,7 +72,7 @@ export const api = {
   snapshot: (id: string) => invoke<Snapshot>("doc_snapshot", { id }),
   newDocument: (kind: DocKind) => invoke<Snapshot>("doc_new", { kind }),
   open: (path: string) => invoke<Snapshot>("doc_open", { path }),
-  execute: (id: string, cmd: Command, enforceVias = true) => invoke<Update>("doc_execute", { id, cmd, ...(cmd.op === "route" ? { enforceVias } : {}) }),
+  execute: (id: string, cmd: Command, enforceVias = true) => invoke<Update>("doc_execute", { id, cmd, enforceVias }),
   undo: (id: string) => invoke<Update>("doc_undo", { id }),
   redo: (id: string) => invoke<Update>("doc_redo", { id }),
   save: (id: string, path: string | null) => invoke<DocInfo>("doc_save", { id, path }),

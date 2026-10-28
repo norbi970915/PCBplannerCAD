@@ -79,7 +79,7 @@ fn sanitize(name: &str) -> String {
     name.chars().map(|c| if c.is_alphanumeric() || "-_ .".contains(c) { c } else { '_' }).collect()
 }
 
-/// Imports a schematic design into a new PCBPlannerCAD project in `dest_dir`
+/// Imports a schematic design into a new pCAD project in `dest_dir`
 /// (which must not already contain the files to be written), then opens it.
 #[tauri::command]
 pub fn import_design(state: State<AppState>, source: DesignSource, path: String, dest_dir: String) -> Res<DesignImport> {
@@ -173,7 +173,7 @@ pub struct LibraryPaths {
     footprints: Option<String>,
 }
 
-/// Locates the newest structured format installation's stock libraries.
+/// Locates configured or installed symbol and footprint libraries.
 #[tauri::command]
 pub fn library_paths() -> LibraryPaths {
     let share = library_share();
@@ -181,12 +181,12 @@ pub fn library_paths() -> LibraryPaths {
     LibraryPaths { symbols: sub("symbols"), footprints: sub("footprints") }
 }
 
-/// Finds a configured or installed library data folder by layout.
+/// Finds a configured or installed library data folder by its contents.
 pub fn library_share() -> Option<PathBuf> {
     pcbplannercad_import::paths::library_share()
 }
 
-/// Lists library files in a directory (structured format `*.kicad_sym` / `*.pretty`).
+/// Lists supported symbol-library files and footprint folders in a directory.
 #[tauri::command]
 pub fn list_library_files(dir: String) -> Res<Vec<String>> {
     let mut out: Vec<String> = std::fs::read_dir(&dir)

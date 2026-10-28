@@ -1,5 +1,5 @@
 //! Library generation: the footprint wizard (IPC-7351B-style generators),
-//! the box-symbol wizard, and the built-in "PCBPlannerCAD Basic" starter library.
+//! the box-symbol wizard, and the built-in "pCAD Basic" starter library.
 //!
 //! * [`wizard`] — `FootprintSpec` → `Footprint`, plus [`wizard::families`]
 //!   describing every family's parameters for the UI.

@@ -13,11 +13,11 @@ export function report(e: unknown) {
 }
 
 const FILTERS = {
-  schematic: [{ name: "PCBPlannerCAD Schematic", extensions: ["arsch"] }],
-  pcb: [{ name: "PCBPlannerCAD PCB", extensions: ["arpcb"] }],
-  library: [{ name: "PCBPlannerCAD Library", extensions: ["arlib"] }],
-  project: [{ name: "PCBPlannerCAD Project", extensions: ["arproj"] }],
-  any: [{ name: "PCBPlannerCAD files", extensions: ["arproj", "arsch", "arpcb", "arlib"] }],
+  schematic: [{ name: "pCAD Schematic", extensions: ["arsch"] }],
+  pcb: [{ name: "pCAD PCB", extensions: ["arpcb"] }],
+  library: [{ name: "pCAD Library", extensions: ["arlib"] }],
+  project: [{ name: "pCAD Project", extensions: ["arproj"] }],
+  any: [{ name: "pCAD files", extensions: ["arproj", "arsch", "arpcb", "arlib"] }],
 };
 
 // ---------- documents ----------
@@ -100,7 +100,7 @@ export async function newDocument(kind: DocKind) {
   }
 }
 
-/** Opens any PCBPlannerCAD file, picking the right handler by extension. */
+/** Opens any pCAD file, picking the right handler by extension. */
 export async function openAnyFile(path?: string) {
   const p = path ?? (await openDialog({ filters: FILTERS.any, multiple: false, directory: false }));
   if (typeof p !== "string") return;
@@ -162,7 +162,7 @@ export async function closeDoc(docId: string): Promise<boolean> {
   const doc = st().docs[docId];
   if (doc && doc.info.dirty && !doc.info.library) {
     const discard = await ask(`${doc.info.title} has unsaved changes. Discard them?`, {
-      title: "PCBPlannerCAD",
+      title: "pCAD",
       kind: "warning",
       okLabel: "Discard",
       cancelLabel: "Cancel",
@@ -261,7 +261,7 @@ export async function saveLibrary(libId: string, saveAs = false): Promise<boolea
 export async function closeLibrary(libId: string) {
   const lib = st().libs.find((l) => l.id === libId);
   if (lib?.dirty) {
-    const ok = await ask(`Library ${lib.name} has unsaved changes. Close anyway?`, { title: "PCBPlannerCAD", kind: "warning" });
+    const ok = await ask(`Library ${lib.name} has unsaved changes. Close anyway?`, { title: "pCAD", kind: "warning" });
     if (!ok) return;
   }
   try {
@@ -483,7 +483,7 @@ export async function importDesign(source: DesignSource) {
         : [{ name: "XML schematic", extensions: ["sch"] }];
   const src = await openDialog({ filters, multiple: false, title: "Select the design to import" });
   if (typeof src !== "string") return;
-  const dest = await openDialog({ directory: true, title: "Choose an empty folder for the PCBPlannerCAD project" });
+  const dest = await openDialog({ directory: true, title: "Choose an empty folder for the pCAD project" });
   if (typeof dest !== "string") return;
   try {
     st().log("info", `Importing ${src}…`);

@@ -1,4 +1,4 @@
-//! The built-in "PCBPlannerCAD Basic" library: hand-drawn symbols, wizard
+//! The built-in "pCAD Basic" library: hand-drawn symbols, wizard
 //! footprints and components tying them together. Everything is generated
 //! here from first principles (no external library data).
 
@@ -11,7 +11,7 @@ use super::wizard::{
 use crate::item::PadShape;
 use crate::library::{Component, Footprint, Library, Parameter, PinMapping, Symbol};
 
-pub const STARTER_LIBRARY_NAME: &str = "PCBPlannerCAD Basic";
+pub const STARTER_LIBRARY_NAME: &str = "pCAD Basic";
 
 fn chip(prefix: &str, size: ChipSize, polarity: bool) -> FootprintSpec {
     FootprintSpec::Chip(ChipSpec { size, prefix: prefix.into(), polarity })

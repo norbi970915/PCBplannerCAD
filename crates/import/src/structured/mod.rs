@@ -1,11 +1,11 @@
-//! structured format importer for the S-expression formats of structured format 6 to 10:
+//! Structured S-expression projects, boards, schematics and libraries:
 //! symbol libraries (`.kicad_sym`), footprints (`.kicad_mod`, `.pretty`
 //! folders), schematics (`.kicad_sch`, with hierarchy), boards (`.kicad_pcb`) and
 //! projects (`.kicad_pro`).
 //!
-//! Coordinate conventions: symbol libraries are Y-up like the PCBPlannerCAD world
+//! Coordinate conventions: symbol libraries are Y-up like the pCAD world
 //! and are read as-is; footprints and schematics are Y-down and get Y negated.
-//! structured format angles are counter-clockwise *on screen*, so negating Y keeps them
+//! Source angles are counter-clockwise on screen, so negating Y keeps them
 //! unchanged in our Y-up world.
 
 mod board;

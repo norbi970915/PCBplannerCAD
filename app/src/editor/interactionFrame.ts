@@ -4,6 +4,8 @@ export class InteractionFrame<T> {
   private frame: number | null = null;
   private running = false;
   private disposed = false;
+  private observer: ((cpuMs: number) => void) | null = null;
+  setFrameObserver(observer: ((cpuMs: number) => void) | null) { this.observer = observer; }
 
   constructor(
     private update: (value: T) => void,
@@ -27,8 +29,10 @@ export class InteractionFrame<T> {
     this.frame = this.request(() => {
       this.frame = null;
       this.running = true;
+      const observer = this.observer;
+      const began = observer ? performance.now() : 0;
       try { this.flush(); this.draw(); }
-      finally { this.running = false; if (this.pending !== null) this.invalidate(); }
+      finally { this.running = false; observer?.(performance.now() - began); if (this.pending !== null) this.invalidate(); }
     });
   }
 

@@ -161,3 +161,108 @@ fn via_guard_allows_lock_only_edits_so_existing_bad_copper_can_be_repaired() {
     assert!(session.execute_with_via_checks(Command::Route {delete:vec![],add:vec![],replace:vec![crate::IdItem{id,item:Item::Via(moved)}]},true).is_err());
     assert_eq!(snapshot(session.document()),before);
 }
+
+#[test]
+fn generic_via_edits_reject_atomically_and_rules_off_is_explicit() {
+    let document = board(vec![track((9.,10.),(11.,10.),0.2,layer::TOP_COPPER,"B")]);
+    let source = router::via_for(&document,"A",p(20.,10.));
+    let mut setup = Session::with_document(document);
+    let id = setup.execute(place(source.clone())).unwrap().upserted.iter().find(|e|matches!(e.item,Item::Via(_))).unwrap().id;
+    let document = setup.document().clone();
+    let bad = Item::Via(router::via_for(&document,"A",p(10.,10.)));
+    let replacement = crate::IdItem { id, item: bad.clone() };
+    let commands = vec![
+        ("paste/array", Command::Add { items: vec![track((2.,2.),(3.,2.),0.2,layer::TOP_COPPER,"C"), bad.clone()] }),
+        ("change", Command::Change { delete: vec![id], add: vec![bad.clone()] }),
+        ("property", Command::Replace { id, item: bad.clone() }),
+        ("bulk", Command::ReplaceMany { items: vec![replacement] }),
+        ("move", Command::Move { ids: vec![id], dx: mm(-10.), dy: 0 }),
+        ("rotate", Command::Rotate { ids: vec![id], center: p(15.,10.), angle: 180. }),
+        ("mirror", Command::Mirror { ids: vec![id], center: p(15.,0.) }),
+    ];
+    for (name, cmd) in commands {
+        let mut session = Session::with_document(document.clone());
+        session.execute(Command::Add { items: vec![track((2.,2.),(3.,2.),0.2,layer::TOP_COPPER,"C")] }).unwrap();
+        session.undo().unwrap(); session.mark_saved();
+        let before = snapshot(session.document());
+        let control = session.document().clone();
+        assert!(session.execute_with_via_checks(cmd.clone(),true).is_err(),"{name}");
+        assert_eq!(snapshot(session.document()),before,"{name}");
+        assert_eq!(session.document(),&control,"ID allocation changed for {name}");
+        assert!(!session.is_dirty(),"{name}"); assert!(!session.can_undo(),"{name}"); assert!(session.can_redo(),"{name}");
+        session.execute_with_via_checks(cmd,false).unwrap();
+        assert!(super::drc::run(session.document()).violations.iter().any(|v|v.code=="short"),"rules off: {name}");
+        session.undo().unwrap(); assert_eq!(snapshot(session.document()),before,"undo {name}");
+    }
+}
+
+#[test]
+fn generic_via_add_and_move_refill_foreign_pours_in_the_same_undo_step() {
+    let mut pour = zone(2.,2.,28.,28.,layer::TOP_COPPER,"B");
+    if let Item::Zone(z) = &mut pour { z.remove_islands = false; }
+    let mut session = Session::with_document(board(vec![pour]));
+    session.execute(Command::EditPours { items: vec![], refill: None }).unwrap();
+    let before = snapshot(session.document());
+    let via = router::via_for(session.document(),"A",p(10.,10.));
+    let added = session.execute_with_via_checks(Command::Add { items: vec![Item::Via(via)] },true).unwrap();
+    let id = added.upserted.iter().find(|e|matches!(e.item,Item::Via(_))).unwrap().id;
+    assert!(added.upserted.iter().any(|e|matches!(e.item,Item::Zone(_))));
+    let placed = snapshot(session.document());
+    assert!(!super::drc::run(session.document()).violations.iter().any(|v|matches!(v.code,"short"|"clearance")));
+    session.undo().unwrap(); assert_eq!(snapshot(session.document()),before);
+    session.redo().unwrap(); assert_eq!(snapshot(session.document()),placed);
+    session.execute_with_via_checks(Command::Move { ids: vec![id], dx: mm(3.), dy: 0 },true).unwrap();
+    let moved = snapshot(session.document());
+    assert!(!super::drc::run(session.document()).violations.iter().any(|v|matches!(v.code,"short"|"clearance")));
+    session.undo().unwrap(); assert_eq!(snapshot(session.document()),placed);
+    session.redo().unwrap(); assert_eq!(snapshot(session.document()),moved);
+    assert_eq!(snapshot(&io::document_from_str(crate::DocKind::Pcb,&moved).unwrap()),moved);
+}
+
+#[test]
+fn bulk_via_size_span_and_net_changes_use_the_final_geometry() {
+    for field in ["size","span","net"] {
+        let obstacle_layer = if field=="span" { layer::inner_copper(3) } else { layer::TOP_COPPER };
+        let y = if field=="size" {10.8} else {10.};
+        let document = board(vec![track((9.,y),(11.,y),0.2,obstacle_layer,"B")]);
+        let mut via = if field=="span" {router::via_between(&document,"A",p(10.,10.),layer::TOP_COPPER,layer::inner_copper(1))}
+            else {router::via_for(&document,if field=="net" {"B"} else {"A"},p(10.,10.))};
+        let mut session = Session::with_document(document);
+        let id = session.execute_with_via_checks(Command::Add { items: vec![Item::Via(via.clone())] },true).unwrap().upserted[0].id;
+        match field {
+            "size" => via.diameter = mm(1.6),
+            "span" => {via.from_layer=layer::TOP_COPPER;via.to_layer=layer::BOTTOM_COPPER;via.diameter=mm(0.6);via.drill=mm(0.3);},
+            _ => via.net = "A".into(),
+        }
+        let before = session.document().clone();
+        assert!(session.execute_with_via_checks(Command::ReplaceMany { items: vec![crate::IdItem{id,item:Item::Via(via)}] },true).is_err(),"{field}");
+        assert_eq!(session.document(),&before,"{field}");
+    }
+}
+
+#[test]
+fn generic_unlock_and_noop_edits_allow_existing_invalid_vias_to_be_repaired() {
+    let document = board(vec![track((9.,10.),(11.,10.),0.2,layer::TOP_COPPER,"B")]);
+    let mut via = router::via_for(&document,"A",p(10.,10.));
+    let mut session = Session::with_document(document);
+    let id = session.execute(Command::Add { items: vec![Item::Via(via.clone())] }).unwrap().upserted[0].id;
+    for locked in [true,false] {
+        via.locked=locked;
+        session.execute_with_via_checks(Command::Replace {id,item:Item::Via(via.clone())},true).unwrap();
+    }
+    session.execute_with_via_checks(Command::Move {ids:vec![id],dx:0,dy:0},true).unwrap();
+    session.execute_with_via_checks(Command::Move {ids:vec![id],dx:mm(5.),dy:0},true).unwrap();
+    assert!(!super::drc::run(session.document()).violations.iter().any(|v|matches!(v.code,"short"|"clearance")));
+}
+#[test]
+fn deleting_a_via_restores_its_pour_clearance_and_undo_restores_both() {
+    let mut pour=zone(2.,2.,28.,28.,layer::TOP_COPPER,"B");if let Item::Zone(z)=&mut pour{z.remove_islands=false;}
+    let mut session=Session::with_document(board(vec![pour]));
+    let via=router::via_for(session.document(),"A",p(10.,10.));
+    let id=session.execute_with_via_checks(Command::Add{items:vec![Item::Via(via)]},true).unwrap().upserted.iter().find(|i|matches!(i.item,Item::Via(_))).unwrap().id;
+    let before=snapshot(session.document());
+    let changed=session.execute_with_via_checks(Command::Delete{ids:vec![id]},true).unwrap();
+    assert!(changed.upserted.iter().any(|i|matches!(i.item,Item::Zone(_))));
+    let after=snapshot(session.document());session.undo().unwrap();assert_eq!(snapshot(session.document()),before);
+    session.redo().unwrap();assert_eq!(snapshot(session.document()),after);
+}

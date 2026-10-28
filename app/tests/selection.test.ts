@@ -332,3 +332,65 @@ test('selection helpers respect hidden layers and hidden object types in the tar
   assert.equal(selectable('pcb',track,{...doc,view:{...doc.view,hiddenLayers:[0]}}),false);
   assert.equal(selectable('pcb',track,doc),true);
 });
+
+function routedVia(){
+ const h=harness();useEditor.getState().setPlacement({moveMode:'free'});
+ h.items.set(12,{kind:'track',a:p(0,3),b:p(3,3),width:200000,layer:0,net:'GND'});
+ h.items.set(13,{kind:'track',a:p(3,3),b:p(8,8),width:200000,layer:1,net:'GND'});
+ useEditor.getState().patchDoc('test',{items:new Map(h.items)});h.scene.update(h.items,h.env.ctx());return h;
+}
+
+test('via pickup previews attached traces and commits one connected route plan',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let requests=0;const plan={replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0};
+ mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_drag_footprints');assert.deepEqual(args!.req.ids,[1]);requests++;return plan;});
+ try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);
+  const preview=h.tool.preview!(h.env);assert(preview.some(i=>i.kind==='track'&&i.b.x===p(5,4).x&&i.b.y===p(5,4).y));
+  assert(h.tool.excluded!().has(12)&&h.tool.excluded!().has(13));h.click(5,4);
+  await new Promise(r=>setTimeout(r,0));assert.equal(requests,1);assert.equal(h.commands.length,1);assert.equal(h.commands[0].op,'route');
+ }finally{clearMocks();}
+});
+
+test('cancelling a via drag preserves the board and does not commit',()=>{
+ const h=routedVia();const before=h.env.doc().items;h.move(3,3);h.key('m');h.move(5,4);
+ assert(h.tool.cancel(h.env));assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),[]);assert.equal(h.env.doc().items,before);
+});
+
+test('a late via-move plan cannot overwrite a newer board revision',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let settle!:(value:unknown)=>void;mockIPC(()=>new Promise(resolve=>settle=resolve));
+ try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);
+  useEditor.getState().patchDoc('test',{items:new Map(h.env.doc().items)});
+  settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));assert.deepEqual(h.commands,[]);
+ }finally{clearMocks();}
+});
+
+test('curved interior contact preview starts on the curve and ends at the moved via center',()=>{
+ const h=harness();useEditor.getState().setPlacement({moveMode:'free'});
+ h.items.set(1,via(3,3.2));h.items.set(12,{kind:'arcTrack',center:p(3,-2),radius:5e6,startAngle:0,sweep:180,width:200000,layer:0,net:'GND'});
+ useEditor.getState().patchDoc('test',{items:new Map(h.items),view:{...DEFAULT_VIEW,snapToGrid:false}});h.scene.update(h.items,h.env.ctx());
+ h.move(3,3.2);h.key('m');h.move(5,4.2);
+ const join=h.tool.preview!(h.env).find(i=>i.kind==='track');assert(join&&join.kind==='track');
+ assert.deepEqual(join.a,p(3,3));assert.deepEqual(join.b,p(5,4.2),'offset contact reconnects to the via center');
+ assert(!h.tool.excluded!().has(12),'the original curve stays visible and fixed');
+});
+
+test('whole-curve pickup and mode switches hide only the geometry being moved',()=>{
+ const h=harness();useEditor.getState().setPlacement({moveMode:'preserveAngles'});
+ (h.env as {setPlacement:(x:object)=>void}).setPlacement=x=>useEditor.getState().setPlacement(x as never);
+ h.items.set(1,via(3,3));h.items.set(2,via(-3,3));h.items.set(12,{kind:'arcTrack',center:p(0,3),radius:3e6,startAngle:0,sweep:180,width:200000,layer:0,net:'GND'});
+ useEditor.getState().patchDoc('test',{items:new Map(h.items),selection:new Set([1,2])});h.scene.update(h.items,h.env.ctx());
+ h.move(0,3);h.key('m');assert(h.tool.excluded!().has(12),'M hides the original curve');
+ h.key('Tab');assert(h.tool.excluded!().has(12));h.key('Tab');assert(!h.tool.excluded!().has(12),'Disconnect restores the curve');
+ h.key('Tab');assert(h.tool.excluded!().has(12));h.tool.cancel(h.env);assert.equal(h.tool.excluded!().size,0);
+});
+
+test('a late move plan cannot clear or commit over a newer via preview',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let settle!:(value:unknown)=>void;mockIPC(()=>new Promise(resolve=>settle=resolve));
+ try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);
+  h.move(3,3);h.key('m');h.move(6,5);const preview=h.tool.preview!(h.env);const excluded=[...h.tool.excluded!()];
+  settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));
+  assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),preview);assert.deepEqual([...h.tool.excluded!()],excluded);
+ }finally{clearMocks();}
+});

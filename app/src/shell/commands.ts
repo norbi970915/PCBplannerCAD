@@ -184,9 +184,10 @@ export const COMMANDS: Record<string, AppCommand> = {
   "window.pcb": { label: "PCB Panel (Nets)", run: () => bus.emit("showPanel", { id: "pcb" }) },
   "window.properties": { label: "Properties Panel", run: () => bus.emit("showPanel", { id: "properties" }) },
   "window.messages": { label: "Messages Panel", run: () => bus.emit("showPanel", { id: "messages" }) },
+  "help.canvasTimings": { label: "Record/Stop Canvas Timings", enabled: hasDoc, run: () => { const d=activeDoc(); if(d)bus.emit("canvasTimings",{docId:d.info.id}); } },
   "help.about": {
-    label: "About PCBPlannerCAD",
-    run: () => ed().log("info", "PCBPlannerCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, and external design import."),
+    label: "About pCAD",
+    run: () => ed().log("info", "pCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, and external design import."),
   },
 };
 

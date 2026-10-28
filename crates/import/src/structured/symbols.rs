@@ -69,7 +69,7 @@ fn read_prop(p: &List) -> Option<Prop> {
     Some(Prop { name, value, field })
 }
 
-/// structured format property name → PCBPlannerCAD field name.
+/// structured format property name → pCAD field name.
 pub fn field_name(structured: &str) -> &str {
     match structured {
         "Reference" => FIELD_DESIGNATOR,

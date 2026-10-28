@@ -3,7 +3,7 @@ name = "pcbplannercad-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PCBPlannerCAD document model, units, commands and undo history"
+description = "pCAD document model, units, commands and undo history"
 
 [dependencies]
 serde.workspace = true
