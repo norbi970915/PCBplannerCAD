@@ -2,10 +2,11 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { stepBindingsPlugin } from "./scripts/step-bindings.mjs";
 
 // Tauri expects a fixed port and must not have the console cleared under it.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [stepBindingsPlugin(), react(), tailwindcss()],
   clearScreen: false,
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

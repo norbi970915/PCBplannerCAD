@@ -49,6 +49,7 @@ pub(crate) fn smd_pad(number: &str, x: f64, w: f64, h: f64, shape: PadShape, rot
 
 pub(crate) fn place(designator: &str, key: &str, pos: Point, rotation: f64) -> Item {
     Item::Footprint(PlacedFootprint {
+        board_only: false,
         designator: designator.into(),
         value: String::new(),
         footprint: key.into(),
@@ -64,6 +65,7 @@ pub(crate) fn place(designator: &str, key: &str, pos: Point, rotation: f64) -> I
 
 pub(crate) fn place_full(designator: &str, value: &str, key: &str, pos: Point, rotation: f64, side: Side, params: &[(&str, &str)]) -> Item {
     Item::Footprint(PlacedFootprint {
+        board_only: false,
         designator: designator.into(),
         value: value.into(),
         footprint: key.into(),

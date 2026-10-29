@@ -10,8 +10,8 @@
 //! - Bottom parts are listed with Side = Bottom (`bottom` in coordinate CSV).
 //!
 //! Footprints whose parameters mark them "do not populate" (`DNP`,
-//! `Do Not Populate` or `Exclude From BOM` set to 1/true/yes/y/x/dnp) are
-//! left out of both files. Rows are sorted by designator in natural order
+//! `Do Not Populate` set to 1/true/yes/y/x/dnp) are left out of both files.
+//! `Exclude from BOM` and `Exclude from placement` affect only their own output. Rows are sorted by designator in natural order
 //! (R2 before R10).
 
 use std::cmp::Ordering;
@@ -53,7 +53,7 @@ pub enum BomFormat {
 /// only, `None` both sides.
 pub fn pick_and_place_csv(doc: &Document, format: PnpFormat, bottom: Option<bool>) -> String {
     let origin = board_settings(doc).map_or(Point::default(), |(_, b)| b.origin);
-    let mut parts: Vec<&PlacedFootprint> = placed(doc).into_iter().filter(|f| bottom.is_none_or(|b| (f.side == Side::Bottom) == b)).collect();
+    let mut parts: Vec<&PlacedFootprint> = placed(doc).into_iter().filter(|f| !flag(f, "excludefromplacement") && bottom.is_none_or(|b| (f.side == Side::Bottom) == b)).collect();
     parts.sort_by(|a, b| natural_cmp(&a.designator, &b.designator));
     let mut s = String::new();
     s.push_str(match format {
@@ -93,7 +93,7 @@ pub fn bom_csv(doc: &Document, format: BomFormat) -> String {
         designators: Vec<&'a str>,
     }
     let mut groups: BTreeMap<(&str, &str, &str), Group> = BTreeMap::new();
-    for f in placed(doc) {
+    for f in placed(doc).into_iter().filter(|f| include_in_bom(f)) {
         let (value, footprint, mpn) = (f.value.as_str(), footprint_name(&f.footprint), param(f, MPN_KEYS));
         let g = groups.entry((value, footprint, mpn)).or_insert_with(|| Group { value, footprint, mpn, manufacturer: "", lcsc: "", designators: Vec::new() });
         if g.manufacturer.is_empty() {
@@ -141,7 +141,7 @@ pub fn bom_csv(doc: &Document, format: BomFormat) -> String {
 const MPN_KEYS: &[&str] = &["mpn", "manufacturerpartnumber", "mfrpartnumber", "mfrpn", "partnumber"];
 const MANUFACTURER_KEYS: &[&str] = &["manufacturer", "mfr", "manufacturername"];
 const LCSC_KEYS: &[&str] = &["lcsc", "lcscpart", "lcscpartnumber", "lcscpn", "jlcpcbpart", "jlcpcbpartnumber", "jlc"];
-const DNP_KEYS: &[&str] = &["dnp", "donotpopulate", "excludefrombom"];
+const DNP_KEYS: &[&str] = &["dnp", "donotpopulate"];
 
 fn norm_key(k: &str) -> String {
     k.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
@@ -154,9 +154,16 @@ fn param<'a>(f: &'a PlacedFootprint, keys: &[&str]) -> &'a str {
         .unwrap_or("")
 }
 
+fn flag(f: &PlacedFootprint, name: &str) -> bool {
+    f.parameters.iter().any(|(key,value)| norm_key(key) == name
+        && matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "y" | "x" | "dnp"))
+}
+
 fn is_dnp(f: &PlacedFootprint) -> bool {
     f.parameters.iter().any(|(k, v)| DNP_KEYS.contains(&norm_key(k).as_str()) && matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "y" | "x" | "dnp"))
 }
+
+pub(crate) fn include_in_bom(f:&PlacedFootprint)->bool { !is_dnp(f) && !flag(f,"excludefrombom") }
 
 fn placed(doc: &Document) -> Vec<&PlacedFootprint> {
     doc.items().filter_map(|(_, i)| if let Item::Footprint(f) = i { Some(f) } else { None }).filter(|f| !is_dnp(f)).collect()
@@ -306,5 +313,21 @@ mod tests {
         let mut v = vec!["R10", "R2", "C1", "R1", "U1A", "r3"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, vec!["C1", "R1", "R2", "r3", "R10", "U1A"]);
+    }
+}
+
+#[cfg(test)]
+mod exclusion_tests {
+    use super::*;
+    #[test]
+    fn bom_and_placement_exclusions_are_independent_and_dnp_omits_both() {
+        let item=|des:&str,key:&str|Item::Footprint(PlacedFootprint{
+            board_only:false,designator:des.into(),value:"10k".into(),footprint:"L/R".into(),pos:Point::default(),rotation:0.,side:Side::Top,locked:false,pad_nets:BTreeMap::new(),component:String::new(),parameters:BTreeMap::from([(key.into(),"1".into())]),
+        });
+        let doc=Document::from_item_list(pcbplannercad_core::DocKind::Pcb,[item("R1","Exclude from BOM"),item("R2","Exclude from placement"),item("R3","DNP")]);
+        let bom=bom_csv(&doc,BomFormat::Generic);let placements=pick_and_place_csv(&doc,PnpFormat::Generic,None);
+        assert!(!bom.contains("R1"));assert!(placements.contains("R1"));
+        assert!(bom.contains("R2"));assert!(!placements.contains("R2"));
+        assert!(!bom.contains("R3")&&!placements.contains("R3"));
     }
 }

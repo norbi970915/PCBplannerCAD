@@ -28,7 +28,7 @@ import {
 // Generic actions use lucide; EDA-specific tools are drawn here in the same
 // stroke style so the toolbar reads as one set.
 
-const lc = { size: 15, strokeWidth: 1.75 } as const;
+const lc = { size: 15, strokeWidth: 2 } as const;
 
 const Svg = ({ children }: { children: ReactNode }) => (
   <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -38,7 +38,7 @@ const Svg = ({ children }: { children: ReactNode }) => (
 
 const dot = (cx: number, cy: number, r = 1.3) => <circle cx={cx} cy={cy} r={r} fill="currentColor" stroke="none" />;
 
-export const Icons: Record<string, ReactNode> = {
+const glyphs: Record<string, ReactNode> = {
   // generic
   select: <MousePointer2 {...lc} />,
   fit: <Maximize {...lc} />,
@@ -228,3 +228,6 @@ export const Icons: Record<string, ReactNode> = {
     </Svg>
   ),
 };
+
+const tones:Record<string,string>={folder:"folder",board:"board",schematic:"schematic",sheet:"schematic",symbol:"schematic",library:"library",footprint:"library",component:"library",part:"library",model3d:"model",erc:"board",check:"board",save:"board",wire:"board",bus:"schematic",busEntry:"schematic",track:"route",via:"route",zone:"route",diffPair:"route",tune:"route",polygonCut:"model",polygonSlice:"model",reshape:"model",keepout:"model"};
+export const Icons:Record<string,ReactNode>=Object.fromEntries(Object.entries(glyphs).map(([key,glyph])=>[key,<span key={key} aria-hidden="true" className={"pcad-icon tone-"+(tones[key]??"action")}>{glyph}</span>]));

@@ -18,10 +18,10 @@ struct Group<'a> {
 /// followed by every extra parameter name (sorted). Parts with identical
 /// component, value and footprint share a row.
 pub fn bom_csv(compiled: &Compiled) -> String {
-    let extra: BTreeSet<&str> = compiled.parts.iter().flat_map(|p| p.parameters.iter().map(|(n, _)| n.as_str())).collect();
+    let extra: BTreeSet<&str> = compiled.parts.iter().filter(|p| !p.excluded_from_bom()).flat_map(|p| p.parameters.iter().map(|(n, _)| n.as_str())).collect();
 
     let mut groups: Vec<Group> = Vec::new();
-    for p in &compiled.parts {
+    for p in compiled.parts.iter().filter(|p| !p.excluded_from_bom()) {
         let g = match groups.iter_mut().position(|g| g.component == p.component && g.value == p.value && g.footprint == p.footprint) {
             Some(i) => &mut groups[i],
             None => {

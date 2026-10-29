@@ -4,6 +4,8 @@ use crate::document::ItemId;
 pub enum CoreError {
     #[error("item {0:?} does not exist")]
     UnknownItem(ItemId),
+    #[error("item {0:?} is targeted more than once in the same edit")]
+    DuplicateItem(ItemId),
     #[error("invalid geometry: {0}")]
     InvalidGeometry(&'static str),
     #[error("Via blocked: {0}")]

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { create } from "zustand";
+import {createPortal} from "react-dom";
 import { cn } from "@/lib/utils";
 import { bus } from "../core/bus";
 import { highlightNetOnBoard, repour } from "../core/pcbActions";
@@ -10,14 +11,14 @@ import { COMMANDS, commandAvailable, runCommand } from "./commands";
 type Entry = { label: string; keys?: string; run: () => unknown; disabled?: boolean } | "-";
 
 interface MenuState {
-  at: { x: number; y: number; docId: string } | null;
-  open: (x: number, y: number, docId: string) => void;
+  at: { x: number; y: number; docId: string;surface?:Window } | null;
+  open: (x: number, y: number, docId: string,surface?:Window) => void;
   close: () => void;
 }
 
 export const useContextMenu = create<MenuState>()((set) => ({
   at: null,
-  open: (x, y, docId) => set({ at: { x, y, docId } }),
+  open: (x, y, docId,surface) => set({ at: { x, y, docId,surface } }),
   close: () => set({ at: null }),
 }));
 
@@ -86,6 +87,7 @@ export function ContextMenu() {
   const [index, setIndex] = useState(-1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const surface=at?.surface??window;
 
   useLayoutEffect(() => {
     if (!at) return;
@@ -96,7 +98,7 @@ export function ContextMenu() {
   useLayoutEffect(() => {
     if (!at || !ref.current) return;
     const { offsetWidth: w, offsetHeight: h } = ref.current;
-    setPos({ x: Math.max(4, Math.min(at.x, window.innerWidth - w - 4)), y: Math.max(4, Math.min(at.y, window.innerHeight - h - 4)) });
+    setPos({ x: Math.max(4, Math.min(at.x, surface.innerWidth - w - 4)), y: Math.max(4, Math.min(at.y, surface.innerHeight - h - 4)) });
   }, [at, entries]);
 
   useEffect(() => {
@@ -125,18 +127,18 @@ export function ContextMenu() {
       e.preventDefault();
       close();
     };
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("pointerdown", onDown, true);
-    window.addEventListener("blur", close);
+    surface.addEventListener("keydown", onKey, true);
+    surface.addEventListener("pointerdown", onDown, true);
+    surface.addEventListener("blur", close);
     return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("pointerdown", onDown, true);
-      window.removeEventListener("blur", close);
+      surface.removeEventListener("keydown", onKey, true);
+      surface.removeEventListener("pointerdown", onDown, true);
+      surface.removeEventListener("blur", close);
     };
   }, [at, entries, index, close]);
 
   if (!at) return null;
-  return (
+  return createPortal(
     <div
       ref={ref}
       role="menu"
@@ -164,6 +166,6 @@ export function ContextMenu() {
           </button>
         ),
       )}
-    </div>
+    </div>, surface.document.body
   );
 }

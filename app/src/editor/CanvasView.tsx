@@ -55,6 +55,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     setDrawingPours(false);
     const host = hostRef.current!;
     const canvas = canvasRef.current!;
+    const viewWindow=canvas.ownerDocument.defaultView??window;
     let renderer: Renderer;
     try {
       renderer = new Renderer(canvas);
@@ -85,6 +86,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
     const isActive = () => st().activeDocId === docId;
     const pours = new PourTriangles(() => { if (isActive() && doc()) rebuildRef.current(); }, {
+      schedule:cb=>viewWindow.requestAnimationFrame(cb),cancel:id=>viewWindow.cancelAnimationFrame(id),
       onBusy: setDrawingPours,
       onFallback: () => st().log("warning", "Background copper preparation is unavailable; drawing fills directly.", { source: "Performance" }),
     });
@@ -101,6 +103,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         renderer.render(cam, { step: doc().grid, background: theme.background,
           dot: grid ? theme.grid.dot : hidden, major: grid ? theme.grid.major : hidden, axis: grid ? theme.grid.axis : hidden });
       },
+      cb=>viewWindow.requestAnimationFrame(cb),id=>viewWindow.cancelAnimationFrame(id),
     );
     const requestRender = () => frames.invalidate();
     const rebuildHighlights = () => {
@@ -414,11 +417,12 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       const d = doc();
       const hit = scene.pick(raw, 5 / cam.scale, (i) => selectable(d.info.kind, i));
       if (hit !== null && !d.selection.has(hit)) st().patchDoc(docId, { selection: new Set([hit]) });
-      useContextMenu.getState().open(e.clientX, e.clientY, docId);
+      useContextMenu.getState().open(e.clientX, e.clientY, docId,viewWindow);
     };
 
     const onDblClick = (e: MouseEvent) => {
       frames.flush();
+      const point=local(e);cursorScreen=point;computeCursor(point.x,point.y);
       tool.dblclick?.(env, info(e));
       rebuildOverlay();
     };
@@ -449,10 +453,10 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!isActive() || viaChoice.current) return;
+      if (!isActive() || viaChoice.current || document.querySelector("[role=dialog]")) return;
       frames.flush();
       // The key menu (P, T, V…) or a context menu is open: keys belong to it.
-      if (st().pendingKeys || useContextMenu.getState().at) return;
+      if (st().pendingKeys || useContextMenu.getState().at || viewWindow.document.querySelector('[data-slot="popover-content"][data-state="open"],[role="menu"],[role="listbox"]')) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) return;
       if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -486,21 +490,31 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       rebuildOverlay();
     };
 
-    const resize = new ResizeObserver(() => {
+    const applyFocus = () => {
+      const focus=doc()?.focus;if(!focus)return;
+      const bounds=focus.ids?scene.bounds(focus.ids):null;
+      if(bounds)cam.fit(bounds,80);else{cam.cx=focus.pos.x;cam.cy=focus.pos.y;cam.scale=Math.max(cam.scale,12/NM_PER_MM);}
+      analysisDirty=true;rebuildOverlay();
+    };
+    const resizeCanvas = () => {
       const r = host.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) return;
       cam.width = r.width;
       cam.height = r.height;
-      renderer.resize(r.width, r.height, window.devicePixelRatio || 1);
+      renderer.resize(r.width, r.height, viewWindow.devicePixelRatio || 1);
       analysisDirty = true;
       rebuildOverlay();
       if (!fitted) {
         fitted = true;
-        fit();
+        fit();applyFocus();
       }
       requestRender();
-    });
+    };
+    let resizeFrame=0;
+    const queueResize=()=>{if(!resizeFrame)resizeFrame=viewWindow.requestAnimationFrame(()=>{resizeFrame=0;resizeCanvas();});};
+    const resize = new viewWindow.ResizeObserver(queueResize);
     resize.observe(host);
+    viewWindow.addEventListener("resize",queueResize);
 
     const unsubscribe = useEditor.subscribe((s, prev) => {
       const d = s.docs[docId];
@@ -527,11 +541,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         fit();
       }
       if (d.focus && d.focus !== p?.focus) {
-        cam.cx = d.focus.pos.x;
-        cam.cy = d.focus.pos.y;
-        cam.scale = Math.max(cam.scale, 12 / NM_PER_MM);
-        analysisDirty = true;
-        rebuildOverlay();
+        applyFocus();
       }
       if (d.grid !== p?.grid) requestRender();
       if (isActive() && (toolId === "route" || toolId === "diffPair") &&
@@ -547,16 +557,16 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     });
 
     const stopTimings = () => {
-      window.clearTimeout(performanceTimer);
+      viewWindow.clearTimeout(performanceTimer);
       frames.setFrameObserver(null);
       const result=timings.stop();
-      if(result) st().log("info", "Canvas timings: "+JSON.stringify({...result,objects:doc()?.items.size??0,viewport:[cam.width,cam.height],pixelRatio:window.devicePixelRatio||1}), {source:"Performance"});
+      if(result) st().log("info", "Canvas timings: "+JSON.stringify({...result,objects:doc()?.items.size??0,viewport:[cam.width,cam.height],pixelRatio:viewWindow.devicePixelRatio||1}), {source:"Performance"});
     };
     const offTimings = bus.on("canvasTimings", ({docId:target}) => {
       if(target!==docId||!isActive())return;
       if(timings.active){stopTimings();return;}
       timings.start();frames.setFrameObserver(ms=>timings.frame(ms));
-      performanceTimer=window.setTimeout(stopTimings,30000);
+      performanceTimer=viewWindow.setTimeout(stopTimings,30000);
       st().log("info","Recording canvas CPU timings for 30 seconds. Pan, zoom, select and drag; use Help → Record/Stop Canvas Timings to finish early.",{source:"Performance"});
       requestRender();
     });
@@ -605,7 +615,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     canvas.addEventListener("dblclick", onDblClick);
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onContext);
-    window.addEventListener("keydown", onKeyDown, true);
+    viewWindow.addEventListener("keydown", onKeyDown, true);
 
     ensureTool();
     rebuildScene();
@@ -619,6 +629,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       pours.dispose();
       frames.dispose();
       resize.disconnect();
+      viewWindow.removeEventListener("resize",queueResize);
+      viewWindow.cancelAnimationFrame(resizeFrame);
       unsubscribe();
       offView();
       offPickUp();
@@ -632,7 +644,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       canvas.removeEventListener("dblclick", onDblClick);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContext);
-      window.removeEventListener("keydown", onKeyDown, true);
+      viewWindow.removeEventListener("keydown", onKeyDown, true);
       renderer.dispose();
     };
   }, [docId]);

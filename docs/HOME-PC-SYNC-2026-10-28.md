@@ -2,6 +2,8 @@
 
 Date: 2026-10-28 (Europe/Bucharest).
 
+For the October 29 delivery, start with [the latest home-PC continuation guide](HOME-PC-CONTINUATION-2026-10-29.md). This older guide remains the detailed one-time history-realignment reference.
+
 The published `main` history was rewritten across 11 commits, including messages and historical source snapshots. The source tree at the rewritten tip stayed unchanged. The rewritten baseline is `7efea94`; later workday commits may follow it. Always sync to the latest fetched `origin/main`, not to that baseline hash.
 
 An existing checkout on another computer needs the one-time procedure below. Afterward, ordinary fast-forward pulls work again. No local project-folder rename is needed.

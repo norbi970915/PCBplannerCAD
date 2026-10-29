@@ -126,3 +126,17 @@ test('cached rendering follows hidden layers, pour toggles and restored geometry
  scene.update(items,ctx({hiddenLayers:[0]}));assert.deepEqual(scene.build(theme,hl),[]);
  scene.update(items,context);assert.deepEqual(scene.build(theme,hl),original);
 });
+
+
+test('saved display views validate local data, bound names/count and preserve interaction settings',async()=>{
+ const {displaySettings,normalizeViewPresets,saveViewPreset,readViewPresets,viewPresetsKey}=await import('../src/core/viewPresets.ts');
+ const snapshot={name:'Routing',display:displaySettings({...DEFAULT_VIEW,hiddenLayers:[1,1,-3,Infinity],values:false,grid:false,snapToGrid:false}),layerMode:'dim' as const,pourFills:false};
+ assert.deepEqual(snapshot.display.hiddenLayers,[1]);assert.equal('grid' in snapshot.display,false);assert.equal('snapToGrid' in snapshot.display,false);
+ const first=saveViewPreset([],snapshot);assert.throws(()=>saveViewPreset(first,{...snapshot,name:' routing '}),/already exists/);assert.equal(first[0].display.values,false);
+ const replaced=saveViewPreset(first,{...snapshot,name:'Routing',display:displaySettings(DEFAULT_VIEW)},true);assert.equal(replaced.length,1);assert.equal(replaced[0].display.values,true);assert.equal(first[0].display.values,false);
+ assert.throws(()=>saveViewPreset([], {...snapshot,name:' '}),/name/);assert.throws(()=>saveViewPreset([], {...snapshot,name:'x'.repeat(61)}),/name/);
+ const list=normalizeViewPresets([null,{},snapshot,{...snapshot,name:'routing'},...Array.from({length:40},(_,i)=>({...snapshot,name:'View '+i}))]);assert.equal(list.length,24);assert.equal(list.filter(p=>p.name.toLowerCase()==='routing').length,1);assert.throws(()=>saveViewPreset(list,{...snapshot,name:'Extra'}),/limit 24/);
+ assert.deepEqual(readViewPresets('pcb',{getItem:()=>'{broken'}),[]);assert.deepEqual(readViewPresets('pcb',{getItem:()=>{throw Error('unavailable');}}),[]);
+ assert.deepEqual(readViewPresets('pcb',{getItem:()=>JSON.stringify([snapshot])}),first);assert.notEqual(viewPresetsKey('pcb'),viewPresetsKey('schematic'));
+ const current=normalizeView({...DEFAULT_VIEW,grid:false,snapToGrid:false});const applied=normalizeView({...current,...snapshot.display});assert.equal(applied.grid,false);assert.equal(applied.snapToGrid,false);assert.equal(applied.values,false);
+});

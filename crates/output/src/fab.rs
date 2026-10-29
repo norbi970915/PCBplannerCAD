@@ -30,9 +30,10 @@ pub struct FabOptions {
     pub zip: bool,
 }
 
-/// Writes the package into `out_dir` (created if missing). Returns the paths
-/// written, the zip last when requested.
+/// Publishes a complete package into a new folder. Existing destinations are
+/// rejected; files and optional ZIP are prepared before the folder is published.
 pub fn write_package(doc: &Document, out_dir: &Path, opts: &FabOptions) -> Result<Vec<PathBuf>, OutputError> {
+    if std::fs::symlink_metadata(out_dir).is_ok() { return Err(OutputError::Invalid("Choose a new package folder; the destination already exists".into())); }
     let default = BoardSettings::default();
     let board = board_settings(doc).map_or(&default, |(_, b)| b);
     let project = &opts.gerber.project_name;
@@ -54,25 +55,19 @@ pub fn write_package(doc: &Document, out_dir: &Path, opts: &FabOptions) -> Resul
     let readme = readme(project, board, &files);
     files.push(("README.txt".into(), readme, String::new()));
 
-    std::fs::create_dir_all(out_dir)?;
-    let mut written = Vec::with_capacity(files.len() + 1);
-    for (name, content, _) in &files {
-        let path = out_dir.join(name);
-        std::fs::write(&path, content)?;
-        written.push(path);
-    }
+    let mut bundle: Vec<(PathBuf,Vec<u8>)> = Vec::with_capacity(files.len()+1);
     if opts.zip {
-        let path = out_dir.join(format!("{stem}_fab.zip"));
         let zip_err = |e: zip::result::ZipError| OutputError::Invalid(format!("zip: {e}"));
-        let mut z = zip::ZipWriter::new(std::fs::File::create(&path)?);
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        for (name, content, _) in &files {
-            z.start_file(name.as_str(), o).map_err(zip_err)?;
-            z.write_all(content.as_bytes())?;
-        }
-        z.finish().map_err(zip_err)?;
-        written.push(path);
+        for (name,content,_) in &files {z.start_file(name.as_str(),o).map_err(zip_err)?;z.write_all(content.as_bytes())?;}
+        bundle.push((PathBuf::from(format!("{stem}_fab.zip")),z.finish().map_err(zip_err)?.into_inner()));
     }
+    let zip=bundle.pop();
+    bundle.extend(files.into_iter().map(|(name,content,_)|(PathBuf::from(name),content.into_bytes())));
+    if let Some(zip)=zip {bundle.push(zip);}
+    let written=bundle.iter().map(|(path,_)|out_dir.join(path)).collect();
+    pcbplannercad_core::storage::create_bundle(out_dir,&bundle)?;
     Ok(written)
 }
 
@@ -157,6 +152,23 @@ mod tests {
         z.by_name("My_Board.GTL").unwrap().read_to_string(&mut content).unwrap();
         assert_eq!(content, gtl);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn existing_package_is_preserved_when_a_later_output_is_blocked() {
+        let doc=board_doc(vec![],&[]);let dir=temp_dir("existing");std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("board.GTL"),b"previous copper").unwrap();std::fs::create_dir(dir.join("README.txt")).unwrap();
+        assert!(write_package(&doc,&dir,&FabOptions::default()).is_err());
+        assert_eq!(std::fs::read(dir.join("board.GTL")).unwrap(),b"previous copper");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(),2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn existing_empty_folder_is_rejected_without_writes() {
+        let doc=board_doc(vec![],&[]);let dir=temp_dir("empty");std::fs::create_dir(&dir).unwrap();
+        assert!(write_package(&doc,&dir,&FabOptions::default()).is_err());assert_eq!(std::fs::read_dir(&dir).unwrap().count(),0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

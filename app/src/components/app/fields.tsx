@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -28,6 +28,7 @@ export function CommitInput({
 }) {
   const shown = format(value);
   const [text, setText] = useState(shown);
+  const cancelBlur=useRef(false);
   useEffect(() => setText(shown), [shown]);
   const commit = () => {
     const v = parse(text);
@@ -41,10 +42,12 @@ export function CommitInput({
       list={list}
       className={cn(mono && "font-mono", className)}
       onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
+      onBlur={()=>{if(cancelBlur.current){cancelBlur.current=false;return;}commit();}}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
         if (e.key === "Escape") {
+          cancelBlur.current=true;
+          e.preventDefault();e.stopPropagation();
           setText(format(value));
           (e.target as HTMLInputElement).blur();
         }

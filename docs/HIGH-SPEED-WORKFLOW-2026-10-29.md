@@ -1,6 +1,6 @@
 # Routing length feedback and project audit — 2026-10-29
 
-Native executable rebuilt at target/release/pCAD.exe. Rebuild locally after pulling these source changes.
+**Historical overnight baseline.** The later [2026-10-29 handoff](HANDOFF-2026-10-29.md) supersedes the import differences, routing/tuning behavior and test/probe counts below. The executable built for this baseline does not include the later local fixes; rebuild before native acceptance.
 
 ## Implemented
 

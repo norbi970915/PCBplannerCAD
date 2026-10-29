@@ -89,9 +89,9 @@ pub fn pcb_route(state: State<AppState>, id: String, req: router::RouteRequest) 
 }
 
 #[tauri::command(async)]
-pub fn pcb_route_pair(state: State<AppState>, id: String, req: router::RouteRequest, neg_net: String, gap: Coord) -> Res<(router::RouteResult, router::RouteResult)> {
+pub fn pcb_route_pair(state: State<AppState>, id: String, req: router::RouteRequest, neg_net: String, gap: Coord, neg_start: Option<Point>) -> Res<(router::RouteResult, router::RouteResult)> {
     let ws = lock(&state);
-    Ok(router::route_diff_pair(pcb_doc(&ws, &id)?, &req, &neg_net, gap))
+    Ok(router::route_diff_pair_from(pcb_doc(&ws, &id)?, &req, &neg_net, gap, neg_start))
 }
 
 #[tauri::command]
@@ -109,11 +109,10 @@ pub fn pcb_tune_preview(state: State<AppState>, id: String, req: router::TuneReq
 
 /// Replaces a track chain with a length-tuned meander chain.
 #[tauri::command]
-pub fn pcb_tune(state: State<AppState>, id: String, req: router::TuneRequest) -> Res<DocUpdate> {
+pub fn pcb_tune(state: State<AppState>, id: String, req: router::TuneRequest, expected: Option<Vec<pcbplannercad_core::pcb::Track>>) -> Res<DocUpdate> {
     let mut ws = lock(&state);
-    let tracks = router::tune_length(pcb_doc(&ws, &id)?, &req)?;
-    let add = tracks.into_iter().map(Item::Track).collect();
-    run(&mut ws, &id, Command::Change { delete: req.tracks.clone(), add })
+    let command = router::tune_length_command(pcb_doc(&ws, &id)?, &req, expected.as_deref())?;
+    run(&mut ws, &id, command)
 }
 
 #[tauri::command]
@@ -227,6 +226,11 @@ pub fn pcb_eco_plan(state: State<AppState>, id: String) -> Res<Vec<sync::EcoChan
 pub fn pcb_eco_apply(state: State<AppState>, id: String, selected: Vec<usize>) -> Res<DocUpdate> {
     let mut ws = lock(&state);
     let plan = ws.eco_plans.remove(&id).ok_or("run Update PCB again — the change list is out of date")?;
+    let compiled = compile_project(&ws).map_err(|e| format!("Cannot recheck the schematic: {e}"))?;
+    let current = { let doc = pcb_doc(&ws, &id)?; sync::plan(&compiled, doc, &resolver(&ws, doc)) };
+    if !plan.is_current(&compiled, pcb_doc(&ws, &id)?) || plan.changes != current.changes || plan.footprints != current.footprints {
+        return Err("Board, schematic or footprint library changed after review; run Update PCB again".into());
+    }
     let cmd = sync::apply(&plan, pcb_doc(&ws, &id)?, &selected);
     let d = ws.doc_mut(&id)?;
     for (key, fp) in plan.footprints.iter().cloned() {

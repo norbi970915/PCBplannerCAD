@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Popover as PopoverPrimitive } from "radix-ui"
@@ -20,8 +21,9 @@ function PopoverContent({
   sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+  const surface=useSurfaceWindow();
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal container={surface.document.body}>
       <PopoverPrimitive.Content
         data-slot="popover-content"
         align={align}

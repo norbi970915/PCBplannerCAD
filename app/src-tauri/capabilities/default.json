@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the main editor window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",
@@ -10,6 +12,7 @@
     "core:window:allow-destroy",
     "dialog:allow-open",
     "dialog:allow-save",
-    "dialog:allow-ask"
+    "dialog:allow-ask",
+    "core:window:allow-set-focus"
   ]
 }

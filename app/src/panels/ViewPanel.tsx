@@ -1,3 +1,4 @@
+import { ViewPresets } from './ViewPresets';
 import { Check } from '@/components/app/fields';
 import { Button } from '@/components/ui/button';
 import { Section } from '@/components/app/panel';
@@ -21,6 +22,7 @@ export function ViewPanel({ doc }: { doc: DocState }) {
     </label>
   );
   return <>
+    <ViewPresets key={doc.info.kind} doc={doc}/>
     {doc.info.kind === 'pcb' && <Section title="Selection filter">
       <SelectionFilter doc={doc} compact />
       <Button className="mt-2" variant="outline" size="sm" onClick={() => useEditor.getState().patchDoc(doc.info.id, { tool: 'select' })}>Select objects</Button>

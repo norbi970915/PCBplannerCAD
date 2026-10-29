@@ -110,6 +110,8 @@ pub fn compile(sheets: &[SheetRef]) -> Compiled {
         erc::sheet_checks(&sheets[i].path, c, &mut report);
     }
     hierarchy_checks(sheets, &conns, &insts, &mut report);
+    let aliases = super::bus::aliases(sheets, &mut report);
+    let buses: Vec<_> = sheets.iter().zip(&conns).map(|(sheet, conn)| super::bus::build(sheet.doc, conn, &aliases, &sheet.path, &mut report)).collect();
 
     // ----- Merge groups across instances -----
     let mut base = Vec::with_capacity(insts.len());
@@ -118,19 +120,43 @@ pub fn compile(sheets: &[SheetRef]) -> Compiled {
         base.push(total);
         total += conns[inst.sheet].group_count;
     }
+    let mut bus_base = Vec::with_capacity(insts.len());
+    for inst in &insts { bus_base.push(total); total += buses[inst.sheet].signals.len(); }
     let mut uf = UnionFind::new(total);
     let mut keys: HashMap<String, usize> = HashMap::new();
     for (i, inst) in insts.iter().enumerate() {
         let c = &conns[inst.sheet];
         for e in 0..c.elems.len() {
+            if buses[inst.sheet].ports.contains(&e) { continue; }
             if let Some(k) = c.name_key(e, i) {
                 join_key(&mut uf, &mut keys, k, base[i] + c.group[e]);
+                if let ElemKind::Label {scope: LabelScope::Hierarchical,name} = c.elems[e].kind {
+                    join_key(&mut uf, &mut keys, format!("l\0{i}\0{name}"), base[i] + c.group[e]);
+                }
+            }
+        }
+        for (signal_index, signal) in buses[inst.sheet].signals.iter().enumerate() {
+            let node = bus_base[i] + signal_index;
+            join_key(&mut uf, &mut keys, format!("bus\0{i}\0{}\0{}", signal.group, signal.key), node);
+            if let Some(scope) = signal.scope {
+                // Inside the sheet, scalar member labels use the expanded local name.
+                join_key(&mut uf, &mut keys, format!("l\0{i}\0{}", signal.name), node);
+                match scope {
+                    LabelScope::Global => join_key(&mut uf, &mut keys, super::connectivity::global_key(&signal.name), node),
+                    LabelScope::Hierarchical => join_key(&mut uf, &mut keys, hier_key(i, &signal.name), node),
+                    LabelScope::Local => {},
+                }
             }
         }
         if let (Some(p), Some(si)) = (inst.parent, inst.sheet_info) {
             let pc = &conns[insts[p].sheet];
             let info = &pc.sheets[si];
             for (k, &e) in info.entries.iter().enumerate() {
+                let signals: Vec<_> = buses[insts[p].sheet].signals.iter().enumerate().filter(|(_, signal)| signal.element == e).collect();
+                if !signals.is_empty() {
+                    for (index, signal) in signals { join_key(&mut uf, &mut keys, hier_key(i, &signal.name), bus_base[p] + index); }
+                    continue;
+                }
                 let name = info.sheet.entries[k].name.trim();
                 if !name.is_empty() {
                     join_key(&mut uf, &mut keys, hier_key(i, name), base[p] + pc.group[e]);
@@ -145,7 +171,7 @@ pub fn compile(sheets: &[SheetRef]) -> Compiled {
     for (i, inst) in insts.iter().enumerate() {
         let c = &conns[inst.sheet];
         for (e, el) in c.elems.iter().enumerate() {
-            if el.isolated {
+            if el.isolated || buses[inst.sheet].ports.contains(&e) {
                 continue;
             }
             let root = uf.find(base[i] + c.group[e]);
@@ -193,6 +219,23 @@ pub fn compile(sheets: &[SheetRef]) -> Compiled {
                 }
                 ElemKind::SheetEntry => acc.has_entry = true,
                 ElemKind::NoConnect => {}
+            }
+        }
+    }
+
+    // Bus labels contribute names to their resolved scalar nets, never a short between members.
+    for (i, inst) in insts.iter().enumerate() {
+        for (index, signal) in buses[inst.sheet].signals.iter().enumerate() {
+            let Some(&ai) = by_root.get(&uf.find(bus_base[i] + index)) else { continue };
+            let acc = &mut accs[ai];
+            let el = &conns[inst.sheet].elems[signal.element];
+            match signal.scope {
+                Some(LabelScope::Global) => {
+                    acc.global.insert(signal.name.clone());
+                    acc.global_sites.entry(signal.name.clone()).or_insert((inst.sheet, el.item, el.a));
+                },
+                Some(scope) => acc.local.push((inst.depth, if scope == LabelScope::Local {0} else {1}, scoped_name(&inst.path, &signal.name))),
+                None => {},
             }
         }
     }

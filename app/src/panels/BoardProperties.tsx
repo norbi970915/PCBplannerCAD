@@ -213,6 +213,9 @@ function FootprintEditor({ doc, fp, put, units }: { doc: DocState; fp: ItemOf<"f
         <Row label="Locked">
           <Check value={fp.locked} onChange={(locked) => put({ ...fp, locked })} />
         </Row>
+        <Row label="Keep if absent from schematic">
+          <Check value={fp.boardOnly ?? false} onChange={(boardOnly) => put({ ...fp, boardOnly })} />
+        </Row>
         <Row label="Not fitted">
           <Check
             value={fp.parameters.DNP === "1"}

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use super::*;
 use crate::document::{DocKind, Document, ItemId};
 use crate::item::{
@@ -905,4 +906,105 @@ fn compiled_serializes_camel_case() {
     assert!(v["violations"][0]["code"] == "unconnected-pin");
     assert!(v["parts"][0]["libRef"] == "Lib/R");
     assert!(v["instances"][0]["sheetItem"].is_null());
+}
+
+// Bus members are logical scalar names; the bus drawing must never short P to N.
+fn bus_child(first: &str, second: &str, port: &str, positive: &str, negative: &str) -> Document {
+    let mut child=Sch::default();
+    child.part(&resistor(),first,p(0,0));child.part(&resistor(),second,p(0,-4));
+    child.label(p(1,0),positive,LabelScope::Local);
+    child.label(p(1,-4),negative,LabelScope::Local);
+    child.add(Item::Bus(Bus{a:p(10,5),b:p(10,-5)}));
+    child.label(p(10,5),port,LabelScope::Hierarchical);
+    child.doc()
+}
+
+#[test]
+fn hierarchical_group_bus_aliases_connect_members_and_survive_reopen() {
+    let mut top=Sch::default();
+    top.sheet(p(20,10),"Channel","child.arsch",&[("PORT{PAIR}",SheetSide::Left,2)]);
+    top.add(Item::Bus(Bus{a:p(10,8),b:p(20,8)}));
+    top.label(p(10,8),"HOST{PAIR}",LabelScope::Local);
+    let top=top.doc().with_bus_aliases(BTreeMap::from([("PAIR".into(),vec!["P".into(),"N".into()])]));
+    let child=bus_child("R1","R2","PORT{PAIR}","PORT.P","PORT.N");
+    let text=crate::io::document_to_string(&top).unwrap();
+    let reopened=crate::io::document_from_str(DocKind::Schematic,&text).unwrap();
+    assert_eq!(reopened.bus_aliases(),top.bus_aliases());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"],2);
+    let c=compile(&[SheetRef::new("top.arsch",&reopened),SheetRef::new("child.arsch",&child)]);
+    assert_eq!(c.net_of("R1","2").unwrap().name,"HOST.P");
+    assert_eq!(c.net_of("R2","2").unwrap().name,"HOST.N");
+    assert!(!same_net(&c,("R1","2"),("R2","2")));
+    assert!(!c.violations.iter().any(|v|v.code.starts_with("bus-")),"{:?}",c.violations);
+}
+
+#[test]
+fn hierarchical_vector_buses_map_by_index_and_reverse_ranges() {
+    let mut top=Sch::default();
+    top.sheet(p(20,10),"Channel","child.arsch",&[("DATA[1..0]",SheetSide::Left,2)]);
+    top.add(Item::Bus(Bus{a:p(10,8),b:p(20,8)}));
+    top.label(p(10,8),"ADDRESS[0..1]",LabelScope::Local);
+    let top=top.doc();let child=bus_child("R1","R2","DATA[1..0]","DATA0","DATA1");
+    let c=compile(&[SheetRef::new("top.arsch",&top),SheetRef::new("child.arsch",&child)]);
+    assert_eq!(c.net_of("R1","2").unwrap().name,"ADDRESS0");
+    assert_eq!(c.net_of("R2","2").unwrap().name,"ADDRESS1");
+    assert!(!same_net(&c,("R1","2"),("R2","2")));
+}
+
+#[test]
+fn independent_bus_components_stay_separate_and_a_junction_joins_matching_members() {
+    for join in [false,true] {
+        let mut top=Sch::default();
+        top.sheet(p(20,10),"First","first.arsch",&[("PORT{P N}",SheetSide::Left,2)]);
+        top.sheet(p(40,2),"Second","second.arsch",&[("PORT{P N}",SheetSide::Left,2)]);
+        top.add(Item::Bus(Bus{a:p(10,8),b:p(50,8)}));
+        top.add(Item::Bus(Bus{a:p(40,0),b:p(40,20)}));
+        if join {top.junction(p(40,8));}
+        let top=top.doc();
+        let first=bus_child("R1","R2","PORT{P N}","PORT.P","PORT.N");
+        let second=bus_child("R3","R4","PORT{P N}","PORT.P","PORT.N");
+        let c=compile(&[SheetRef::new("top.arsch",&top),SheetRef::new("first.arsch",&first),SheetRef::new("second.arsch",&second)]);
+        assert_eq!(same_net(&c,("R1","2"),("R3","2")),join);
+        assert!(!same_net(&c,("R1","2"),("R4","2")));
+        assert!(!same_net(&c,("R1","2"),("R2","2")));
+    }
+}
+
+#[test]
+fn conflicting_aliases_report_an_error_instead_of_silently_picking_a_definition() {
+    let first=Sch::default().doc().with_bus_aliases(BTreeMap::from([("PAIR".into(),vec!["P".into(),"N".into()])]));
+    let second=Sch::default().doc().with_bus_aliases(BTreeMap::from([("PAIR".into(),vec!["P".into(),"X".into()])]));
+    let c=compile(&[SheetRef::new("a.arsch",&first),SheetRef::new("b.arsch",&second)]);
+    assert!(c.violations.iter().any(|v|v.code=="bus-alias-conflict"&&v.severity==Severity::Error));
+}
+
+#[test]
+fn local_and_hierarchical_labels_with_the_same_scalar_name_join_inside_a_sheet() {
+    let mut s=Sch::default();
+    s.part(&resistor(),"R1",p(0,0));s.part(&resistor(),"R2",p(0,-4));
+    s.label(p(1,0),"SCL",LabelScope::Local);
+    s.label(p(1,-4),"SCL",LabelScope::Hierarchical);
+    let c=compile1(&s.doc());
+    assert!(same_net(&c,("R1","2"),("R2","2")));
+    assert_eq!(c.net_of("R1","2").unwrap().name,"SCL");
+}
+
+#[test]
+fn bus_alias_member_order_is_irrelevant_and_disjoint_ports_are_diagnosed() {
+    let mut top=Sch::default();
+    top.sheet(p(20,10),"Channel","child.arsch",&[("PORT{PAIR}",SheetSide::Left,2)]);
+    top.add(Item::Bus(Bus{a:p(10,8),b:p(20,8)}));
+    top.label(p(10,8),"HOST{PAIR}",LabelScope::Local);
+    let top=top.doc().with_bus_aliases(BTreeMap::from([("PAIR".into(),vec!["P".into(),"N".into()])]));
+    let child=bus_child("R1","R2","PORT{PAIR}","PORT.P","PORT.N").with_bus_aliases(BTreeMap::from([("PAIR".into(),vec!["N".into(),"P".into()])]));
+    let c=compile(&[SheetRef::new("top.arsch",&top),SheetRef::new("child.arsch",&child)]);
+    assert!(!c.violations.iter().any(|v|v.code=="bus-alias-conflict"));
+    assert_eq!(c.net_of("R1","2").unwrap().name,"HOST.P");
+    let mut invalid=Sch::default();
+    invalid.sheet(p(20,10),"Channel","child.arsch",&[("PORT{P N}",SheetSide::Left,2)]);
+    invalid.add(Item::Bus(Bus{a:p(10,8),b:p(20,8)}));
+    invalid.label(p(10,8),"OTHER{X Y}",LabelScope::Local);
+    let invalid=invalid.doc();let child=bus_child("R1","R2","PORT{P N}","PORT.P","PORT.N");
+    let c=compile(&[SheetRef::new("top.arsch",&invalid),SheetRef::new("child.arsch",&child)]);
+    assert!(c.violations.iter().any(|v|v.code=="bus-member-mismatch"));
 }

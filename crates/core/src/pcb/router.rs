@@ -229,13 +229,24 @@ fn right(d: V, k: f64) -> V {
 /// corridor, so the tracks stay coupled through every bend (the inner track
 /// is shorter). Shoved tracks are reported in the positive result.
 pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: Coord) -> (RouteResult, RouteResult) {
+    route_diff_pair_from(doc,pos,neg_net,gap,None)
+}
+
+/// Continue a pair from both accepted endpoints. The partner's old endpoint
+/// must not be recomputed from a different outgoing direction.
+pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: Coord, neg_start: Option<Point>) -> (RouteResult, RouteResult) {
+    let fail = |msg: &str| {
+        let r = RouteResult { tracks: vec![], reached: false, moved: vec![], blocked_at: Some(pos.start), message: msg.to_string() };
+        (r.clone(), r)
+    };
+    if pos.width<=0 || gap<=0 || pos.net.is_empty() || neg_net.is_empty() || pos.net==neg_net { return fail("Pair routing needs two different nets, positive width and a positive gap"); }
     let w = pos.width;
-    let c = (w + gap) as f64;
+    let c = w as f64 + gap as f64;
     let miter = match pos.corner {
         CornerStyle::Diagonal45 | CornerStyle::Arc45 => c * (1.0 / (22.5f64).to_radians().cos() - 1.0),
         CornerStyle::Orthogonal90 | CornerStyle::Any => c * (std::f64::consts::SQRT_2 - 1.0),
     };
-    let corridor = (2 * w + gap) as f64 + miter + 4.0;
+    let corridor = 2.0 * w as f64 + gap as f64 + miter + 4.0;
     let ignored = routing_ignored(doc, &pos.ignore);
     let mut world = World::build(doc, pos.layer, &ignored);
     let pnet = world.net_id(&pos.net);
@@ -244,18 +255,16 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
     let probe = Probe { hw: corridor / 2.0, net: pnet, excl: &excl };
 
     let direct = corner_path(pos.start, pos.end, pos.corner, pos.posture_flip);
-    let fail = |msg: &str| {
-        let r = RouteResult { tracks: vec![], reached: false, moved: vec![], blocked_at: Some(pos.start), message: msg.to_string() };
-        (r.clone(), r)
-    };
     if direct.len() < 2 {
         return fail("start and end coincide");
     }
     let (mut d0, mut d1) = (unit_dir(direct[0], direct[1]), unit_dir(direct[direct.len() - 2], direct[direct.len() - 1]));
+    let side = if neg_start.is_some_and(|at| (V::of(at)-V::of(pos.start)).dot(right(d0,1.0))<0.0) {-1.0} else {1.0};
     let mut out = None;
+    let mut corridor_start=pos.start;
     for _ in 0..3 {
-        let sc = (V::of(pos.start) + right(d0, c / 2.0)).round();
-        let ec = (V::of(pos.end) + right(d1, c / 2.0)).round();
+        let sc = (V::of(pos.start) + right(d0, side*c / 2.0)).round();corridor_start=sc;
+        let ec = (V::of(pos.end) + right(d1, side*c / 2.0)).round();
         world.removed.clear();
         world.added.clear();
         let o = route_in(&mut world, &probe, sc, ec, pos.mode, pos.corner, pos.posture_flip);
@@ -275,11 +284,19 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
     }
     let o = out.expect("at least one attempt");
     if o.path.len() < 2 {
-        return fail(if o.message.is_empty() { "no room for the pair" } else { &o.message });
+        let mut message=if o.message.is_empty(){"no room for the pair".to_string()}else{o.message.clone()};
+        if let Some(hit)=world.seg_collisions(V::of(corridor_start),V::of(corridor_start),&probe).first().copied() {
+            let detail=match hit {
+                world::Hit::Ob(index)=>{let ob=&world.obstacles[index as usize];format!("{}{} on net '{}'",ob.kind.name(),ob.id.map(|id|format!(" #{}",id.0)).unwrap_or_default(),world.net_name(ob.net))},
+                _=>world.hit_kind(hit).name().to_string(),
+            };
+            message=format!("Pair corridor start blocked by {detail}; choose another start or direction");
+        }
+        return fail(&message);
     }
     let center = simplify(&o.path);
-    let mut ppath = offset_polyline(&center, c / 2.0);
-    let mut npath = offset_polyline(&center, -c / 2.0);
+    let mut ppath = offset_polyline(&center, side*c / 2.0);
+    let mut npath = offset_polyline(&center, -side*c / 2.0);
     // Snap / connect the positive track to the requested endpoints.
     let fix = |path: &mut Vec<Point>, at_start: bool, want: Point| {
         let i = if at_start { 0 } else { path.len() - 1 };
@@ -296,17 +313,31 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
     if o.reached {
         fix(&mut ppath, false, pos.end);
     }
+    if let Some(anchor)=neg_start { if anchor!=npath[0] {
+        let previous=V::new(-(anchor.y-pos.start.y) as f64,(anchor.x-pos.start.x) as f64).norm()*side;
+        let next=unit_dir(npath[0],npath[1]);let cross=previous.cross(next);
+        if cross.abs()>1e-6 {
+            let distance=(V::of(npath[0])-V::of(anchor)).cross(next)/cross;
+            let joint=V::of(anchor)+previous*distance;
+            if distance < -4.0 || (V::of(npath[0])-joint).dot(next) < -4.0 || (joint-V::of(anchor)).len()>8.0*c {
+                return fail("Pair turn needs backtracking; change direction or undo the previous step");
+            }
+            npath.insert(0,joint.round());
+        }
+        npath.insert(0,anchor);
+    }}
     let ppath = simplify(&ppath);
     npath = simplify(&npath);
     // Verify both tracks against the (possibly shoved) world.
     let tprobe = Probe { hw: w as f64 / 2.0, net: pnet, excl: &excl };
     let nprobe = Probe { hw: w as f64 / 2.0, net: nnet, excl: &excl };
     let clean = world.path_clear(&ppath, &tprobe) && world.path_clear(&npath, &nprobe);
+    let required_gap=if pos.mode==RouteMode::Ignore {gap}else{gap.max(world.rules.clearance(&Obj::new(ObjKind::Track,&pos.net,Some(pos.layer)),&Obj::new(ObjKind::Track,neg_net,Some(pos.layer))))};
+    let closest=ppath.windows(2).flat_map(|p|npath.windows(2).map(move|n|geom::seg_seg_dist(V::of(p[0]),V::of(p[1]),V::of(n[0]),V::of(n[1])))).fold(f64::INFINITY,f64::min)-w as f64;
+    if closest+4.0 < required_gap as f64 { return fail(&format!("Pair gap is {:.4} mm; {:.4} mm required. Change direction or review the pair gap/rules",closest/1e6,required_gap as f64/1e6)); }
+    if !clean && pos.mode!=RouteMode::Ignore { return fail("Pair tracks violate clearance; no partial pair was applied"); }
     let reached = o.reached && (clean || pos.mode == RouteMode::Ignore);
-    let mut message = o.message.clone();
-    if o.reached && !reached {
-        message = "pair tracks violate clearance at a bend".into();
-    }
+    let message = o.message.clone();
     let blocked_at = if reached { None } else { o.blocked_at.or(ppath.last().copied()) };
     let p = RouteResult { tracks: tracks_of(&ppath, w, pos.layer, &pos.net), reached, moved: moved_items(o.moved), blocked_at, message: message.clone() };
     let n = RouteResult { tracks: tracks_of(&npath, w, pos.layer, neg_net), reached, moved: vec![], blocked_at, message };
@@ -317,6 +348,22 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
 /// within 0.5 % of `target_length`.
 pub fn tune_length(doc: &Document, req: &TuneRequest) -> Result<Vec<Track>, String> {
     tune::tune(doc, req)
+}
+
+/// Recompute under the caller's document lock and reject a changed reviewed preview.
+pub fn tune_length_checked(doc: &Document, req: &TuneRequest, expected: Option<&[Track]>) -> Result<Vec<Track>,String> {
+    let plan=tune_length(doc,req)?;
+    if expected.is_some_and(|shown|shown!=plan) {return Err("Tuning result changed; review the new preview before applying".into());}
+    Ok(plan)
+}
+
+/// Build one transaction; an already-in-range chain retains its IDs and history.
+pub fn tune_length_command(doc: &Document, req: &TuneRequest, expected: Option<&[Track]>) -> Result<crate::Command,String> {
+    let plan=tune_length_checked(doc,req,expected)?;
+    let key=|track:&Track| {let a=(track.a.x,track.a.y);let b=(track.b.x,track.b.y);(track.layer.0,track.net.clone(),track.width,track.locked,a.min(b),a.max(b))};
+    let original:std::collections::BTreeSet<_>=req.tracks.iter().filter_map(|id|match doc.get(*id){Some(Item::Track(track))=>Some(key(track)),_=>None}).collect();
+    let unchanged=plan.len()==req.tracks.len() && plan.iter().map(key).collect::<std::collections::BTreeSet<_>>()==original;
+    Ok(if unchanged {crate::Command::Change{delete:vec![],add:vec![]}} else {crate::Command::Route{delete:req.tracks.clone(),add:plan.into_iter().map(Item::Track).collect(),replace:vec![]}})
 }
 
 /// Routed copper length of a net: tracks plus arc tracks (vias count 0).

@@ -480,6 +480,7 @@ mod tests {
 
     fn part(designator: &str, x: f64, y: f64, net: &str) -> Item {
         Item::Footprint(PlacedFootprint {
+            board_only: false,
             designator: designator.into(),
             value: String::new(),
             footprint: "L/P".into(),

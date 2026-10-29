@@ -60,6 +60,7 @@ export function routeEnd(tracks:readonly TrackItem[],net:string):Point|undefined
 }
 
 interface Session {
+  negativeFrom?: Point;
   net: string;
   layer: number;
   from: Point;
@@ -102,8 +103,8 @@ export function routeTool(pair = false): Tool {
   let viaSession: Session | null = null;
   let closeLayerPicker:(()=>void)|null=null;
   let previewSettled: Promise<void> = Promise.resolve();
-  const history: { from:Point; layer:number; items:unknown }[] = [];
-  let lastPreview: { session: Session; items: unknown; footprints: unknown; key: string } | null = null;
+  const history: { from:Point; negativeFrom?:Point; layer:number; items:unknown }[] = [];
+  let lastPreview: { session: Session; items: unknown; footprints: unknown; epoch: number; key: string } | null = null;
 
   const requestPreview = (env: ToolEnv, to: Point) => {
     if (!s) return;
@@ -119,15 +120,16 @@ export function routeTool(pair = false): Tool {
       ignore: [],
       postureFlip: flip,
     };
-    const key = JSON.stringify(req);
+    const key = JSON.stringify({req, negativeFrom: session.negativeFrom ?? null});
     const document = env.doc();
-    if (lastPreview?.session === session && lastPreview.items === document.items && lastPreview.footprints === document.footprints && lastPreview.key === key) {
+    const sourceItems=document.items, sourceFootprints=document.footprints, sourceEpoch=document.epoch;
+    if (lastPreview?.session === session && lastPreview.items === document.items && lastPreview.footprints === sourceFootprints && lastPreview.epoch === sourceEpoch && lastPreview.key === key) {
       // Returning to the in-flight endpoint also cancels an obsolete queued endpoint.
       pending = null;
       return;
     }
     if (inflight) { pending = to; return; }
-    lastPreview = { session, items: document.items, footprints: document.footprints, key };
+    lastPreview = { session, items: sourceItems, footprints: sourceFootprints, epoch: sourceEpoch, key };
     inflight = true;
     env.redraw();
     const my = ++seq;
@@ -140,11 +142,15 @@ export function routeTool(pair = false): Tool {
         requestPreview(env, p);
       }
     };
-    const run = pair ? api.pcbRoutePair(env.docId, req, negativeOf(env, session.net), diffGap(env, session.net)).then(([pos, neg]) => ({ ...pos, reached:pos.reached&&neg.reached, blockedAt:pos.blockedAt??neg.blockedAt, message:(!pos.reached?pos.message:neg.message)||pos.message, tracks: [...pos.tracks, ...neg.tracks] })) : api.pcbRoute(env.docId, req);
+    const run = pair ? api.pcbRoutePair(env.docId, req, negativeOf(env, session.net), diffGap(env, session.net), session.negativeFrom ?? null).then(([pos, neg]) => {
+      if(pos.reached!==neg.reached || !!pos.tracks.length!==!!neg.tracks.length) return {...pos,reached:false,blockedAt:pos.blockedAt??neg.blockedAt??session.from,message:"Incomplete pair plan; move the cursor to retry",tracks:[],moved:[]};
+      return {...pos,reached:pos.reached&&neg.reached,blockedAt:pos.blockedAt??neg.blockedAt,message:(!pos.reached?pos.message:neg.message)||pos.message,tracks:[...pos.tracks,...neg.tracks],moved:pos.tracks.length?pos.moved:[]};
+    }) : api.pcbRoute(env.docId, req);
     previewSettled = run
       .then((r) => {
         if (my !== seq || s !== session) return;
-        if(env.doc().items !== document.items || env.doc().footprints !== document.footprints){lastPreview=null;pending=env.cursor();return;}
+        if(env.doc().items!==sourceItems || env.doc().footprints!==sourceFootprints || env.doc().epoch!==sourceEpoch
+          || routeModeOf(useEditor.getState())!==req.mode || useEditor.getState().placement.cornerStyle!==req.corner || trackWidth(env,session.net)!==req.width || flip!==req.postureFlip){lastPreview=null;pending=env.cursor();return;}
         const hadMoved = session.moved.length > 0;
         session.preview = r.tracks;
         session.moved = r.moved;
@@ -210,7 +216,8 @@ export function routeTool(pair = false): Tool {
         }
         return false;
       }
-      history.push({ from:{...session.from}, layer:session.layer, items:env.doc().items });
+      history.push({ from:{...session.from}, negativeFrom:session.negativeFrom, layer:session.layer, items:env.doc().items });
+      if(pair)session.negativeFrom=routeEnd(tracks,negativeOf(env,session.net));
       session.from = routeEnd(tracks, session.net) ?? session.from;
       session.preview = [];
       session.moved = [];
@@ -338,7 +345,7 @@ export function routeTool(pair = false): Tool {
           if (!ok || s!==session) return;
           history.pop();
           const last=history.at(-1); if(last)last.items=env.doc().items;
-          session.from=previous.from;session.layer=previous.layer;
+          session.from=previous.from;session.negativeFrom=previous.negativeFrom;session.layer=previous.layer;
           session.preview=[];session.moved=[];session.message="";session.blockedAt=null;session.reached=true;
           useEditor.getState().patchDoc(env.docId,{activeLayer:session.layer});
           showNet(env,session.net);requestPreview(env,env.cursor());

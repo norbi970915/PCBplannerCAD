@@ -19,6 +19,7 @@ pub mod pcb;
 pub mod project;
 pub mod schematic;
 pub mod session;
+pub mod storage;
 pub mod units;
 
 pub use command::Command;
@@ -29,3 +30,5 @@ pub use library::{CachedPart, Component, Footprint, Library, Symbol};
 pub use project::Project;
 pub use session::{Delta, Session};
 pub use units::{Coord, Point};
+
+pub mod recovery;

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {createPortal} from "react-dom";
 import { cn } from "@/lib/utils";
 import { activeDoc, useEditor } from "../core/store";
 import { lastPointer, runFromMenu, sequenceEntries, setPending } from "./shortcuts";
@@ -28,6 +29,7 @@ export function KeyMenu() {
   const [index, setIndex] = useState(0);
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const ref = useRef<HTMLDivElement>(null);
+  const surface=lastPointer.window??window;
 
   // Open at the pointer, kept inside the window.
   useLayoutEffect(() => {
@@ -37,8 +39,8 @@ export function KeyMenu() {
     const w = el?.offsetWidth ?? 260;
     const h = el?.offsetHeight ?? 300;
     setPos({
-      x: Math.max(4, Math.min(lastPointer.x + 4, window.innerWidth - w - 4)),
-      y: Math.max(4, Math.min(lastPointer.y + 4, window.innerHeight - h - 4)),
+      x: Math.max(4, Math.min(lastPointer.x + 4, surface.innerWidth - w - 4)),
+      y: Math.max(4, Math.min(lastPointer.y + 4, surface.innerHeight - h - 4)),
     });
   }, [prefix, entries]);
 
@@ -70,17 +72,17 @@ export function KeyMenu() {
       e.preventDefault();
       setPending(null);
     };
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("pointerdown", onDown, true);
+    surface.addEventListener("keydown", onKey, true);
+    surface.addEventListener("pointerdown", onDown, true);
     return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("pointerdown", onDown, true);
+      surface.removeEventListener("keydown", onKey, true);
+      surface.removeEventListener("pointerdown", onDown, true);
     };
   }, [prefix, entries, index]);
 
   if (!prefix) return null;
   const title = TITLES[prefix] ?? prefix;
-  return (
+  return createPortal(
     <div
       ref={ref}
       role="menu"
@@ -111,6 +113,6 @@ export function KeyMenu() {
         </button>
       ))}
       <div className="mt-1 border-t border-line px-2.5 pt-1 text-[10px] text-faint">Press a key · ↑↓ Enter · Esc closes</div>
-    </div>
+    </div>, surface.document.body
   );
 }

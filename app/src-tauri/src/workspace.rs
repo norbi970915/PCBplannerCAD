@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use pcbplannercad_core::{DocKind, Document, Library, Project, Session, io};
 use serde::Serialize;
+use pcbplannercad_core::storage::{self, FileRevision};
 
 pub const BUILTIN_LIB: &str = "builtin:basic";
 
@@ -22,6 +23,7 @@ pub struct OpenDoc {
     pub kind: DocKind,
     pub origin: Origin,
     pub session: Session,
+    pub revision: Option<FileRevision>,
 }
 
 pub struct OpenLib {
@@ -29,9 +31,11 @@ pub struct OpenLib {
     pub lib: Library,
     pub dirty: bool,
     pub readonly: bool,
+    pub revision: Option<FileRevision>,
 }
 
 pub struct OpenProject {
+    pub revision: Option<FileRevision>,
     pub path: PathBuf,
     pub project: Project,
 }
@@ -53,6 +57,8 @@ pub struct Workspace {
     pub project: Option<OpenProject>,
     /// Pending schematic → board change orders, per board document.
     pub eco_plans: BTreeMap<String, pcbplannercad_core::pcb::sync::EcoPlan>,
+    pub pending_import: Option<(String, pcbplannercad_import::wizard::Prepared)>,
+    pub import_generation: u64,
     next_id: u64,
 }
 
@@ -132,7 +138,7 @@ impl Workspace {
 
     pub fn add_doc(&mut self, kind: DocKind, origin: Origin, doc: Document) -> String {
         let id = self.alloc_id("d");
-        self.docs.insert(id.clone(), OpenDoc { kind, origin, session: Session::with_document(doc) });
+        self.docs.insert(id.clone(), OpenDoc { kind, origin, session: Session::with_document(doc), revision:None });
         id
     }
 
@@ -236,10 +242,57 @@ impl Workspace {
         ids
     }
 
+    fn check_save_target(&self, path: &Path, document: Option<&str>, library: Option<&str>) -> Result<(), String> {
+        if self.docs.iter().any(|(id,d)|Some(id.as_str())!=document && matches!(&d.origin, Origin::File(Some(p)) if same_path(p,path))) {
+            return Err("That file is already open in another document; save to a different path".into());
+        }
+        if self.libs.iter().any(|(id,l)|Some(id.as_str())!=library && l.path.as_deref().is_some_and(|p|same_path(p,path))) {
+            return Err("That file is already open in another library; save to a different path".into());
+        }
+        if self.project.as_ref().is_some_and(|p|same_path(&p.path,path)) {
+            return Err("That file is the open project; save to a different path".into());
+        }
+        Ok(())
+    }
+
+    pub fn ensure_export_target(&self,path:&Path)->Result<(),String>{self.check_save_target(path,None,None)}
+
+    /// Exported files must never replace an open design, library or project.
+    pub fn write_export_file(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        self.ensure_export_target(path)?;
+        pcbplannercad_core::storage::atomic_write(path,bytes).map_err(|e|format!("cannot write {}: {e}",path.display()))
+    }
+
+    /// Copies live content without changing origins, project links, dirty state or Undo.
+    pub fn save_doc_copy(&self, id: &str, path: &Path) -> Result<(), String> {
+        self.ensure_export_target(path)?;
+        let d = self.doc(id)?;
+        let bytes = match &d.origin {
+            Origin::File(_) => {
+                io::document_to_string(d.session.document()).map_err(|e| e.to_string())?
+            }
+            Origin::Symbol { lib, .. } | Origin::Footprint { lib, .. } => {
+                io::library_to_string(&self.lib(lib)?.lib)
+            }
+        };
+        storage::atomic_write_if_unchanged(path, bytes, None)
+            .map_err(|e| format!("Cannot save copy {}: {e}", path.display()))
+    }
+    fn doc_revision_for(&self, id: &str, path: &Path) -> Result<Option<FileRevision>, String> {
+        self.check_save_target(path, Some(id), None)?;
+        let d = self.doc(id)?;
+        Ok(match &d.origin {
+            Origin::File(Some(current)) if same_path(current, path) => d.revision,
+            _ => None,
+        })
+    }
     pub fn save_doc_file(&mut self, id: &str, path: &Path) -> Result<(), String> {
+        let expected = self.doc_revision_for(id, path)?;
         let d = self.doc_mut(id)?;
         let text = io::document_to_string(d.session.document()).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        storage::atomic_write_if_unchanged(path, &text, expected)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        d.revision = Some(FileRevision::from_bytes(text.as_bytes()));
         d.session.mark_saved();
         d.origin = Origin::File(Some(path.to_path_buf()));
         Ok(())
@@ -265,7 +318,7 @@ impl Workspace {
 
     pub fn add_lib(&mut self, lib: Library, path: Option<PathBuf>, dirty: bool) -> String {
         let id = self.alloc_id("lib");
-        self.libs.insert(id.clone(), OpenLib { path, lib, dirty, readonly: false });
+        self.libs.insert(id.clone(), OpenLib { path, lib, dirty, readonly: false, revision:None });
         id
     }
 
@@ -279,13 +332,20 @@ impl Workspace {
         }
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let lib = io::library_from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(self.add_lib(lib, Some(path.to_path_buf()), false))
+        let id=self.add_lib(lib, Some(path.to_path_buf()), false);
+        self.lib_mut(&id)?.revision=Some(FileRevision::from_bytes(text.as_bytes()));
+        Ok(id)
     }
 
     pub fn save_lib(&mut self, id: &str, path: Option<PathBuf>) -> Result<(), String> {
+        let current = self.lib(id)?;
+        let target = path.or_else(|| current.path.clone()).ok_or("library has no file yet")?;
+        self.check_save_target(&target,None,Some(id))?;
+        let expected=current.path.as_deref().filter(|p|same_path(p,&target)).and(current.revision);
         let l = self.lib_mut(id)?;
-        let target = path.or_else(|| l.path.clone()).ok_or("library has no file yet")?;
-        std::fs::write(&target, io::library_to_string(&l.lib)).map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+        let text=io::library_to_string(&l.lib);
+        storage::atomic_write_if_unchanged(&target,&text,expected).map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+        l.revision=Some(FileRevision::from_bytes(text.as_bytes()));
         l.path = Some(target);
         l.dirty = false;
         l.readonly = false;
@@ -336,9 +396,78 @@ impl Workspace {
         self.project.as_ref().ok_or_else(|| "no project is open".to_string())
     }
 
-    pub fn save_project_file(&self) -> Result<(), String> {
+    /// History requests are bound to the project the user reviewed, not whichever
+    /// project happens to be active when an asynchronous request reaches native code.
+    pub fn project_at(&self, expected: &Path) -> Result<&OpenProject, String> {
+        let project=self.project()?;
+        if !same_path(&project.path,expected) { return Err("Project changed; reopen Project revisions and try again".into()); }
+        Ok(project)
+    }
+
+    /// Publish metadata only after the complete new file has been saved.
+    pub fn edit_project(&mut self, edit: impl FnOnce(&mut Project)) -> Result<(), String> {
         let p = self.project()?;
-        std::fs::write(&p.path, io::project_to_string(&p.project)).map_err(|e| format!("cannot write {}: {e}", p.path.display()))
+        let mut next = p.project.clone();
+        edit(&mut next);
+        let text = io::project_to_string(&next);
+        storage::atomic_write_if_unchanged(&p.path, &text, p.revision)
+            .map_err(|e| format!("Cannot save project: {e}"))?;
+        let p = self.project.as_mut().unwrap();
+        p.revision = Some(FileRevision::from_bytes(text.as_bytes()));
+        p.project = next;
+        Ok(())
+    }
+    pub fn ensure_project_revision(&self) -> Result<(), String> {
+        let p = self.project()?;
+        storage::verify_revision(&p.path, p.revision)
+            .map_err(|e| format!("Cannot save project {}: {e}", p.path.display()))
+    }
+    pub fn save_project_file(&mut self) -> Result<(), String> {
+        self.edit_project(|_| {})
+    }
+    /// Catch known conflicts before writing any member. Individual publication is
+    /// still guarded; I/O errors or later concurrent edits can leave a partial Save All.
+    pub fn save_all_files(&mut self) -> Result<Vec<DocInfo>, String> {
+        let docs: Vec<_> = self
+            .docs
+            .iter()
+            .filter_map(|(id, d)| match &d.origin {
+                Origin::File(Some(p)) if d.session.is_dirty() => Some((id.clone(), p.clone())),
+                _ => None,
+            })
+            .collect();
+        let libs: Vec<_> = self
+            .libs
+            .iter()
+            .filter(|(_, l)| l.dirty && !l.readonly && l.path.is_some())
+            .map(|(id, l)| (id.clone(), l.path.clone().unwrap()))
+            .collect();
+        for (id, path) in &docs {
+            let expected = self.doc_revision_for(id, path)?;
+            storage::verify_revision(path, expected)
+                .map_err(|e| format!("Cannot save {}: {e}", path.display()))?;
+        }
+        for (id, path) in &libs {
+            let l = self.lib(id)?;
+            self.check_save_target(path, None, Some(id))?;
+            storage::verify_revision(path, l.revision)
+                .map_err(|e| format!("Cannot save {}: {e}", path.display()))?;
+        }
+        if self.project.is_some() {
+            self.ensure_project_revision()?;
+        }
+        let mut saved = Vec::new();
+        for (id, path) in docs {
+            self.save_doc_file(&id, &path)?;
+            saved.push(self.doc_info(&id)?);
+        }
+        for (id, _) in libs {
+            self.save_lib(&id, None)?;
+        }
+        if self.project.is_some() {
+            self.save_project_file()?;
+        }
+        Ok(saved)
     }
 
     /// Document id of each project sheet (loaded on project open).
@@ -368,3 +497,57 @@ impl Workspace {
         })
     }
 }
+
+#[cfg(test)]mod file_tests{
+    #[test]
+    fn history_project_guard_rejects_switches_and_missing_projects(){
+        let t=temp();let path=t.0.join("Design.arproj");std::fs::write(&path,b"saved project").unwrap();
+        let mut ws=Workspace::default();assert!(ws.project_at(&path).is_err());
+        ws.project=Some(OpenProject{revision:None,path:path.clone(),project:Project::default()});
+        assert_eq!(ws.project_at(&t.0.join(".").join("Design.arproj")).unwrap().path,path);
+        assert!(ws.project_at(&t.0.join("Other.arproj")).err().unwrap().contains("Project changed"));
+        assert_eq!(std::fs::read(&path).unwrap(),b"saved project");
+    }
+    #[test]
+    fn exported_text_cannot_replace_live_sources_and_failed_export_keeps_them(){
+        let t=temp();let project=t.0.join("Design.arproj");let document=t.0.join("Board.arpcb");let library=t.0.join("Parts.arlib");
+        for path in [&project,&document,&library]{std::fs::write(path,b"original").unwrap();}
+        let mut ws=Workspace::default();ws.project=Some(OpenProject{revision:None,path:project.clone(),project:Project::default()});
+        ws.add_doc(DocKind::Pcb,Origin::File(Some(document.clone())),Document::new(DocKind::Pcb));ws.add_lib(Library::default(),Some(library.clone()),true);
+        for path in [&project,&document,&library]{assert!(ws.write_export_file(path,b"changelog").is_err());assert_eq!(std::fs::read(path).unwrap(),b"original");}
+        assert!(ws.write_export_file(&t.0,b"changelog").is_err());
+        let export=t.0.join("Changes.txt");std::fs::write(&export,b"old log").unwrap();ws.write_export_file(&export,b"new log").unwrap();assert_eq!(std::fs::read(export).unwrap(),b"new log");
+    }
+
+    #[test]
+    fn library_save_as_rejects_another_open_library_without_losing_either_state(){
+        let t=temp();let path=t.0.join("Other.arlib");
+        let mut ws=Workspace::default();
+        let other=ws.add_lib(Library{name:"Original".into(),..Default::default()},Some(path.clone()),true);
+        ws.save_lib(&other,None).unwrap();let bytes=std::fs::read(&path).unwrap();ws.lib_mut(&other).unwrap().dirty=true;
+        let id=ws.add_lib(Library{name:"Replacement".into(),..Default::default()},None,true);
+        assert!(ws.save_lib(&id,Some(t.0.join(".").join("Other.arlib"))).unwrap_err().contains("another library"));
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);assert!(ws.lib(&other).unwrap().dirty);assert!(ws.lib(&id).unwrap().dirty);assert!(ws.lib(&id).unwrap().path.is_none());
+    }
+    #[test]
+    fn library_and_document_saves_cannot_overwrite_other_live_file_kinds(){
+        let t=temp();let project=t.0.join("Design.arproj");let document=t.0.join("Board.arpcb");let library=t.0.join("Parts.arlib");
+        for path in [&project,&document,&library]{std::fs::write(path,b"preserve").unwrap();}
+        let mut ws=Workspace::default();ws.project=Some(OpenProject{revision:None,path:project.clone(),project:Project::default()});
+        ws.add_doc(DocKind::Pcb,Origin::File(Some(document.clone())),Document::new(DocKind::Pcb));ws.add_lib(Library::default(),Some(library.clone()),false);
+        let id=ws.add_lib(Library::default(),None,true);let doc=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));
+        for path in [&project,&document]{assert!(ws.save_lib(&id,Some(path.clone())).is_err());assert_eq!(std::fs::read(path).unwrap(),b"preserve");}
+        for path in [&project,&library]{assert!(ws.save_doc_file(&doc,path).is_err());assert_eq!(std::fs::read(path).unwrap(),b"preserve");}
+        assert!(ws.lib(&id).unwrap().path.is_none());assert_eq!(ws.doc(&doc).unwrap().origin,Origin::File(None));
+    }
+
+    use super::*;
+    struct Temp(PathBuf);impl Drop for Temp{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    fn temp()->Temp{let p=std::env::temp_dir().join(format!("pcad-save-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&p).unwrap();Temp(p)}
+    #[test]fn failed_document_save_preserves_origin_dirty_state_and_history(){let t=temp();let mut ws=Workspace::default();let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));ws.doc_mut(&id).unwrap().session.mark_dirty();assert!(ws.save_doc_file(&id,&t.0).is_err());let d=ws.doc(&id).unwrap();assert_eq!(d.origin,Origin::File(None));assert!(d.session.is_dirty());assert!(!d.session.can_undo());let path=t.0.join("Board.arpcb");ws.save_doc_file(&id,&path).unwrap();assert!(!ws.doc(&id).unwrap().session.is_dirty());assert!(io::document_from_str(DocKind::Pcb,&std::fs::read_to_string(path).unwrap()).is_ok());}
+    #[test]fn failed_library_and_project_changes_keep_live_metadata(){let t=temp();let mut ws=Workspace::default();let id=ws.add_lib(Library{name:"Parts".into(),..Default::default()},None,true);assert!(ws.save_lib(&id,Some(t.0.clone())).is_err());assert!(ws.lib(&id).unwrap().dirty);assert!(ws.lib(&id).unwrap().path.is_none());ws.project=Some(OpenProject{revision:None,path:t.0.clone(),project:Project{name:"Original".into(),..Default::default()}});assert!(ws.edit_project(|p|{p.name="Changed".into();p.libraries.push("lost.arlib".into());}).is_err());assert_eq!(ws.project().unwrap().project.name,"Original");assert!(ws.project().unwrap().project.libraries.is_empty());}
+    #[test]fn save_as_cannot_replace_another_live_document(){let t=temp();let path=t.0.join("Other.arpcb");std::fs::write(&path,b"original").unwrap();let mut ws=Workspace::default();ws.add_doc(DocKind::Pcb,Origin::File(Some(path.clone())),Document::new(DocKind::Pcb));let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));assert!(ws.save_doc_file(&id,&path).unwrap_err().contains("another document"));assert_eq!(std::fs::read(&path).unwrap(),b"original");}
+}
+
+#[cfg(test)]
+mod save_conflict_tests;

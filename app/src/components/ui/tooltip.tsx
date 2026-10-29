@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Tooltip as TooltipPrimitive } from "radix-ui"
@@ -33,8 +34,9 @@ function TooltipContent({
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+  const surface=useSurfaceWindow();
   return (
-    <TooltipPrimitive.Portal>
+    <TooltipPrimitive.Portal container={surface.document.body}>
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}

@@ -1,5 +1,9 @@
 mod commands;
 mod workspace;
+mod local;
+mod recovery;
+mod docking;
+use tauri::Manager;
 
 use std::sync::Mutex;
 
@@ -16,8 +20,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {app.manage(recovery::RecoveryState::new(app.path().app_local_data_dir()?.join("recovery")));docking::create_main(app)?;Ok(())})
         .manage(AppState { workspace: Mutex::new(ws) })
         .invoke_handler(tauri::generate_handler![
+            docking::dock_close_window,
+            docking::dock_focus_window,
+            recovery::recovery_capture,
+            recovery::recovery_list,
+            recovery::recovery_restore,
             docs::doc_list,
             docs::doc_snapshot,
             docs::doc_new,
@@ -26,6 +36,7 @@ pub fn run() {
             docs::doc_undo,
             docs::doc_redo,
             docs::doc_save,
+            docs::doc_save_copy,
             docs::doc_close,
             docs::doc_cache_component,
             docs::doc_put_cache,
@@ -69,6 +80,17 @@ pub fn run() {
             project::project_export_bom,
             project::sheet_connected_items,
             project::project_sheet_doc,
+            local::hub_browse,
+            local::hub_preview,
+            local::hub_create_folder,
+            local::hub_create_project,
+            local::project_checkpoint,
+            local::project_revisions,
+            local::project_compare_revisions,
+            local::project_restore_copy,
+            local::import_preview,
+            local::import_discard,
+            local::import_apply,
             imports::import_library,
             imports::import_design,
             imports::library_paths,

@@ -73,6 +73,7 @@ pub fn open_doc_file(ws: &mut Workspace, path: &std::path::Path) -> Res<String> 
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let doc = io::document_from_str(kind, &text).map_err(|e| format!("{}: {e}", path.display()))?;
     let id = ws.add_doc(kind, Origin::File(Some(path.to_path_buf())), doc);
+    ws.doc_mut(&id)?.revision=Some(pcbplannercad_core::storage::FileRevision::from_bytes(text.as_bytes()));
     // Boards always carry their settings item (older files may lack it).
     if kind == DocKind::Pcb && pcbplannercad_core::pcb::geometry::board_settings(ws.doc(&id)?.session.document()).is_none() {
         let s = &mut ws.doc_mut(&id)?.session;
@@ -135,6 +136,12 @@ pub fn doc_save(state: State<AppState>, id: String, path: Option<String>) -> Res
     ws.doc_info(&id)
 }
 
+/// Save a separate native copy; the current working file and session stay unchanged.
+#[tauri::command]
+pub fn doc_save_copy(state:State<AppState>,id:String,path:String)->Res<()>{
+    lock(&state).save_doc_copy(&id,&PathBuf::from(path))
+}
+
 #[tauri::command]
 pub fn doc_close(state: State<AppState>, id: String) -> Res<()> {
     let mut ws = lock(&state);
@@ -149,11 +156,14 @@ pub fn doc_close(state: State<AppState>, id: String) -> Res<()> {
             let kind = ws.doc(&id)?.kind;
             let text = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
             let doc = io::document_from_str(kind, &text).map_err(|e| e.to_string())?;
-            ws.doc_mut(&id)?.session = pcbplannercad_core::Session::with_document(doc);
+            let open=ws.doc_mut(&id)?;
+            open.session = pcbplannercad_core::Session::with_document(doc);
+            open.revision=Some(pcbplannercad_core::storage::FileRevision::from_bytes(text.as_bytes()));
         }
     } else {
         ws.docs.remove(&id);
     }
+    ws.eco_plans.remove(&id);
     Ok(())
 }
 

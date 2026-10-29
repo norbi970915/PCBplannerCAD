@@ -1,11 +1,14 @@
+import {folderNameError} from '../project/paths';
+import {defaultPackageFolder,packagePath,packageViewerPath} from './outputFiles';
+import { defaultEcoSelection, ecoNeedsReview } from "./ecoReview";
 import { LengthMeter } from "../editor/RouteLengthGauge";
 import { copperLength } from "../editor/routeLengths";
-import type { TrackItem } from "../core/types";
+import { TuningPreview, tuningPreviewCurrent, type TuningPreviewResult } from "./tuningPreview";
 import { GridDialog } from "../shell/GridDialog";
 import { DrcBrowser } from "./DrcBrowser";
 import { ArrayDialog, SelectSimilarDialog } from "./SelectionToolsDialogs";
 import { PourManager } from "./PourManager";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialogPicker, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -131,18 +134,20 @@ function EcoDialog({ docId }: { docId: string }) {
   const [changes, setChanges] = useState<EcoChange[] | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
 
   useEffect(() => {
     api
       .pcbEcoPlan(docId)
       .then((c) => {
         setChanges(c);
-        setSelected(new Set(c.map((x, i) => (x.kind === "warning" ? -1 : i)).filter((i) => i >= 0)));
+        setSelected(defaultEcoSelection(c));
       })
       .catch((e) => setError(String(e)));
   }, [docId]);
 
   const apply = async () => {
+    setApplying(true);
     try {
       const before = new Set(useEditor.getState().docs[docId]?.items.keys() ?? []);
       const u = await api.pcbEcoApply(docId, [...selected]);
@@ -159,15 +164,16 @@ function EcoDialog({ docId }: { docId: string }) {
         toast.info(`${added.length} new footprint${added.length === 1 ? "" : "s"} on the cursor: click to drop them · Esc leaves them beside the board`);
       }
     } catch (e) {
+      setError(String(e));
       report(e);
-    }
+    } finally { setApplying(false); }
   };
 
   const actionable = changes?.filter((c) => c.kind !== "warning").length ?? 0;
   return (
     <Dialog
       title="Engineering change order"
-      description="Changes needed to make the board match the project schematics."
+      description="Review changes needed to match the project schematics. Removals, footprint replacements and net changes start unchecked; select them explicitly after review."
       wide
       footer={
         <>
@@ -175,7 +181,7 @@ function EcoDialog({ docId }: { docId: string }) {
           <Button variant="outline" onClick={close}>
             Cancel
           </Button>
-          <Button disabled={!selected.size} onClick={() => void apply()}>
+          <Button disabled={!selected.size || applying || !!error} onClick={() => void apply()}>
             Execute changes
           </Button>
         </>
@@ -215,7 +221,7 @@ function EcoDialog({ docId }: { docId: string }) {
                     }}
                   />
                 )}
-                <span className={cn(warn ? "text-note-line" : c.kind === "removeFootprint" ? "text-err-line" : c.kind === "addFootprint" ? "text-ok" : "")}>{d.action}</span>
+                <span className={cn(warn ? "text-note-line" : c.kind === "removeFootprint" ? "text-err-line" : c.kind === "addFootprint" ? "text-ok" : "")}>{d.action}{ecoNeedsReview(c) ? " · review" : ""}</span>
                 <span className="font-mono">{d.target}</span>
                 <span className="text-muted-foreground">{d.detail}</span>
               </div>
@@ -729,29 +735,35 @@ function TuneDialog({ docId }: { docId: string }) {
   const [spacing, setSpacing] = useState(mm(0.5));
   const [style, setStyle] = useState<"accordion" | "trombone">("accordion");
 
-  const [plan,setPlan]=useState<{key:string;tracks:TrackItem[];error:string}|null>(null);
+  const [plan,setPlan]=useState<TuningPreviewResult|null>(null);
+  const [applyError,setApplyError]=useState<string|null>(null);
+  const previewer=useMemo(()=>new TuningPreview(api.pcbTunePreview),[]);
   const [applying,setApplying]=useState(false);
   const request={tracks,targetLength:target,amplitude,spacing,style};
   const previewKey=JSON.stringify(request);
-  useEffect(()=>{let active=true;setPlan(null);
-    const timer=setTimeout(()=>{void api.pcbTunePreview(docId,JSON.parse(previewKey)).then(tracks=>{if(active)setPlan({key:previewKey,tracks,error:''});}).catch(error=>{if(active)setPlan({key:previewKey,tracks:[],error:String(error)});});},200);
-    return()=>{active=false;clearTimeout(timer);};
-  },[docId,previewKey,doc?.items]);
-  const previewReady=plan?.key===previewKey&&!plan.error;
-  const previewLength=plan?.tracks.reduce((sum,t)=>sum+copperLength(t),0)??current;
+  useEffect(()=>{
+    setPlan(null);setApplyError(null);
+    if(!doc)return;
+    return previewer.request(docId,JSON.parse(previewKey),doc,setPlan);
+  },[previewer,docId,previewKey,doc?.items,doc?.footprints,doc?.epoch]);
+  const shown=tuningPreviewCurrent(plan,docId,previewKey,doc)?plan:null;
+  const previewReady=!!shown&&!shown.error;
+  const previewLength=shown?.tracks.reduce((sum,t)=>sum+copperLength(t),0)??current;
   const original=tracks.flatMap(id=>{const t=doc?.items.get(id);return t?.kind==='track'?[t]:[];});
-  const allPoints=[...original,...(plan?.tracks??[])].flatMap(t=>[t.a,t.b]);
+  const allPoints=[...original,...(shown?.tracks??[])].flatMap(t=>[t.a,t.b]);
   const xs=allPoints.map(p=>p.x),ys=allPoints.map(p=>p.y);
-  const xmin=xs.length?Math.min(...xs):0,xmax=xs.length?Math.max(...xs):1,ymin=ys.length?Math.min(...ys):0,ymax=ys.length?Math.max(...ys):1;
+  const xmin=xs.reduce((a,b)=>Math.min(a,b),xs[0]??0),xmax=xs.reduce((a,b)=>Math.max(a,b),xs[0]??1),ymin=ys.reduce((a,b)=>Math.min(a,b),ys[0]??0),ymax=ys.reduce((a,b)=>Math.max(a,b),ys[0]??1);
   const padding=Math.max(xmax-xmin,ymax-ymin)*0.06+10000;
   const run = async () => {
     setApplying(true);
     try {
-      useEditor.getState().applyUpdate(await api.pcbTune(docId, request));
+      const currentDoc=useEditor.getState().docs[docId];
+      if(useEditor.getState().activeDocId!==docId||!tuningPreviewCurrent(plan,docId,previewKey,currentDoc)||!previewReady) throw new Error("Board changed; wait for the current tuning preview before applying");
+      useEditor.getState().applyUpdate(await api.pcbTune(docId, request, shown!.tracks));
       scheduleAnalysis(docId, 0);
       close();
     } catch (e) {
-      report(e);
+      setApplyError(String(e));report(e);
     } finally {setApplying(false);}
   };
   return (
@@ -760,7 +772,7 @@ function TuneDialog({ docId }: { docId: string }) {
       description="Adds meanders to the selected track chain until it reaches the target length."
       footer={
         <>
-          <Button variant="outline" onClick={close}>
+          <Button variant="outline" disabled={applying} onClick={close}>
             Cancel
           </Button>
           <Button disabled={!tracks.length||!previewReady||applying} onClick={() => void run()}>
@@ -774,10 +786,10 @@ function TuneDialog({ docId }: { docId: string }) {
           {tracks.length} tracks selected · current chain length <span className="font-mono text-ink">{toMm(current).toFixed(3)} mm</span>
         </p>
         <LengthMeter label="Selected chain preview" length={previewLength} bounds={{min:Math.max(0,Math.ceil(target*0.995)),max:Math.floor(target*1.005)}} pending={!previewReady}/>
-        {plan?.error?<p className="text-err-line" role="alert">{plan.error}</p>:<p className="text-muted-foreground">{previewReady?'Preview ready · original in gray, planned copper in green.':'Calculating clearance-checked preview…'}</p>}
+        {(shown?.error||applyError)?<p className="text-err-line" role="alert">{shown?.error||applyError}</p>:<p className="text-muted-foreground">{previewReady?'Preview ready · original in gray, planned copper in green.':'Calculating clearance-checked preview…'}</p>}
         <svg role="img" aria-label="Length tuning preview" className="h-40 w-full rounded border border-line bg-card" viewBox={[xmin-padding,-ymax-padding,xmax-xmin+2*padding,ymax-ymin+2*padding].join(' ')}>
           {original.map((t,i)=><line key={'o'+i} x1={t.a.x} y1={-t.a.y} x2={t.b.x} y2={-t.b.y} stroke="#89929e" strokeWidth={t.width}/>)}
-          {previewReady&&plan.tracks.map((t,i)=><line key={i} x1={t.a.x} y1={-t.a.y} x2={t.b.x} y2={-t.b.y} stroke="#38b66b" strokeWidth={t.width}/>)}
+          {previewReady&&shown!.tracks.map((t,i)=><line key={i} x1={t.a.x} y1={-t.a.y} x2={t.b.x} y2={-t.b.y} stroke="#38b66b" strokeWidth={t.width}/>)}
         </svg>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Target length">
@@ -805,67 +817,64 @@ function TuneDialog({ docId }: { docId: string }) {
 
 function OutputsDialog({ docId }: { docId: string }) {
   const project = useEditor((s) => s.project);
+  const doc = useEditor((s) => s.docs[docId]);
+  const projectBoard=project?.pcb?.docId===docId;
   const [opts, setOpts] = useState<FabOptions>({
-    gerber: { tentVias: true, includeRefDes: true, includeValues: false, plotOutlineOnAll: false, precision: 6, projectName: project?.name ?? "" },
-    pnp: "jlc",
-    bom: "jlc",
-    zip: true,
+    gerber: { tentVias: true, includeRefDes: true, includeValues: false, plotOutlineOnAll: false, precision: 6, projectName: projectBoard ? project.name : (doc?.info.title??'board').replace(/\.arpcb$/i,'') },
+    pnp: "jlc",bom: "jlc",zip: true,
   });
-  const [variant, setVariant] = useState<string>("");
-  const [files, setFiles] = useState<string[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const g = (p: Partial<FabOptions["gerber"]>) => setOpts({ ...opts, gerber: { ...opts.gerber, ...p } });
-  const v = variant || null;
-
-  const runFab = async () => {
-    const dir = await openDialogPicker({ directory: true, title: "Folder for fabrication files" });
-    if (typeof dir !== "string") return;
-    setBusy(true);
-    try {
-      const out = await api.outFab(docId, dir, opts, v);
-      setFiles(out);
-      useEditor.getState().log("info", `Wrote ${out.length} fabrication files to ${dir}`);
-    } catch (e) {
-      report(e);
-    } finally {
-      setBusy(false);
-    }
+  const [variant,setVariant]=useState(''),[files,setFiles]=useState<string[]|null>(null),[viewer,setViewer]=useState(''),[directory,setDirectory]=useState(''),[folder,setFolder]=useState(defaultPackageFolder),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const live=useRef(true),operation=useRef<symbol|null>(null);
+  useEffect(()=>{live.current=true;return()=>{live.current=false;operation.current=null;};},[]);
+  useEffect(()=>{operation.current=null;setBusy(false);setFiles(null);setViewer('');setDirectory('');setVariant('');setError('');},[project,doc?.epoch]);
+  const current=()=>live.current&&useEditor.getState().docs[docId]?.epoch===doc?.epoch&&useEditor.getState().project===project;
+  const begin=()=>{if(operation.current||!doc||!current())return null;const token=Symbol();operation.current=token;setBusy(true);setError('');setFiles(null);setViewer('');setDirectory('');return token;};
+  const valid=(token:symbol)=>operation.current===token&&current();
+  const finish=(token:symbol)=>{if(live.current&&operation.current===token){operation.current=null;setBusy(false);}};
+  const g=(patch:Partial<FabOptions['gerber']>)=>setOpts({...opts,gerber:{...opts.gerber,...patch}});
+  const v=variant||null;
+  const runFab=async()=>{
+    const invalid=folderNameError(folder);if(invalid){setError(invalid);return;}const token=begin();if(!token)return;
+    try{
+      const parent=await openDialogPicker({directory:true,title:'Choose a parent folder for the new fabrication package'});
+      if(!valid(token)||typeof parent!=='string')return;
+      const dir=packagePath(parent,folder),out=await api.outFab(docId,dir,opts,v);if(!valid(token))return;
+      setFiles(out);setDirectory(dir);setViewer(packageViewerPath(out,dir));useEditor.getState().log('info','Wrote '+out.length+' fabrication files to '+dir);
+    }catch(e){if(valid(token)){setError(String(e));report(e);}}finally{finish(token);}
   };
-  const single = async (kind: "pnp" | "bom" | "ipc") => {
-    const ext = kind === "ipc" ? "xml" : "csv";
-    const path = await saveDialog({ filters: [{ name: ext.toUpperCase(), extensions: [ext] }], defaultPath: `${project?.name ?? "board"}_${kind}.${ext}` });
-    if (!path) return;
-    try {
-      if (kind === "pnp") await api.outPnp(docId, path, opts.pnp ?? "generic", v);
-      else if (kind === "bom") await api.outBoardBom(docId, path, opts.bom ?? "generic", v);
-      else await api.outIpc2581(docId, path);
-      useEditor.getState().log("info", `Wrote ${path}`);
-    } catch (e) {
-      report(e);
-    }
+  const single=async(kind:'pnp'|'bom'|'ipc')=>{
+    const token=begin();if(!token)return;
+    try{const ext=kind==='ipc'?'xml':'csv';const path=await saveDialog({filters:[{name:ext.toUpperCase(),extensions:[ext]}],defaultPath:(opts.gerber.projectName||'board')+'_'+kind+'.'+ext});if(!valid(token)||!path)return;
+      if(kind==='pnp')await api.outPnp(docId,path,opts.pnp??'generic',v);else if(kind==='bom')await api.outBoardBom(docId,path,opts.bom??'generic',v);else await api.outIpc2581(docId,path,v);
+      if(valid(token))useEditor.getState().log('info','Wrote '+path);
+    }catch(e){if(valid(token)){setError(String(e));report(e);}}finally{finish(token);}
   };
-
   return (
     <Dialog
       title="Fabrication outputs"
       description="Gerber X2, Excellon drills and assembly files for your fab house."
       wide
+      busy={busy}
       footer={
         <>
-          {files && (
-            <Button variant="outline" className="mr-auto" onClick={() => (bus.emit("showGerbers", { path: files[files.length - 1] }), close())}>
+          {viewer && (
+            <Button variant="outline" className="mr-auto" onClick={() => (bus.emit("showGerbers", { path: viewer }), close())}>
               View in Gerber viewer
             </Button>
           )}
-          <Button variant="outline" onClick={close}>
+          <Button variant="outline" disabled={busy} onClick={close}>
             Close
           </Button>
-          <Button disabled={busy} onClick={() => void runFab()}>
+          <Button disabled={busy||!doc||!!folderNameError(folder)} onClick={() => void runFab()}>
             {busy ? "Generating…" : "Generate fab package…"}
           </Button>
         </>
       }
     >
+      <fieldset disabled={busy||!doc} className="contents">
+      <label className="mb-3 grid gap-1 text-xs">New package folder<Input aria-label="New package folder" value={folder} onChange={e=>setFolder(e.target.value)}/></label>
+      <p className="mb-3 text-xs text-muted-foreground">Choose a parent folder when generating. The complete package is saved in this new subfolder; existing folders are preserved.</p>
+      {folderNameError(folder)&&<p role="alert" className="mb-3 text-xs text-err-line">{folderNameError(folder)}</p>}
       <div className="grid grid-cols-2 gap-4">
         <div className="grid content-start gap-2">
           <div className="eyebrow">Gerber</div>
@@ -902,7 +911,7 @@ function OutputsDialog({ docId }: { docId: string }) {
               <NativeSelectOption value="generic">Generic CSV</NativeSelectOption>
             </NativeSelect>
           </Field>
-          {project && project.variants.length > 0 && (
+          {projectBoard && project && project.variants.length > 0 && (
             <Field label="Variant">
               <NativeSelect value={variant} onChange={(e) => setVariant(e.target.value)}>
                 <NativeSelectOption value="">All parts fitted</NativeSelectOption>
@@ -927,6 +936,9 @@ function OutputsDialog({ docId }: { docId: string }) {
           </div>
         </div>
       </div>
+      </fieldset>
+      {files&&<p role="status" className="mt-3 break-all text-xs">Package saved to {directory}</p>}
+      {error&&<p role="alert" className="mt-3 text-xs text-err-line">{error}</p>}
       {files && (
         <div className="mt-3 max-h-40 overflow-auto rounded-[5px] border border-line bg-field p-2 font-mono text-[11px]">
           {files.map((f) => (

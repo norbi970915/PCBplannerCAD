@@ -28,3 +28,9 @@ pub struct Variant {
     #[serde(default)]
     pub dnp: Vec<String>,
 }
+
+/// Local project folders and revision checkpoints.
+pub mod files;
+
+/// Read-only saved content for local file thumbnails.
+pub mod preview;

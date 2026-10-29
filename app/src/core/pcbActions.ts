@@ -1,3 +1,4 @@
+import {linkedTargets,designator} from "./crossProbe";
 import { toast } from "sonner";
 import { api } from "./api";
 import { report } from "./actions";
@@ -295,21 +296,21 @@ export function installCrossProbe(): () => void {
     for (const id of doc.selection) {
       const it = doc.items.get(id);
       if (it?.kind === "part") {
-        const d = it.fields.find((f) => f.name === "Designator")?.value;
+                  const d = designator(it);
         if (d) designators.add(d);
-      } else if (it?.kind === "footprint") designators.add(it.designator);
+      } else if (it?.kind === "footprint") designators.add(designator(it));
     }
     const targetKind = doc.info.kind === "schematic" ? "pcb" : doc.info.kind === "pcb" ? "schematic" : null;
     if (!targetKind) return;
     busy = true;
     try {
-      for (const other of Object.values(s.docs)) {
-        if (other.info.kind !== targetKind) continue;
+      for (const id of linkedTargets(s.project,doc)) {
+        const other=s.docs[id];if (!other||other.info.kind !== targetKind) continue;
         const marked = new Set<ItemId>();
         if (designators.size) {
           for (const [id, it] of other.items) {
-            if (it.kind === "footprint" && designators.has(it.designator)) marked.add(id);
-            if (it.kind === "part" && designators.has(it.fields.find((f) => f.name === "Designator")?.value ?? "")) marked.add(id);
+            if (it.kind === "footprint" && designators.has(designator(it))) marked.add(id);
+            if (it.kind === "part" && designators.has(designator(it))) marked.add(id);
           }
         }
         if (marked.size || other.marked.size) st().patchDoc(other.info.id, { marked });

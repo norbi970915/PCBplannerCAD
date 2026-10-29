@@ -14,3 +14,7 @@ node_modules
 # Private reference notes and original session handoffs
 /docs/*-COMPARISON-*.md
 /docs/local-notes/
+
+# Local recovery records and source-location notes are private.
+*.pcad-recovery
+RECOVERY-NOTES.txt

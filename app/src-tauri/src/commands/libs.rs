@@ -231,6 +231,9 @@ pub struct FootprintMeta {
 
 #[tauri::command]
 pub fn lib_update_footprint(state: State<AppState>, id: String, name: String, meta: FootprintMeta) -> Res<()> {
+    if let Some(model)=&meta.model {
+        if model.offset.iter().chain(model.rotation.iter()).chain(model.scale.iter()).any(|v|!v.is_finite()) || model.scale.iter().any(|s|*s==0.){return Err("Model transform must be finite and model scale must be non-zero".into());}
+    }
     let mut ws = lock(&state);
     let l = ws.lib_writable(&id)?;
     if meta.name != name && l.lib.footprint(&meta.name).is_some() {
@@ -447,6 +450,6 @@ pub fn ensure_builtin(ws: &mut Workspace) {
     use crate::workspace::{BUILTIN_LIB, OpenLib};
     ws.libs.insert(
         BUILTIN_LIB.to_string(),
-        OpenLib { path: None, lib: pcbplannercad_core::libgen::starter::starter_library(), dirty: false, readonly: true },
+        OpenLib { revision:None, path: None, lib: pcbplannercad_core::libgen::starter::starter_library(), dirty: false, readonly: true },
     );
 }

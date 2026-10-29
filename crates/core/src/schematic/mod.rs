@@ -8,6 +8,7 @@
 
 mod annotate;
 mod bom;
+mod bus;
 mod connectivity;
 mod erc;
 mod netlist;
@@ -107,6 +108,15 @@ pub struct NetlistPart {
     /// Component parameters overridden by part fields, excluding
     /// Designator/Value/Footprint/Description.
     pub parameters: Vec<(String, String)>,
+}
+
+impl NetlistPart {
+    pub fn parameter_flag(&self, name: &str) -> bool {
+        self.parameters.iter().any(|(key,value)| key.eq_ignore_ascii_case(name)
+            && matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "yes" | "true"))
+    }
+    pub fn excluded_from_board(&self) -> bool { self.parameter_flag(crate::item::FIELD_EXCLUDE_BOARD) }
+    pub fn excluded_from_bom(&self) -> bool { self.parameter_flag(crate::item::FIELD_EXCLUDE_BOM) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

@@ -55,7 +55,7 @@ export interface DocState {
   /** Bumped when the whole document is (re)loaded, so views refit. */
   epoch: number;
   /** A point the view should center on (ERC navigation). */
-  focus: { pos: Point; seq: number } | null;
+  focus: { pos: Point; seq: number; ids?:ItemId[] } | null;
 }
 
 /** Parameters for placement tools (edited in the Properties panel). */

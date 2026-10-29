@@ -45,6 +45,16 @@ export type EntryKind = "symbol" | "footprint" | "component";
 export type LibrarySource = "structuredSymbols" | "structuredFootprints" | "xmlLibrary";
 export type DesignSource = "structuredProject" | "structuredSchematic" | "xmlSchematic";
 
+export interface SavedPreview { views:{label:string;kind:DocKind;items:Item[];cache:Record<string,CachedPart>;footprints:Record<string,Footprint>;symbol:import('./types').LibSymbol|null}[];model:string|null;dependencies:string[];notes:string[] }
+export interface HubEntry { name:string;path:string;kind:'folder'|'project'|'schematic'|'board'|'library'|'model'|'file';modifiedMs:number;bytes:number }
+export interface RecoveryInfo {id:string;createdMs:number;title:string;documents:number;libraries:number;bytes:number;notes:string[]}
+export interface RecoveryListing {location:string;entries:RecoveryInfo[];issues:string[]}
+export interface RecoveryRestored {folder:string;project:string|null;files:string[];notes:string[]}
+export interface RevisionInfo { id:string;createdMs:number;label:string;files:number;bytes:number }
+export interface RevisionChanges { from:RevisionInfo;to:RevisionInfo;added:number;removed:number;modified:number;files:{path:string;status:'added'|'removed'|'modified';summary:string;details:string[];omitted:number}[] }
+export interface ImportRequest { path:string;boardPath?:string|null;models:{footprint:string;path:string}[] }
+export interface ImportReview { token:string;summary:{name:string;kind:'design'|'library';sheets:number;boardItems:number;boardFile:string|null;linkedDesign:boolean;symbols:number;footprints:string[];components:number;models:number;outputs:string[];report:ReportLine[]} }
+
 export interface SymbolMeta {
   name: string;
   description: string;
@@ -69,6 +79,8 @@ const routeItems = (result: RouteResponse): RouteResult => ({
 });
 
 export const api = {
+  dockCloseWindow: (label:string)=>invoke<void>("dock_close_window",{label}),
+  dockFocusWindow: (label:string)=>invoke<void>("dock_focus_window",{label}),
   // documents
   docList: () => invoke<DocInfo[]>("doc_list"),
   snapshot: (id: string) => invoke<Snapshot>("doc_snapshot", { id }),
@@ -78,6 +90,7 @@ export const api = {
   undo: (id: string) => invoke<Update>("doc_undo", { id }),
   redo: (id: string) => invoke<Update>("doc_redo", { id }),
   save: (id: string, path: string | null) => invoke<DocInfo>("doc_save", { id, path }),
+  saveCopy: (id:string,path:string)=>invoke<void>("doc_save_copy",{id,path}),
   close: (id: string) => invoke<void>("doc_close", { id }),
   putCache: (id: string, parts: CachedPart[]) => invoke<Record<string, CachedPart>>("doc_put_cache", { id, parts }),
   cacheComponent: (id: string, library: string, component: string) =>
@@ -152,12 +165,12 @@ export const api = {
   pcbDragEach: (id: string, req: { moves: { id: ItemId; delta: Point }[]; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
     invoke<PcbDragPlan>("pcb_drag_each", { id, req }),
   pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
-  pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number): Promise<[RouteResult, RouteResult]> => {
-    const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap });
+  pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number, negStart: Point | null = null): Promise<[RouteResult, RouteResult]> => {
+    const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap, negStart });
     return [routeItems(positive), routeItems(negative)];
   },
-  pcbTune: (id: string, req: TuneRequest) =>
-    invoke<Update>("pcb_tune", { id, req }),
+  pcbTune: (id: string, req: TuneRequest, expected: readonly TrackItem[] | null = null) =>
+    invoke<Update>("pcb_tune", { id, req, expected }),
   pcbTunePreview: (id:string,req:TuneRequest)=>invoke<TrackItem[]>("pcb_tune_preview",{id,req}),
   pcbLengthConstraint: (id:string,net:string)=>invoke<LengthConstraint|null>("pcb_length_constraint",{id,net}),
   pcbNetLength: (id: string, net: string) => invoke<number>("pcb_net_length", { id, net }),
@@ -181,13 +194,28 @@ export const api = {
   outFab: (id: string, dir: string, options: FabOptions, variant: string | null) => invoke<string[]>("out_fab", { id, dir, options, variant }),
   outPnp: (id: string, path: string, format: "generic" | "jlc" | "coordinates", variant: string | null) => invoke<void>("out_pnp", { id, path, format, variant }),
   outBoardBom: (id: string, path: string, format: "generic" | "jlc", variant: string | null) => invoke<void>("out_board_bom", { id, path, format, variant }),
-  outIpc2581: (id: string, path: string) => invoke<void>("out_ipc2581", { id, path }),
+  outIpc2581: (id: string, path: string, variant: string | null) => invoke<void>("out_ipc2581", { id, path, variant }),
   outBoardModel: (id: string) => invoke<BoardModel3d>("out_board_model", { id }),
   outStep: (path: string, name: string, meshes: Mesh3d[]) => invoke<void>("out_step", { path, name, meshes }),
   readGerbers: (path: string) => invoke<GerberFile[]>("out_read_gerbers", { path }),
   writeFileBytes: (path: string, bytes: Uint8Array) => invoke<void>("write_file_bytes", { path, bytes: Array.from(bytes) }),
   readFileBytes: (path: string) => invoke<ArrayBuffer>("read_file_bytes", { path }),
   resolveModelPath: (path: string, base: string | null) => invoke<string | null>("resolve_model_path", { path, base }),
+
+  hubPreview: (root:string,path:string) => invoke<SavedPreview>("hub_preview",{root,path}),
+  hubBrowse: (root:string,relative:string) => invoke<HubEntry[]>("hub_browse",{root,relative}),
+  hubCreateFolder: (root:string,relative:string,name:string) => invoke<string>("hub_create_folder",{root,relative,name}),
+  hubCreateProject: (root:string,relative:string,name:string) => invoke<ProjectState>("hub_create_project",{root,relative,name}),
+  recoveryCapture: (force:boolean)=>invoke<RecoveryInfo|null>("recovery_capture",{force}),
+  recoveryList: ()=>invoke<RecoveryListing>("recovery_list"),
+  recoveryRestore: (id:string,dest:string)=>invoke<RecoveryRestored>("recovery_restore",{id,dest}),
+  projectCheckpoint: (projectPath:string,label:string) => invoke<RevisionInfo>("project_checkpoint",{projectPath,label}),
+  projectCompareRevisions: (projectPath:string,from:string,to:string) => invoke<RevisionChanges>("project_compare_revisions",{projectPath,from,to}),
+  projectRevisions: (projectPath:string) => invoke<RevisionInfo[]>("project_revisions",{projectPath}),
+  projectRestoreCopy: (projectPath:string,revision:string,dest:string) => invoke<string>("project_restore_copy",{projectPath,revision,dest}),
+  importPreview: (request:ImportRequest) => invoke<ImportReview>("import_preview",{request}),
+  importDiscard: (token:string) => invoke<void>("import_discard",{token}),
+  importApply: (token:string,dest:string) => invoke<{project:ProjectState|null;library:LibInfo|null;files:string[]}>("import_apply",{token,dest}),
 
   // import
   importLibrary: (source: LibrarySource, path: string) =>

@@ -19,3 +19,15 @@ test('length gauge bands include boundaries and reject conflicting targets',()=>
  assert.deepEqual(targetBounds(rule,12,1),{min:11,max:12});assert.equal(lengthBand(15,targetBounds(rule,15,1)),'invalid');
  assert.deepEqual(targetBounds(null,1,2),{min:0,max:3});assert.equal(targetBounds(rule,null,1),rule);
 });
+
+test('invalid manual limits and invalid lengths cannot report an in-range result',()=>{
+  for(const [target,tolerance] of [[0,1],[-1,1],[NaN,1],[10,-1],[10,Infinity]]) assert.equal(lengthBand(10,targetBounds(null,target,tolerance)),'invalid');
+  assert.equal(lengthBand(NaN,null),'invalid');assert.equal(lengthBand(-1,null),'invalid');
+});
+
+test('split shove replacements subtract their original track once and count every new piece',()=>{
+  const items=new Map([[1,t('P',5e6)],[2,t('N',6e6)]]);
+  const moved=[{id:1,item:t('P',2e6)},{id:1,item:t('P',4e6)},{id:2,item:t('N',3e6)},{id:2,item:t('N',4e6)}];
+  assert.equal(prospectiveLength(items,'P',[],moved),6e6);
+  assert.equal(prospectiveLength(items,'N',[],moved),7e6);
+});

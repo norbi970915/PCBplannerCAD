@@ -209,3 +209,12 @@ test('net sorting prioritizes unrouted work or length with stable natural-name t
   assert.deepEqual(sortNetRows(rows,'length',true).map(r=>r.name),['N2','N1','N10']);
   assert.deepEqual(rows.map(r=>r.name),['N10','N2','N1'],'sorting does not mutate cached data');
 });
+
+
+test('fabrication packages use a new named folder and view unpacked output through that folder',async()=>{
+ const {defaultPackageFolder,packagePath,packageViewerPath}=await import('../src/pcb/outputFiles.ts');
+ assert.equal(defaultPackageFolder(new Date('2026-10-29T12:34:56.789Z')),'fabrication-20261029T123456Z');
+ assert.equal(packagePath('A:/Exports/','release-1'),'A:/Exports/release-1');
+ assert.equal(packagePath('C:\\','release-1'),'C:/release-1');
+ const folder='A:/Exports/release-1';assert.equal(packageViewerPath([folder+'/board.GTL',folder+'/README.txt'],folder),folder);assert.equal(packageViewerPath([folder+'/board.GTL',folder+'/board_fab.zip'],folder),folder+'/board_fab.zip');
+});

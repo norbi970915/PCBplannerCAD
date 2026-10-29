@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 
 
 import * as React from "react"
@@ -56,8 +57,9 @@ function SelectContent({
   align = "center",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  const surface=useSurfaceWindow();
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={surface.document.body}>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(

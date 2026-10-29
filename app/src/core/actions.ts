@@ -132,6 +132,7 @@ export async function saveDoc(docId = st().activeDocId, saveAs = false): Promise
       if (!path) return false;
     }
     st().setInfo(await api.save(docId, path));
+    bus.emit("filesSaved",{paths:[path]});
     st().log("info", `Saved ${path}`);
     return true;
   } catch (e) {
@@ -140,16 +141,46 @@ export async function saveDoc(docId = st().activeDocId, saveAs = false): Promise
   }
 }
 
-export async function saveAll() {
+/** Preserve the live version without rebinding a linked design or clearing dirty state. */
+export async function saveCopy(docId=st().activeDocId):Promise<boolean>{
+  const doc=docId?st().docs[docId]:undefined;if(!doc||!docId)return false;
+  try{
+    const library=doc.info.library?st().libs.find(l=>l.id===doc.info.library):undefined;
+    const kind=doc.info.library?"library":doc.info.kind==="schematic"?"schematic":"pcb";
+    const source=(library?.path??doc.info.path??doc.info.title).replace(/\\/g,"/");
+    const extension=FILTERS[kind][0].extensions[0];
+    const defaultPath=source.replace(/\.[^/.]+$/,"")+"-copy."+extension;
+    const path=await saveDialog({filters:FILTERS[kind],defaultPath});if(!path)return false;
+    // A closed/reloaded source must not become an unnoticed replacement copy.
+    const current=st().docs[docId];
+    if(!current||current.epoch!==doc.epoch||current.info.library!==doc.info.library){
+      report("The source document changed while choosing a copy destination. Try again.");return false;
+    }
+    await api.saveCopy(docId,path);bus.emit("filesSaved",{paths:[path]});
+    st().log("info","Saved a separate copy to "+path+". The working document is unchanged.");
+    return true;
+  }catch(e){report(e);return false;}
+}
+
+export async function saveAll(): Promise<boolean> {
   try {
     for (const info of await api.projectSaveAll()) st().setInfo(info);
     // Untitled documents and unsaved libraries need a file name each.
-    for (const doc of Object.values(st().docs)) if (doc.info.dirty && !doc.info.library) await saveDoc(doc.info.id);
+    for (const doc of Object.values(st().docs)) if (doc.info.dirty && !doc.info.library && !(await saveDoc(doc.info.id))) return false;
+    await refreshLibs();
+    for (const lib of st().libs) if(lib.dirty&&!lib.readonly&&!(await saveLibrary(lib.id,!lib.path)))return false;
     await refreshLibs();
     await refreshOpenDocInfos();
     st().log("info", "Saved all documents.");
+    return true;
   } catch (e) {
     report(e);
+    await refreshOpenDocInfos().catch(report);
+    await refreshLibs();
+    return false;
+  } finally {
+    const paths=[...Object.values(st().docs).flatMap(d=>d.info.path?[d.info.path]:[]),...st().libs.flatMap(l=>l.path?[l.path]:[])];
+    bus.emit('filesSaved',{paths});
   }
 }
 
@@ -173,6 +204,7 @@ export async function closeDoc(docId: string): Promise<boolean> {
     await api.close(docId);
   } catch (e) {
     report(e);
+    return false;
   }
   st().removeDoc(docId);
   return true;
@@ -250,6 +282,7 @@ export async function saveLibrary(libId: string, saveAs = false): Promise<boolea
     const info = await api.libSave(libId, path);
     await refreshLibs();
     await refreshOpenDocInfos();
+    if(info.path)bus.emit("filesSaved",{paths:[info.path]});
     st().log("info", `Saved library ${info.name} to ${info.path}`);
     return true;
   } catch (e) {
@@ -297,18 +330,22 @@ export async function openFootprintEditor(libId: string, name: string) {
 // ---------- project ----------
 
 export async function refreshProject() {
-  try {
-    const p = await api.projectInfo();
-    st().setProject(p.project);
-  } catch (e) {
-    report(e);
-  }
+  try { syncProjectInfo((await api.projectInfo()).project); } catch(e) { report(e); }
+}
+function syncProjectInfo(project: import('./types').ProjectInfo|null) {
+  const previous=st().project;
+  const nextIds=new Set([...(project?.sheets??[]),...(project?.pcb?[project.pcb]:[])].map(s=>s.docId));
+  const closed=previous?.path===project?.path?[]:[...(previous?.sheets??[]),...(previous?.pcb?[previous.pcb]:[])].flatMap(s=>s.docId&&!nextIds.has(s.docId)?[s.docId]:[]);
+  for(const id of closed)st().removeDoc(id);
+  if(closed.length)bus.emit('docsClosed',{docIds:closed});
+  st().setProject(project);
 }
 
-async function applyProjectState(p: { project: import("./types").ProjectInfo | null; messages: string[] }) {
-  st().setProject(p.project);
+export async function applyProjectState(p: { project: import("./types").ProjectInfo | null; messages: string[] }) {
+  syncProjectInfo(p.project);
   for (const m of p.messages) st().log("warning", m);
   for (const s of p.project?.sheets ?? []) if (s.docId) st().loadDoc(await api.snapshot(s.docId));
+  if(p.project?.pcb?.docId)st().loadDoc(await api.snapshot(p.project.pcb.docId));
   await refreshLibs();
 }
 

@@ -162,3 +162,31 @@
   scrollbar-width: thin;
   scrollbar-color: var(--ui-line-strong) transparent;
 }
+/* Consistent file/tool accents; geometry colors remain controlled by board layers. */
+:root {
+  --icon-folder:#7c6a2d; --icon-project:#41728e; --icon-board:#217a45;
+  --icon-schematic:#2f6093; --icon-library:#6e5493; --icon-model:#805d38;
+  --icon-action:#38699f; --icon-route:#805d38; --icon-recovery:#885773;
+}
+[data-theme="dark"] {
+  --icon-folder:#c9a227; --icon-project:#5fb0d8; --icon-board:#6cc28c;
+  --icon-schematic:#3d8fe0; --icon-library:#b07ad8; --icon-model:#d08a3c;
+  --icon-action:#6b9bd2; --icon-route:#d08a3c; --icon-recovery:#e07fb0;
+}
+.pcad-icon {display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;vertical-align:middle;}
+.tone-folder {color:var(--icon-folder);}
+.tone-project {color:var(--icon-project);}
+.tone-board,.tone-success {color:var(--icon-board);}
+.tone-schematic {color:var(--icon-schematic);}
+.tone-library {color:var(--icon-library);}
+.tone-model {color:var(--icon-model);}
+.tone-action {color:var(--icon-action);}
+.tone-route {color:var(--icon-route);}
+.tone-recovery {color:var(--icon-recovery);}
+.pcad-file-card {border-left-width:3px;border-left-color:var(--file-accent,var(--icon-project));}
+.pcad-file-kind {display:inline-flex;margin-top:4px;padding:1px 6px;border-radius:4px;color:var(--file-accent,var(--icon-project));background:color-mix(in srgb,var(--file-accent,var(--icon-project)) 11%,transparent);}
+/* Colored primary buttons already supply the accent; keep their glyphs readable. */
+[data-slot="button"][data-variant="default"] .pcad-icon,
+[data-slot="button"][data-variant="default"] [class*="tone-"] {color:var(--primary-foreground);}
+[data-slot="button"][data-variant="outline"] {background-color:var(--ui-btn);color:var(--ui-ink);border-color:var(--ui-line-strong);}
+[data-slot="button"][data-variant="outline"]:hover {background-color:var(--ui-btn-hover);}

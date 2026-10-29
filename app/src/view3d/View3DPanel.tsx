@@ -39,8 +39,9 @@ export function View3DPanel({ docId }: { docId: string }) {
   // Renderer lifetime.
   useEffect(() => {
     const el = host.current!;
+    const viewWindow=el.ownerDocument.defaultView??window;
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(viewWindow.devicePixelRatio||1);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     el.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
@@ -62,13 +63,14 @@ export function View3DPanel({ docId }: { docId: string }) {
     let frame = 0;
     const render = () => {
       if (frame) return;
-      frame = requestAnimationFrame(() => {
+      frame = viewWindow.requestAnimationFrame(() => {
         frame = 0;
         renderer.render(scene, camera);
       });
     };
     controls.addEventListener("change", render);
-    const ro = new ResizeObserver(() => {
+    const resize = () => {
+      renderer.setPixelRatio(viewWindow.devicePixelRatio||1);
       const w = Math.max(1, el.clientWidth);
       const h = Math.max(1, el.clientHeight);
       renderer.setSize(w, h, false);
@@ -77,12 +79,15 @@ export function View3DPanel({ docId }: { docId: string }) {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       render();
-    });
+    };
+    const ro = new viewWindow.ResizeObserver(resize);
     ro.observe(el);
+    viewWindow.addEventListener("resize",resize);
     view.current = { renderer, scene, camera, controls, board, parts, render, size: 100, center: new THREE.Vector3() };
     return () => {
       ro.disconnect();
-      cancelAnimationFrame(frame);
+      viewWindow.removeEventListener("resize",resize);
+      viewWindow.cancelAnimationFrame(frame);
       controls.dispose();
       scene.traverse((o) => {
         if (o instanceof THREE.Mesh) {

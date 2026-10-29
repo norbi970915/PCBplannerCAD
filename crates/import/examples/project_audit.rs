@@ -13,6 +13,10 @@ fn main() {
     if let Some(b)=&imported.board {for lib in &b.libraries {match libs.iter_mut().find(|l|l.name==lib.name){Some(l)=>l.merge(lib.clone()),None=>libs.push(lib.clone())}}}
     for (i,lib) in libs.iter().enumerate(){let name=format!("libraries/imported-{i}.arlib");writes.push((name.clone(),io::library_to_string(lib)));imported.project.libraries.push(name);}
     let compiled=pcbplannercad_core::schematic::compile(&imported.schematic.sheets.iter().map(|s|pcbplannercad_core::schematic::SheetRef::new(&s.file_name,&s.document)).collect::<Vec<_>>());
+    let reopened:Vec<_>=imported.schematic.sheets.iter().map(|s|(s.file_name.clone(),io::document_from_str(pcbplannercad_core::DocKind::Schematic,&io::document_to_string(&s.document).unwrap()).unwrap())).collect();
+    let reopened_compiled=pcbplannercad_core::schematic::compile(&reopened.iter().map(|(name,doc)|pcbplannercad_core::schematic::SheetRef::new(name,doc)).collect::<Vec<_>>());
+    let reopened_matches=serde_json::to_value(&compiled).unwrap()==serde_json::to_value(reopened_compiled).unwrap();
+    assert!(reopened_matches,"saved schematic netlist differs after reopening");
     writes.push(("schematic-erc.json".into(),serde_json::to_string_pretty(&compiled).unwrap()));
     println!("Schematic: {} parts, {} nets, {} findings",compiled.parts.len(),compiled.nets.len(),compiled.violations.len());
     let mut notes=String::new();
@@ -22,6 +26,30 @@ fn main() {
         for m in &b.report.messages {notes.push_str(&format!("{m:?}\n"));}
         let eco=pcbplannercad_core::pcb::sync::plan(&compiled,&b.document,&|part|b.document.cached_footprint(&part.footprint).cloned().map(|f|(part.footprint.clone(),f)));
         writes.push(("schematic-board-plan.json".into(),serde_json::to_string_pretty(&eco).unwrap()));
+        let mut expected = BTreeMap::<(String,String),String>::new();
+        for net in &compiled.nets { for node in &net.nodes { for pad in &node.pads {
+            expected.insert((node.designator.clone(),pad.clone()),net.name.clone());
+        }}}
+        let mut actual = BTreeMap::<String,Vec<(String,String)>>::new();
+        let mut board_parts = std::collections::BTreeSet::new();
+        let mut independent = vec![];
+        for (_,item) in b.document.items() { if let pcbplannercad_core::Item::Footprint(f)=item {
+            board_parts.insert(f.designator.clone());
+            if f.board_only { independent.push(f.designator.clone()); }
+            for (pad,net) in &f.pad_nets { if !net.is_empty() { actual.entry(net.clone()).or_default().push((f.designator.clone(),pad.clone())); } }
+        }}
+        let mut parity = vec![];
+        for (net,pads) in &actual {
+            let mut targets = BTreeMap::<String,Vec<&(String,String)>>::new();
+            let mut absent = vec![];
+            for pad in pads { match expected.get(pad) { Some(want)=>targets.entry(want.clone()).or_default().push(pad),None=>absent.push(pad) } }
+            let state = if targets.len()>1 {"split"} else if !absent.is_empty() {"missingSchematicPads"}
+                else if targets.keys().next().is_some_and(|want|want!=net) {"differentName"} else {"matching"};
+            if state!="matching" { parity.push(serde_json::json!({"boardNet":net,"state":state,"schematicTargets":targets,"padsMissingFromSchematic":absent})); }
+        }
+        let source_only:Vec<_>=compiled.parts.iter().filter(|p|!p.designator.starts_with('#')&&!p.excluded_from_board()&&!board_parts.contains(&p.designator)).map(|p|&p.designator).collect();
+        let recompiled=pcbplannercad_core::schematic::compile(&imported.schematic.sheets.iter().map(|s|pcbplannercad_core::schematic::SheetRef::new(&s.file_name,&s.document)).collect::<Vec<_>>());
+        writes.push(("schematic-board-parity.json".into(),serde_json::to_string_pretty(&serde_json::json!({"updatesApplied":false,"reopenedNetlistMatches":reopened_matches,"reviewMatchesRecompile":eco.is_current(&recompiled,&b.document),"boardOnlyFootprints":independent,"sourceOnlyParts":source_only,"excludedFromBoard":compiled.parts.iter().filter(|p|p.excluded_from_board()).map(|p|&p.designator).collect::<Vec<_>>(),"netDifferences":parity})).unwrap()));
         let mut probes=vec![];
         let settings=board_settings(&b.document).unwrap().1;
         let mut tested=std::collections::HashSet::new();

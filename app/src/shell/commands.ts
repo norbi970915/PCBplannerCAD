@@ -14,6 +14,10 @@ import { activateTool, cycleLayerMode } from "../editor/toolActions";
 import { openWizardFor } from "../library/wizards";
 import { openFind } from "./FindDialog";
 import { promptText } from "./modal";
+import { openLocalHub } from "../project/LocalHub";
+import { openImportWizard } from "../project/ImportWizard";
+import {openRecovery} from "../project/Recovery";
+import { openRevisions } from "../project/Revisions";
 
 export interface AppCommand {
   label: string;
@@ -36,7 +40,11 @@ const hasDoc = () => !!activeDoc();
 const hasProject = () => !!ed().project;
 
 export const COMMANDS: Record<string, AppCommand> = {
-  "file.newProject": { label: "New Project…", run: actions.newProject },
+  "file.newProject": { label: "New electronics design…", run: () => openLocalHub(true) },
+  "file.localHub": { label: "Local project hub…", run: () => openLocalHub() },
+  "file.recovery": {label:"Recovery copies…",run:openRecovery},
+  "file.revisions": { label: "Project revisions…", run: openRevisions, enabled: hasProject },
+  "import.wizard": { label: "Import wizard…", run: () => openImportWizard() },
   "file.openProject": { label: "Open Project…", run: () => actions.openProject() },
   "file.closeProject": { label: "Close Project", run: actions.closeProject, enabled: hasProject },
   "file.newSchematic": {
@@ -55,6 +63,7 @@ export const COMMANDS: Record<string, AppCommand> = {
   "file.open": { label: "Open…", keys: ["Ctrl+O"], run: () => actions.openAnyFile() },
   "file.save": { label: "Save", keys: ["Ctrl+S"], run: () => actions.saveDoc(), enabled: hasDoc },
   "file.saveAs": { label: "Save As…", keys: ["Ctrl+Shift+S"], run: () => actions.saveDoc(undefined, true), enabled: hasDoc },
+  "file.saveCopy": {label:"Save Copy…",run:()=>actions.saveCopy(),enabled:hasDoc},
   "file.saveAll": { label: "Save All", keys: ["Ctrl+Alt+S"], run: actions.saveAll },
   "file.close": {
     label: "Close Document",
@@ -65,11 +74,11 @@ export const COMMANDS: Record<string, AppCommand> = {
     },
     enabled: hasDoc,
   },
-  "import.structuredProject": { label: "Structured project…", run: () => actions.importDesign("structuredProject") },
-  "import.structuredSchematic": { label: "Structured schematic…", run: () => actions.importDesign("structuredSchematic") },
+  "import.structuredProject": { label: "Structured project…", run: () => openImportWizard() },
+  "import.structuredSchematic": { label: "Structured schematic…", run: () => openImportWizard() },
   "import.structuredSymbols": { label: "Symbol library…", run: () => actions.importLibrary("structuredSymbols") },
   "import.structuredFootprints": { label: "Footprint folder…", run: () => actions.importLibrary("structuredFootprints") },
-  "import.xmlSchematic": { label: "XML schematic (.sch)…", run: () => actions.importDesign("xmlSchematic") },
+  "import.xmlSchematic": { label: "XML schematic (.sch)…", run: () => openImportWizard() },
   "import.xmlLibrary": { label: "XML library (.lbr)…", run: () => actions.importLibrary("xmlLibrary") },
   "file.exit": { label: "Exit", run: () => getCurrentWindow().close() },
 

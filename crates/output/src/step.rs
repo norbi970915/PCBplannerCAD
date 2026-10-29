@@ -380,6 +380,7 @@ mod tests {
 
     fn placed(designator: &str, key: &str, x: f64, y: f64, rot: f64, side: Side) -> Item {
         Item::Footprint(PlacedFootprint {
+            board_only: false,
             designator: designator.into(),
             value: String::new(),
             footprint: key.into(),

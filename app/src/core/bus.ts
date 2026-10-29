@@ -1,5 +1,7 @@
 /** Typed pub/sub for UI-level requests (open a panel, focus a view…). */
 export interface BusEvents {
+  /** Saved paths invalidate file-content previews; no design data changes. */
+  filesSaved: {paths:string[]};
   /** Show a document in a dock tab (schematic, pcb, footprint). */
   showDoc: { docId: string };
   /** Show the symbol editor for a library symbol. */
@@ -14,6 +16,7 @@ export interface BusEvents {
   /** Attach items of a document to its canvas cursor as a floating move. */
   pickUp: { docId: string; ids: number[] };
   canvasTimings: { docId: string };
+  togglePanelWindow: {id:string};
   resetLayout: Record<string, never>;
   showPanel: { id: "projects" | "components" | "properties" | "messages" | "scripts" | "pcb" };
   /** Open the 3D viewer for a board. */

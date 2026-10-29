@@ -646,7 +646,12 @@ function FootprintMetaEditor({ libId, name }: { libId: string; name: string }) {
           onCommit={(v) => void update({ model: v ? { path: v, offset: fp.model?.offset ?? [0, 0, 0], rotation: fp.model?.rotation ?? [0, 0, 0], scale: fp.model?.scale ?? [1, 1, 1] } : null })}
         />
       </Row>
-      <p className="text-[11px] text-muted-foreground">3D models are shown in the 3D viewer (Phase 4).</p>
+      {fp.model&&(['offset','rotation','scale'] as const).map(field=>(['X','Y','Z'] as const).map((axis,index)=><Row key={field+axis} label={(field==='offset'?'Offset ':field==='rotation'?'Rotation ':'Scale ')+axis+(field==='offset'?' (mm)':field==='rotation'?' (°)':'')}><NumberInput value={fp.model![field][index]} onCommit={value=>{
+        if(field==='scale'&&value===0){report('Model scale must be non-zero');return;}
+        const values:[number,number,number]=[...fp.model![field]];values[index]=value;
+        void update({model:{...fp.model!,[field]:values}});
+      }}/></Row>))}
+      <p className="text-[11px] text-muted-foreground">Set model placement in footprint-local coordinates before placing the footprint on a board. Inspect the result in the 3D viewer.</p>
     </Section>
   );
 }

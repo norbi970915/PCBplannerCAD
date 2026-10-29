@@ -350,6 +350,7 @@ fn element(e: Node<'_, '_>, footprint: String, pad_nets: BTreeMap<String, String
         stats.smashed += 1;
     }
     PlacedFootprint {
+        board_only: false,
         designator: attr_str(e, "name"),
         value: attr_str(e, "value"),
         footprint,

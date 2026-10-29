@@ -955,7 +955,7 @@ pub fn write_ipc2581(doc: &Document, project_name: &str) -> Result<String, Outpu
     w.close();
     type BomKey = (String, String, String, Vec<(String, String)>);
     let mut groups: BTreeMap<BomKey, Vec<&PlacedFootprint>> = BTreeMap::new();
-    for (_, fp) in &footprints {
+    for (_, fp) in footprints.iter().filter(|(_,fp)|crate::assembly::include_in_bom(fp)) {
         let params: Vec<(String, String)> = fp.parameters.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let key = (mpn(fp).unwrap_or(&fp.component).to_string(), fp.value.clone(), fp.footprint.clone(), params);
         groups.entry(key).or_default().push(fp);
@@ -1062,6 +1062,15 @@ mod tests {
         })
     }
 
+    #[test]
+    fn bom_exclusions_and_not_fitted_parts_keep_physical_features() {
+        let document=board();let mut edits=Vec::new();
+        for (id,item) in document.items(){if let Item::Footprint(f)=item{let mut f=f.clone();if f.designator=="R1"{f.parameters.insert("Do Not Populate".into(),"yes".into());}if f.designator=="R2"{f.parameters.insert("Exclude from BOM".into(),"true".into());}edits.push(pcbplannercad_core::IdItem{id,item:Item::Footprint(f)});}}
+        let mut session=pcbplannercad_core::Session::with_document(document);session.execute(pcbplannercad_core::Command::ReplaceMany{items:edits}).unwrap();let xml=write_ipc2581(session.document(),"Assembly").unwrap();let bom=xml.split("<Bom ").nth(1).unwrap().split("</Bom>").next().unwrap();
+        assert!(!bom.contains(r#"name="R1""#));assert!(!bom.contains(r#"name="R2""#));assert!(bom.contains(r#"name="J1""#));
+        assert!(xml.contains(r#"refDes="R1""#));assert!(xml.contains(r#"refDes="R2""#));assert!(xml.contains("GND"));
+    }
+
     fn board() -> Document {
         let mut items = vec![Item::Board(BoardSettings::default())];
         let pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)];
@@ -1071,6 +1080,7 @@ mod tests {
         }
         let mk = |d: &str, x: f64, side: Side, nets: &[(&str, &str)], fpk: &str| {
             Item::Footprint(PlacedFootprint {
+                board_only: false,
                 designator: d.into(),
                 value: "10k & <1%>".into(),
                 footprint: fpk.into(),

@@ -19,7 +19,8 @@ use crate::error::CoreError;
 use crate::library::{CachedPart, Library};
 use crate::project::Project;
 
-pub const VERSION: u32 = 1;
+/// Maximum supported version. Documents with required import metadata use version 2.
+pub const VERSION: u32 = 2;
 
 pub const PCB_FORMAT: &str = "pcbplannercad.pcb";
 pub const SCH_FORMAT: &str = "pcbplannercad.sch";
@@ -43,9 +44,10 @@ struct Envelope<T> {
     body: T,
 }
 
-fn write<T: Serialize>(format: &str, body: T) -> String {
-    serde_json::to_string_pretty(&Envelope { format: format.into(), version: VERSION, body }).expect("serialization cannot fail")
+fn write_at_version<T: Serialize>(format: &str, body: T, version: u32) -> String {
+    serde_json::to_string_pretty(&Envelope { format: format.into(), version, body }).expect("serialization cannot fail")
 }
+fn write<T: Serialize>(format: &str, body: T) -> String { write_at_version(format, body, 1) }
 
 fn read<T: DeserializeOwned>(format: &str, s: &str) -> Result<T, CoreError> {
     #[derive(Deserialize)]
@@ -67,6 +69,8 @@ fn read<T: DeserializeOwned>(format: &str, s: &str) -> Result<T, CoreError> {
 
 #[derive(Serialize, Deserialize)]
 struct DocBody {
+    #[serde(default, rename = "busAliases", skip_serializing_if = "BTreeMap::is_empty")]
+    bus_aliases: BTreeMap<String, Vec<String>>,
     items: Vec<IdItem>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     parts: BTreeMap<String, CachedPart>,
@@ -77,7 +81,9 @@ struct DocBody {
 pub fn document_to_string(doc: &Document) -> Result<String, CoreError> {
     let format = format_for(doc.kind()).ok_or_else(|| CoreError::UnsupportedFile("library entries are saved with their library".into()))?;
     let items = doc.items().map(|(id, item)| IdItem { id, item: item.clone() }).collect();
-    Ok(write(format, DocBody { items, parts: doc.cache().clone(), footprints: doc.footprint_cache().clone() }))
+    // Older executables would silently discard these fields when saving. Make them refuse the document instead.
+    let version = if !doc.bus_aliases().is_empty() || doc.items().any(|(_,item)| matches!(item,Item::Footprint(f) if f.board_only)) {2} else {1};
+    Ok(write_at_version(format, DocBody { items, bus_aliases: doc.bus_aliases().clone(), parts: doc.cache().clone(), footprints: doc.footprint_cache().clone() }, version))
 }
 
 pub fn document_from_str(kind: DocKind, s: &str) -> Result<Document, CoreError> {
@@ -93,7 +99,7 @@ pub fn document_from_str(kind: DocKind, s: &str) -> Result<Document, CoreError> 
         };
         items.insert(id, item);
     }
-    Ok(Document::from_parts(kind, items, body.parts).with_footprints(body.footprints))
+    Ok(Document::from_parts(kind, items, body.parts).with_footprints(body.footprints).with_bus_aliases(body.bus_aliases))
 }
 
 /// Document kind implied by a file extension.

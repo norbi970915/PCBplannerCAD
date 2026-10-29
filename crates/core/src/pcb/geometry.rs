@@ -293,6 +293,7 @@ mod tests {
         let mut f = Footprint::new("R");
         f.items = vec![smd("1", -1.0), smd("2", 1.0)];
         let fp = PlacedFootprint {
+            board_only: false,
             designator: "R1".into(),
             value: "10k".into(),
             footprint: "L/R".into(),

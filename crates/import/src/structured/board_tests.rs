@@ -641,3 +641,22 @@ fn structured_dimensions_and_teardrop_zones_import() {
     let teardrops = imp.document.items().filter(|(_, i)| matches!(i, Item::Zone(z) if z.teardrop)).count();
     assert_eq!(teardrops, 1);
 }
+
+
+#[test]
+fn independent_and_graphic_only_footprints_are_kept_but_electrical_parts_stay_linked() {
+    use pcbplannercad_core::{pcb::sync,schematic::Compiled};
+    let text=r#"(kicad_pcb (version 20241229) (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+        (footprint "L:Graphic" (layer "F.Cu") (at 0 0) (attr board_only) (property "Reference" "G1"))
+        (footprint "L:Graphic" (layer "F.Cu") (at 5 0) (attr exclude_from_bom exclude_from_pos_files) (property "Reference" "G2"))
+        (footprint "L:Test" (layer "F.Cu") (at 10 0) (attr exclude_from_bom exclude_from_pos_files) (property "Reference" "TP1")
+            (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu")))
+        (footprint "L:Part" (layer "F.Cu") (at 15 0) (property "Reference" "R1")))"#;
+    let imported=parse_board(text,"original").unwrap();
+    let fps:Vec<_>=imported.document.items().filter_map(|(_,i)|if let Item::Footprint(f)=i{Some((f.designator.as_str(),f.board_only))}else{None}).collect();
+    assert_eq!(fps,vec![("G1",true),("G2",true),("TP1",false),("R1",false)]);
+    let reopened=document_from_str(DocKind::Pcb,&document_to_string(&imported.document).unwrap()).unwrap();
+    let plan=sync::plan(&Compiled::default(),&reopened,&|_|None);
+    let removed:Vec<_>=plan.changes.iter().filter_map(|c|if let sync::EcoChange::RemoveFootprint{designator,..}=c{Some(designator.as_str())}else{None}).collect();
+    assert_eq!(removed,vec!["R1","TP1"]);
+}

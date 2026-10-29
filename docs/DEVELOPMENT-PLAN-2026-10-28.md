@@ -33,7 +33,7 @@ These are dependency-based milestones, not calendar delivery promises. Fixes for
 | Differential pairs | Pair routing and individual length tuning exist. Paired via fanout and coordinated pair tuning remain gaps. | Add pair-aware transitions, coordinated tuning and target checks. |
 | Schematic and project flow | Capture, ERC, annotation and schematic-to-board updates exist. Several full-project interactions remain unchecked. | Complete hierarchy, mapping, identity and change-review acceptance. |
 | Manufacturing and 3D | Fabrication/assembly outputs and mechanical export exist; STEP solids are faceted. | Independently inspect outputs and manufacture a small prototype. |
-| Saving and recovery | File I/O and exact Undo/reopen tests exist. Recovery coverage has not been established by this assessment. | Audit safe writes/autosave/recovery before deciding what must be implemented. |
+| Saving and recovery | Safe writes, project checkpoints and separate automatic recovery copies are implemented; see the 2026-10-29 handoff for later evidence. | Complete native restart/recovery and large-board profiling; complete native external-save conflict/Save Copy acceptance and audit legacy creation paths. |
 
 Automated baseline recorded for the delivered source: 185 editor tests, 216 core tests, 44 import tests, 45 output tests and 24 isolated headless WebGL checks passed. TypeScript, frontend production build and native app integration passed. Three optional core performance tests and one output performance test were ignored. Six fixture-dependent integration tests reported success but may skip their bodies without configured inputs. A bundled fill-worker smoke check passed under the app's content-security policy.
 

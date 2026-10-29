@@ -49,7 +49,7 @@ export function sequenceEntries(prefix: string): SequenceEntry[] {
 }
 
 /** Last pointer position, so the key menu opens where the user is looking. */
-export const lastPointer = { x: 200, y: 200 };
+export const lastPointer: {x:number;y:number;window?:Window} = { x: 200, y: 200 };
 
 let pending: string | null = null;
 
@@ -78,17 +78,18 @@ function chordOf(e: KeyboardEvent): string {
 }
 
 function isTextInput(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+  const el=target as HTMLElement|null;
+  return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
 }
 
-export function installShortcuts(): () => void {
+export function installShortcuts(viewWindow:Window=window): () => void {
   // Built up front: the prefix check below runs before any resolve() would build it,
   // so the first P after start-up would otherwise not open the Place menu.
   if (!bindings) build();
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented || isTextInput(e.target) || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
-    if (document.querySelector("[role=dialog]") || useContextMenu.getState().at) return;
+    if (document.querySelector("[role=dialog]") || viewWindow.document.querySelector('[role="dialog"],[data-slot="popover-content"][data-state="open"],[role="menu"][data-slot],[role="listbox"]') || useContextMenu.getState().at) return;
+    lastPointer.window=viewWindow;
     const chord = chordOf(e);
     const plainLetter = /^[A-Z]$/.test(chord);
 
@@ -117,17 +118,18 @@ export function installShortcuts(): () => void {
     }
   };
   const onPointer = (e: PointerEvent) => {
+    lastPointer.window=viewWindow;
     lastPointer.x = e.clientX;
     lastPointer.y = e.clientY;
   };
 
-  window.addEventListener("keydown", onKeyDown);
-  window.addEventListener("pointermove", onPointer, true);
-  window.addEventListener("pointerdown", onPointer, true);
+  viewWindow.addEventListener("keydown", onKeyDown);
+  viewWindow.addEventListener("pointermove", onPointer, true);
+  viewWindow.addEventListener("pointerdown", onPointer, true);
   return () => {
-    window.removeEventListener("keydown", onKeyDown);
-    window.removeEventListener("pointermove", onPointer, true);
-    window.removeEventListener("pointerdown", onPointer, true);
+    viewWindow.removeEventListener("keydown", onKeyDown);
+    viewWindow.removeEventListener("pointermove", onPointer, true);
+    viewWindow.removeEventListener("pointerdown", onPointer, true);
     setPending(null);
   };
 }

@@ -89,6 +89,7 @@ fn compiled(parts: Vec<NetlistPart>, nets: Vec<Net>) -> Compiled {
 
 fn placed(des: &str, value: &str, key: &str, x: f64, nets: &[(&str, &str)]) -> Item {
     Item::Footprint(PlacedFootprint {
+        board_only: false,
         designator: des.into(),
         value: value.into(),
         footprint: key.into(),
@@ -222,7 +223,7 @@ fn net_updates_per_pad() {
         placed("R2", "10k", "Lib/R_0603", 5.0, &[("1", "A"), ("2", "OLD")]),
     ]);
     let plan = plan(&c, &doc, &resolver);
-    assert_eq!(kinds(&plan), ["nets", "nets"], "{:?}", plan.changes);
+    assert_eq!(kinds(&plan), ["nets", "nets", "warning"], "{:?}", plan.changes);
     let EcoChange::UpdateNets { designator, changes, .. } = &plan.changes[1] else { panic!() };
     assert_eq!(designator, "R2");
     assert_eq!(changes, &[("1".into(), "A".into(), "B".into()), ("2".into(), "OLD".into(), String::new())]);
@@ -480,4 +481,75 @@ fn apply_is_one_undoable_command() {
     let mut s = Session::with_document(doc.clone());
     s.execute(apply(&plan, &doc, &[99])).unwrap();
     assert!(!s.can_undo());
+}
+
+
+#[test]
+fn independent_board_items_survive_schematic_updates_and_round_trip() {
+    let mut graphic=placed("LOGO1","Art","Lib/R_0603",0.,&[]);
+    if let Item::Footprint(f)=&mut graphic { f.board_only=true; }
+    let doc=board(vec![graphic,placed("R9","Old","Lib/R_0603",5.,&[])]);
+    let c=compiled(vec![],vec![]);
+    let plan=plan(&c,&doc,&resolver);
+    assert_eq!(plan.changes,vec![EcoChange::RemoveFootprint{item:ItemId(1),designator:"R9".into()}]);
+    let mut session=run(&plan,&doc,&all(&plan));
+    assert_eq!(session.document().len(),1);assert_eq!(session.document().get(ItemId(0)),doc.get(ItemId(0)));
+    let text=crate::io::document_to_string(session.document()).unwrap();
+    assert!(text.contains("\"boardOnly\": true"));
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"],2);
+    let reopened=crate::io::document_from_str(DocKind::Pcb,&text).unwrap();
+    assert!(footprint(&reopened,"LOGO1").board_only);
+    session.undo().unwrap();assert_eq!(items_of(session.document()),items_of(&doc));
+    session.redo().unwrap();assert_eq!(items_of(session.document()),items_of(&reopened));
+    let old=crate::io::document_to_string(&doc).unwrap().replace("\"boardOnly\": true,", "");
+    let legacy=crate::io::document_from_str(DocKind::Pcb,&old).unwrap();
+    assert!(!footprint(&legacy,"LOGO1").board_only,"old files default to ordinary linked footprints");
+}
+
+#[test]
+fn schematic_update_review_expires_after_board_cache_or_netlist_changes() {
+    let c=compiled(vec![part("R1","10k","R_0603")],vec![]);
+    let doc=board(vec![placed("R1","1k","Lib/R_0603",0.,&[])]);
+    let reviewed=plan(&c,&doc,&resolver);
+    assert!(reviewed.is_current(&c,&doc));
+    let mut changed=c.clone();changed.parts[0].value="22k".into();
+    assert!(!reviewed.is_current(&changed,&doc));
+    let changed_doc=board(vec![placed("R1","4k7","Lib/R_0603",0.,&[])]);
+    assert!(!reviewed.is_current(&c,&changed_doc));
+    let mut changed_geometry=doc.clone();changed_geometry.put_cached_footprint("Lib/R_0603",geom("R_0603",&["1"]));
+    assert!(!reviewed.is_current(&c,&changed_geometry));
+    assert_eq!(items_of(&doc),items_of(&board(vec![placed("R1","1k","Lib/R_0603",0.,&[])])));
+    let json=serde_json::to_value(reviewed).unwrap();
+    assert!(json.get("sourceBoard").is_none()&&json.get("sourceNetlist").is_none(),"private snapshots never cross IPC");
+}
+
+#[test]
+fn split_board_net_has_explicit_hierarchy_diagnostic_without_a_global_rename() {
+    let c=compiled(vec![part("R1","10k","R_0603"),part("R2","10k","R_0603")],vec![net("/Left/D",&[("R1","1")]),net("/Right/D",&[("R2","1")])]);
+    let doc=board(vec![placed("R1","10k","Lib/R_0603",0.,&[("1","OLD")]),placed("R2","10k","Lib/R_0603",5.,&[("1","OLD")])]);
+    let reviewed=plan(&c,&doc,&resolver);
+    assert!(!reviewed.changes.iter().any(|c|matches!(c,EcoChange::RenameNet{..})));
+    assert!(reviewed.changes.iter().any(|c|matches!(c,EcoChange::Warning{message}if message.contains("Board net 'OLD'")&&message.contains("bus/hierarchy"))));
+    let session=run(&reviewed,&doc,&[]);assert_eq!(items_of(session.document()),items_of(&doc));assert!(!session.can_undo());
+}
+
+#[test]
+fn added_pads_reuse_existing_generated_net_name_including_new_footprints() {
+    let (old,new)=("Net-(R1-A)","Net-(R1-Pad1)");
+    let c=compiled(vec![part("R1","10k","R_0603"),part("R2","10k","R_0603"),part("R3","10k","R_0603")],vec![net(new,&[("R1","1"),("R2","1"),("R3","1")])]);
+    let doc=board(vec![placed("R1","10k","Lib/R_0603",0.,&[("1",old)]),placed("R2","10k","Lib/R_0603",5.,&[("1",old)]),Item::Track(Track{locked:false,a:Point::new(0,0),b:Point::new(mm(5.),0),width:mm(0.2),layer:layer::TOP_COPPER,net:old.into()})]);
+    let reviewed=plan(&c,&doc,&resolver);
+    assert_eq!(kinds(&reviewed),vec!["add"]);
+    let session=run(&reviewed,&doc,&all(&reviewed));
+    for des in ["R1","R2","R3"] {assert_eq!(footprint(session.document(),des).net_of("1"),old);}
+    assert!(session.document().items().any(|(_,i)|matches!(i,Item::Track(t)if t.net==old)));
+}
+
+#[test]
+fn rename_does_not_merge_into_a_net_represented_only_by_loose_copper() {
+    let c=compiled(vec![part("R1","10k","R_0603")],vec![net("TARGET",&[("R1","1")])]);
+    let doc=board(vec![placed("R1","10k","Lib/R_0603",0.,&[("1","OLD")]),Item::Track(Track{locked:false,a:Point::new(0,0),b:Point::new(mm(2.),0),width:mm(0.2),layer:layer::TOP_COPPER,net:"TARGET".into()})]);
+    let reviewed=plan(&c,&doc,&resolver);
+    assert!(!reviewed.changes.iter().any(|change|matches!(change,EcoChange::RenameNet{..})));
+    assert!(reviewed.changes.iter().any(|change|matches!(change,EcoChange::UpdateNets{..})));
 }

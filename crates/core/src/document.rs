@@ -56,11 +56,12 @@ pub struct Document {
     cache: BTreeMap<String, CachedPart>,
     /// PCBs only: footprint geometry for placed footprints, keyed "Library/Name".
     footprints: BTreeMap<String, Footprint>,
+    bus_aliases: BTreeMap<String, Vec<String>>,
 }
 
 impl Document {
     pub fn new(kind: DocKind) -> Self {
-        Self { kind, next_id: 0, items: BTreeMap::new(), cache: BTreeMap::new(), footprints: BTreeMap::new() }
+        Self { kind, next_id: 0, items: BTreeMap::new(), cache: BTreeMap::new(), footprints: BTreeMap::new(), bus_aliases: BTreeMap::new() }
     }
 
     /// Builds a document from plain items, assigning fresh ids in order.
@@ -75,7 +76,14 @@ impl Document {
 
     pub fn from_parts(kind: DocKind, items: BTreeMap<ItemId, Item>, cache: BTreeMap<String, CachedPart>) -> Self {
         let next_id = items.keys().next_back().map_or(0, |id| id.0 + 1);
-        Self { kind, next_id, items, cache, footprints: BTreeMap::new() }
+        Self { kind, next_id, items, cache, footprints: BTreeMap::new(), bus_aliases: BTreeMap::new() }
+    }
+
+    /// Group-bus aliases are schematic metadata, preserved alongside library snapshots.
+    pub fn bus_aliases(&self) -> &BTreeMap<String, Vec<String>> { &self.bus_aliases }
+
+    pub fn with_bus_aliases(mut self, aliases: BTreeMap<String, Vec<String>>) -> Self {
+        self.bus_aliases = aliases; self
     }
 
     pub fn kind(&self) -> DocKind {

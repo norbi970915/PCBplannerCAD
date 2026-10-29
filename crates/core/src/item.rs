@@ -389,6 +389,10 @@ fn default_true() -> bool {
 pub const FIELD_DESIGNATOR: &str = "Designator";
 pub const FIELD_VALUE: &str = "Value";
 pub const FIELD_FOOTPRINT: &str = "Footprint";
+pub const FIELD_EXCLUDE_BOARD: &str = "Exclude from board";
+pub const FIELD_EXCLUDE_BOM: &str = "Exclude from BOM";
+pub const FIELD_DNP: &str = "DNP";
+pub const FIELD_EXCLUDE_POSITION: &str = "Exclude from placement";
 
 /// A placed component unit. `lib_ref` keys the document's part cache.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -25,7 +25,10 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
     {
       title: "File",
       items: [
+        "file.localHub",
         "file.newProject",
+        "file.revisions",
+        "file.recovery",
         "file.openProject",
         "file.closeProject",
         "-",
@@ -36,6 +39,7 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
         "file.open",
         "file.save",
         "file.saveAs",
+        "file.saveCopy",
         "file.saveAll",
         "file.close",
         "-",
@@ -45,7 +49,7 @@ function menus(kind: string | undefined): { title: string; items: MenuEntry[] }[
         "-",
         {
           title: "Import",
-          items: ["import.structuredProject", "import.structuredSchematic", "import.structuredSymbols", "import.structuredFootprints", "-", "import.xmlSchematic", "import.xmlLibrary"],
+          items: ["import.wizard", "-", "import.structuredProject", "import.structuredSchematic", "import.structuredSymbols", "import.structuredFootprints", "-", "import.xmlSchematic", "import.xmlLibrary"],
         },
         "-",
         "file.exit",

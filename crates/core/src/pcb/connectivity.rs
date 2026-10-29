@@ -637,6 +637,7 @@ pub(crate) mod fixtures {
 
     pub fn fp(des: &str, key: &str, x: f64, y: f64, nets: &[(&str, &str)]) -> Item {
         Item::Footprint(PlacedFootprint {
+            board_only: false,
             designator: des.into(),
             value: String::new(),
             footprint: key.into(),

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type FunctionComponent } from "react";
+import { useEffect, useRef, useState, type FunctionComponent } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -11,12 +11,17 @@ import {
   type IDockviewPanelHeaderProps,
   type IDockviewPanelProps,
 } from "dockview-react";
+import {allowWindowClose} from "./core/closeSafety";
+import {api as backendApi} from "./core/api";
+import {installRecoveryAutosave,useRecoveryStatus} from "./core/recovery";
 import { anyUnsaved, closeDoc } from "./core/actions";
 import { bus } from "./core/bus";
 import { useEditor } from "./core/store";
 import { readPreference } from "./core/preferences";
 import { useTheme } from "./core/theme";
-import { X } from "lucide-react";
+import {SurfaceWindowContext} from "./shell/SurfaceWindow";
+import {installDocking,focusPanelWindow} from "./shell/docking";
+import { X,ExternalLink,PanelTop } from "lucide-react";
 import { DocumentPanel, SymbolEditorPanel } from "./editor/DocumentPanel";
 import { LibraryView } from "./library/LibraryView";
 import { ComponentsPanel } from "./panels/ComponentsPanel";
@@ -46,11 +51,11 @@ const isDocPanel = (id: string) =>
 const st = () => useEditor.getState();
 
 function guarded(name: string, Panel: FunctionComponent<IDockviewPanelProps>): FunctionComponent<IDockviewPanelProps> {
-  return (props) => (
-    <PanelErrorBoundary name={name}>
-      <Panel {...props} />
-    </PanelErrorBoundary>
-  );
+  return (props) => {
+    const [generation,remount]=useState(0);
+    useEffect(()=>{const sub=props.api.onDidLocationChange(()=>remount(n=>n+1));return ()=>sub.dispose();},[props.api]);
+    return <SurfaceWindowContext.Provider value={props.api.getWindow()}><PanelErrorBoundary name={name}><Panel key={generation} {...props}/></PanelErrorBoundary></SurfaceWindowContext.Provider>;
+  };
 }
 
 /** Keeps the store's active document in sync with the focused dock tab. */
@@ -98,6 +103,13 @@ const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
   library: guarded("Library", (props) => <LibraryView libId={(props.params as { libId: string }).libId} />),
 };
 
+function WindowButton({api}:Pick<IDockviewPanelHeaderProps,"api">){
+  const [detached,setDetached]=useState(api.location.type==="popout");
+  useEffect(()=>{const sub=api.onDidLocationChange(()=>setDetached(api.location.type==="popout"));return ()=>sub.dispose();},[api]);
+  if(api.id==="home")return null;
+  return <button className="grid size-4.5 place-items-center rounded text-faint hover:bg-hover hover:text-ink" title={detached?"Dock back":"Detach to window"} onPointerDown={e=>e.stopPropagation()} onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();bus.emit("togglePanelWindow",{id:api.id});}}>{detached?<PanelTop className="size-3"/>:<ExternalLink className="size-3"/>}</button>;
+}
+
 /** Document tab with a dirty marker and a close button that asks first. */
 function DocTab(props: IDockviewPanelHeaderProps) {
   const id = props.api.id;
@@ -133,6 +145,7 @@ function DocTab(props: IDockviewPanelHeaderProps) {
       {icon && <span className="flex text-faint [&_svg]:size-3.5">{Icons[icon]}</span>}
       <span>{props.api.title}</span>
       {dirty && <span className="dirty-dot" />}
+      <WindowButton api={props.api}/>
       <button
         className="grid size-4.5 place-items-center rounded-[3px] text-faint opacity-60 hover:bg-hover hover:text-ink hover:opacity-100 group-hover:opacity-100"
         onClick={(e) => void close(e)}
@@ -145,7 +158,8 @@ function DocTab(props: IDockviewPanelHeaderProps) {
 }
 
 function ToolTab(props: IDockviewPanelHeaderProps) {
-  return <div className="flex h-full items-center px-2.5 text-xs font-medium whitespace-nowrap">{props.api.title}</div>;
+  const icon:Record<string,string>={projects:"folder",components:"component",pcb:"board",properties:"singleLayer",messages:"erc",scripts:"schematic"};
+  return <div className="flex h-full items-center gap-1.5 px-2.5 text-xs font-medium whitespace-nowrap">{Icons[icon[props.api.id]]}{props.api.title}<WindowButton api={props.api}/></div>;
 }
 
 const tabComponents = { doc: DocTab, tool: ToolTab };
@@ -177,7 +191,10 @@ function restoreLayout(api: DockviewApi): boolean {
   try {
     const saved = readPreference(LAYOUT_KEY);
     if (!saved) return false;
-    api.fromJSON(JSON.parse(saved));
+    const layout=JSON.parse(saved);
+    // Native windows are session views; do not recreate empty document popouts on restart.
+    if(layout.popoutGroups?.length)return false;
+    api.fromJSON(layout);
     // Documents aren't reopened across restarts; drop their tabs.
     for (const p of [...api.panels]) if (isDocPanel(p.id) && p.id !== "home") p.api.close();
     if (!TOOL_PANELS.every((id) => api.getPanel(id))) return false;
@@ -193,24 +210,28 @@ function restoreLayout(api: DockviewApi): boolean {
 type DocPanelOptions = Pick<AddPanelOptions, "id" | "component" | "title" | "params" | "tabComponent">;
 
 function addDocPanel(api: DockviewApi, options: DocPanelOptions) {
-  const ref = api.panels.find((p) => isDocPanel(p.id));
+  const ref = api.panels.find((p) => isDocPanel(p.id)&&p.api.location.type==="grid");
   const position = ref ? { referencePanel: ref.id, direction: "within" as const } : { referencePanel: "properties", direction: "left" as const };
   return api.addPanel({ ...options, position });
 }
 
 function showOrAdd(api: DockviewApi, options: DocPanelOptions) {
   const existing = api.getPanel(options.id);
-  if (existing) existing.api.setActive();
+  if (existing) {existing.api.setActive();focusPanelWindow(existing);}
   else addDocPanel(api, options);
 }
 
 export function App() {
+  useEffect(()=>installRecoveryAutosave(),[]);
   const resolved = useTheme((s) => s.resolved);
   const apiRef = useRef<DockviewApi | null>(null);
+  const dockCleanup=useRef<(()=>void)|null>(null);
+  useEffect(()=>()=>{dockCleanup.current?.();dockCleanup.current=null;},[]);
 
   const onReady = (event: DockviewReadyEvent) => {
     const api = event.api;
     apiRef.current = api;
+    dockCleanup.current?.();dockCleanup.current=installDocking(api);
     if (!restoreLayout(api)) buildDefaultLayout(api);
     api.onDidLayoutChange(() => {
       try {
@@ -273,7 +294,7 @@ export function App() {
         const a = api();
         if (!a) return;
         const existing = a.getPanel(id);
-        if (existing) return existing.api.setActive();
+        if (existing) {existing.api.setActive();focusPanelWindow(existing);return;}
         if (id === "pcb" && a.getPanel("projects")) {
           a.addPanel({ id, component: id, title: PANEL_DEFAULTS[id].title, tabComponent: "tool", position: { referencePanel: "projects", direction: "within" } });
           return;
@@ -313,17 +334,19 @@ export function App() {
     // first (React StrictMode does this in dev), unregister when it arrives.
     let disposed = false;
     let unlistenClose: (() => void) | undefined;
+    let checkingClose=false;
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
-        const unsaved = await anyUnsaved().catch(() => []);
-        if (!unsaved.length) return;
-        const ok = await ask(`Unsaved changes in: ${unsaved.slice(0, 6).join(", ")}${unsaved.length > 6 ? "…" : ""}. Quit anyway?`, {
-          title: "pCAD",
-          kind: "warning",
-          okLabel: "Quit",
-          cancelLabel: "Cancel",
+        if(checkingClose){event.preventDefault();return;}checkingClose=true;
+        try {
+        const ok=await allowWindowClose({
+          unsaved:anyUnsaved,
+          confirm:names=>ask("Unsaved changes in: "+names.slice(0,6).join(", ")+(names.length>6?"…":"")+". Quit anyway?",{title:"pCAD",kind:"warning",okLabel:"Quit",cancelLabel:"Cancel"}),
+          capture:()=>useRecoveryStatus.getState().enabled?backendApi.recoveryCapture(false):Promise.resolve(null),
+          report:message=>st().log("error",message,{source:"Recovery"})
         });
-        if (!ok) event.preventDefault();
+        if(!ok)event.preventDefault();
+        } finally {checkingClose=false;}
       })
       .then((fn) => (disposed ? fn() : (unlistenClose = fn)))
       .catch(() => {});
@@ -340,7 +363,7 @@ export function App() {
     <div className="app">
       <MenuBar />
       <div className="dock">
-        <DockviewReact components={components} tabComponents={tabComponents} onReady={onReady} theme={resolved === "dark" ? themeDark : themeLight} />
+        <DockviewReact popoutUrl="/popout.html" components={components} tabComponents={tabComponents} onReady={onReady} theme={resolved === "dark" ? themeDark : themeLight} />
       </div>
       <StatusBar />
       <ModalHost />

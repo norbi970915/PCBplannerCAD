@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
+import { readPreference } from "../../core/preferences";
 import { cn } from "@/lib/utils";
 
 /** Scrollable panel body with the panel surface color. */
@@ -27,6 +29,22 @@ export function Section({ title, actions, children, className }: { title: string
       <div className="px-3 pb-2.5">{children}</div>
     </section>
   );
+}
+
+/** Opt-in disclosure section. Expansion is a local UI preference, never design data. */
+export function CollapsibleSection({title,count,dirty=false,preferenceKey,children}:{title:string;count:number;dirty?:boolean;preferenceKey:string;children:ReactNode}) {
+  const id=useId();
+  const [expanded,setExpanded]=useState(()=>{try{return readPreference(preferenceKey)==="1";}catch{return false;}});
+  const toggle=()=>{const next=!expanded;setExpanded(next);try{localStorage.setItem(preferenceKey,next?"1":"0");}catch{/* Optional UI preference. */}};
+  return <section aria-label={title} className="border-b border-line last:border-b-0">
+    <button type="button" aria-expanded={expanded} aria-controls={id} onClick={toggle} className="flex h-7 w-full items-center gap-1.5 px-3 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent-ink">
+      <ChevronRight aria-hidden="true" className={cn("size-3 shrink-0 transition-transform",expanded&&"rotate-90")}/>
+      <span className="eyebrow min-w-0 flex-1 truncate">{title}</span>
+      <span className="rounded bg-secondary px-1.5 font-mono text-[10px] text-muted-foreground">{count}</span>
+      {dirty&&<span role="img" aria-label="Unsaved library changes" className="dirty-dot"/>}
+    </button>
+    <div id={id} hidden={!expanded} className="px-3 pb-2.5">{expanded&&children}</div>
+  </section>;
 }
 
 /** Label/value row used by property grids. */

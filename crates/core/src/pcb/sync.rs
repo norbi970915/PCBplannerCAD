@@ -56,11 +56,23 @@ pub enum EcoChange {
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EcoPlan {
+    #[serde(skip)]
+    source_board: Option<Document>,
+    #[serde(skip)]
+    source_netlist: serde_json::Value,
     pub changes: Vec<EcoChange>,
     /// Footprints the caller must cache (`put_cached_footprint`) before
     /// executing the command from [`apply`]: key → geometry.
     #[serde(skip)]
     pub footprints: Vec<(String, Footprint)>,
+}
+
+impl EcoPlan {
+    /// Applying a reviewed list to a changed board or schematic requires a fresh review.
+    pub fn is_current(&self, compiled: &Compiled, board: &Document) -> bool {
+        self.source_board.as_ref() == Some(board)
+            && serde_json::to_value(compiled).is_ok_and(|value| value == self.source_netlist)
+    }
 }
 
 fn is_placeable(des: &str) -> bool {
@@ -116,7 +128,7 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
     let mut parts: Vec<&NetlistPart> = Vec::new();
     for p in &compiled.parts {
         let des = p.designator.trim();
-        if des.starts_with('#') {
+        if des.starts_with('#') || p.excluded_from_board() {
             continue;
         }
         if !is_placeable(des) {
@@ -179,6 +191,7 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
     }
     let mut sch_sets: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
     for (des, map) in &want {
+        if !on_board.contains_key(des) { continue; } // New, not-yet-placed parts must not invalidate existing copper names.
         for (pad, net) in map {
             sch_sets.entry(net.as_str()).or_default().insert((des, pad.as_str()));
         }
@@ -186,9 +199,27 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
     let sch_by_set: HashMap<&BTreeSet<(&str, &str)>, &str> = sch_sets.iter().map(|(n, s)| (s, *n)).collect();
     let candidates: BTreeMap<&str, &str> =
         pcb_sets.iter().filter_map(|(n, s)| sch_by_set.get(s).filter(|m| **m != *n).map(|m| (*n, *m))).collect();
+    let occupied_nets: HashSet<&str> = board.items().flat_map(|(_,item)| match item {
+        Item::Footprint(f) => f.pad_nets.values().map(String::as_str).collect::<Vec<_>>(),
+        Item::Track(t) => vec![t.net.as_str()], Item::ArcTrack(a) => vec![a.net.as_str()],
+        Item::Via(v) => vec![v.net.as_str()], Item::Zone(z) => vec![z.net.as_str()], _ => vec![],
+    }).filter(|net| !net.is_empty()).collect();
     // Never rename onto a board net that keeps its name (that would merge copper).
     let renames: BTreeMap<&str, &str> =
-        candidates.iter().filter(|(_, to)| !pcb_sets.contains_key(**to) || candidates.contains_key(**to)).map(|(f, t)| (*f, *t)).collect();
+        candidates.iter().filter(|(_, to)| !occupied_nets.contains(**to) || candidates.contains_key(**to)).map(|(f, t)| (*f, *t)).collect();
+
+    // Equivalent generated labels are cosmetic. Reuse the board name for new pads too,
+    // so adding a part cannot create a disconnected net beside existing copper.
+    let canonical_names: HashMap<&str, &str> = renames.iter().filter(|(from,to)| is_auto_net(from) && is_auto_net(to)).map(|(from,to)|(*to,*from)).collect();
+
+    // A split can be intentional, but incomplete imported hierarchy can also cause it.
+    // Never disguise this as a cosmetic rename: retain the individual changes for review.
+    for (old, pads) in &pcb_sets {
+        let targets: BTreeSet<&str> = pads.iter().filter_map(|(des, pad)| want.get(des).and_then(|m| m.get(*pad)).map(String::as_str)).collect();
+        if targets.len() > 1 {
+            warnings.push(format!("Board net '{old}' maps to several schematic nets ({}); review bus/hierarchy connectivity and routing before applying pad changes", targets.into_iter().map(|n| if n.is_empty() { "<unconnected>" } else { n }).collect::<Vec<_>>().join(", ")));
+        }
+    }
 
     // ----- Per part -----
     let mut queued: HashSet<String> = HashSet::new();
@@ -216,7 +247,7 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
             }
             r
         };
-        let wanted = want.get(des).cloned().unwrap_or_default();
+        let wanted = want.get(des).map(|pads| pads.iter().map(|(pad,net)| (pad.clone(),canonical_names.get(net.as_str()).copied().unwrap_or(net).to_string())).collect()).unwrap_or_default();
         let parameters: BTreeMap<String, String> = part.parameters.iter().cloned().collect();
 
         match on_board.get(des) {
@@ -287,7 +318,7 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
         }
     }
 
-    let mut removed: Vec<(ItemId, &PlacedFootprint)> = board_fps.iter().filter(|(_, f)| !known.contains(f.designator.trim())).copied().collect();
+    let mut removed: Vec<(ItemId, &PlacedFootprint)> = board_fps.iter().filter(|(_, f)| !f.board_only && !known.contains(f.designator.trim())).copied().collect();
     removed.sort_by(|a, b| natural_cmp(&a.1.designator, &b.1.designator));
     for (item, f) in removed {
         changes.push(EcoChange::RemoveFootprint { item, designator: f.designator.clone() });
@@ -301,7 +332,7 @@ pub fn plan(compiled: &Compiled, board: &Document, resolve: &dyn Fn(&NetlistPart
         changes.push(EcoChange::RenameNet { from: from.to_string(), to: to.to_string() });
     }
     changes.extend(warnings.into_iter().map(|message| EcoChange::Warning { message }));
-    EcoPlan { changes, footprints }
+    EcoPlan { changes, footprints, source_board: Some(board.clone()), source_netlist: serde_json::to_value(compiled).expect("netlist serializes") }
 }
 
 /// Pad → net for every pad of the footprint (unconnected pads get "").
@@ -367,6 +398,7 @@ pub fn apply(plan: &EcoPlan, board: &Document, selected: &[usize]) -> Command {
                 f.parameters.extend(parameters.iter().map(|(k, v)| (k.clone(), v.clone())));
             }),
             EcoChange::AddFootprint { designator, value, footprint_key, component, pad_nets, parameters } => adds.push(PlacedFootprint {
+                board_only: false,
                 designator: designator.clone(),
                 value: value.clone(),
                 footprint: footprint_key.clone(),

@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 
 
 import * as React from "react"
@@ -36,7 +37,8 @@ function MenubarGroup({
 function MenubarPortal({
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Portal>) {
-  return <MenubarPrimitive.Portal data-slot="menubar-portal" {...props} />
+  const surface=useSurfaceWindow();
+  return <MenubarPrimitive.Portal container={surface.document.body} data-slot="menubar-portal" {...props} />
 }
 
 function MenubarRadioGroup({

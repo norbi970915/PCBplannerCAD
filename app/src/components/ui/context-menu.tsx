@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 
 
 import * as React from "react"
@@ -30,8 +31,9 @@ function ContextMenuGroup({
 function ContextMenuPortal({
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Portal>) {
+  const surface=useSurfaceWindow();
   return (
-    <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />
+    <ContextMenuPrimitive.Portal container={surface.document.body} data-slot="context-menu-portal" {...props} />
   )
 }
 
@@ -96,8 +98,9 @@ function ContextMenuContent({
   className,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  const surface=useSurfaceWindow();
   return (
-    <ContextMenuPrimitive.Portal>
+    <ContextMenuPrimitive.Portal container={surface.document.body}>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
         className={cn(

@@ -49,7 +49,7 @@ test('differential pair results tag both nets and preserve routing diagnostics',
   const raw = [result('USB_P'), { ...result('USB_N'), reached: false, blockedAt: req.end, message: 'Blocked' }];
   await withIPC((cmd, args) => {
     assert.equal(cmd, 'pcb_route_pair');
-    assert.deepEqual(args, { id: 'board', req, negNet: 'USB_N', gap: 200000 });
+    assert.deepEqual(args, { id: 'board', req, negNet: 'USB_N', gap: 200000, negStart: null });
     return raw;
   }, async () => {
     const pair = await api.pcbRoutePair('board', req, 'USB_N', 200000);
@@ -608,5 +608,67 @@ test('paste, bulk properties and transforms forward the explicit rules setting',
   ];
   await withIPC((cmd,args)=>{assert.equal(cmd,'doc_execute');assert.equal(args!.enforceVias,false);},async()=>{
     for(const command of commands)await api.execute('board',command,false);
+  });
+});
+test('pair routing retains the partner endpoint for previews and restores it on route Undo', async () => {
+  const h = toolHarness();
+  (h.env.doc().items.get(1) as { padNets: Record<string,string> }).padNets['1'] = 'USB_P';
+  const tool = routeTool(true);
+  const seen: Record<string,unknown>[] = [];
+  const endpoint = {x:14e6,y:9e6};
+  h.env.undo = async () => true;
+  await withIPC((cmd,args) => {
+    if (cmd === 'pcb_object_at') return [1,'USB_P'];
+    if (cmd === 'pcb_net_items') return [];
+    assert.equal(cmd,'pcb_route_pair');seen.push(args!);
+    const request = args!.req as RouteRequest;
+    const partnerStart = args!.negStart as {x:number;y:number}|null;
+    return [
+      {...result('USB_P'),tracks:[{...track,net:'USB_P',layer:request.layer,a:request.start,b:request.end}]},
+      {...result('USB_N'),tracks:[{...track,net:'USB_N',layer:request.layer,a:partnerStart??{x:request.start.x,y:request.start.y-4e5},b:{x:request.end.x,y:request.end.y-4e5}}]},
+    ];
+  }, async () => {
+    tool.down!(h.env,{} as never);await tick();await tick();
+    h.move(endpoint.x,endpoint.y);tool.move!(h.env,{} as never);await tick();
+    tool.down!(h.env,{} as never);await tick();await tick();
+    assert.equal(h.commands.length,1);
+    h.move(16e6,11e6);tool.move!(h.env,{} as never);await tick();
+    assert.deepEqual(seen.at(-1)!.negStart,{x:endpoint.x,y:endpoint.y-4e5});
+    tool.key!(h.env,'Backspace',{} as never);await tick();await tick();
+    assert.equal(seen.at(-1)!.negStart,null);
+    tool.cancel(h.env);
+  });
+});
+
+test('tuning Apply sends exactly the reviewed preview geometry for native revalidation', async () => {
+  const request={tracks:[1],targetLength:21e6,amplitude:1e6,spacing:6e5,style:'accordion' as const};
+  const expected=[{...track,kind:'track' as const,locked:false}];
+  await withIPC((cmd,args)=>{assert.equal(cmd,'pcb_tune');assert.deepEqual(args,{id:'board',req:request,expected});return null;},async()=>{await api.pcbTune('board',request,expected);});
+});
+
+test('routing discards a late preview after a reload epoch changes with the same item map', async () => {
+  const h=toolHarness(), doc=h.env.doc() as unknown as {epoch:number};doc.epoch=1;
+  const queued:{req:RouteRequest;resolve:(result:unknown)=>void}[]=[];
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route');return new Promise(resolve=>queued.push({req:args!.req as RouteRequest,resolve}));
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();doc.epoch=2;
+    const settle=(entry:typeof queued[number])=>entry.resolve({...result('SIGNAL'),tracks:[{...track,net:'SIGNAL',a:entry.req.start,b:entry.req.end}]});
+    settle(queued[0]);await tick();assert.equal(h.tool.preview!(h.env).length,0);assert.equal(queued.length,2);
+    settle(queued[1]);await tick();assert.equal(h.tool.preview!(h.env).length,1);h.tool.cancel(h.env);
+  });
+});
+
+test('an inconsistent pair response cannot commit one member or its shove changes', async () => {
+  const h=toolHarness();(h.env.doc().items.get(1) as {padNets:Record<string,string>}).padNets['1']='USB_P';const tool=routeTool(true);
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'USB_P'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route_pair');const request=args!.req as RouteRequest;
+    return [{...result('USB_P'),tracks:[{...track,net:'USB_P',a:request.start,b:request.end}],moved:[{id:9,item:{...track,kind:'track',net:'OTHER'}}]}, {...result('USB_N'),reached:false,tracks:[],message:'blocked partner'}];
+  },async()=>{
+    tool.down!(h.env,{}as never);await tick();await tick();
+    assert.deepEqual(tool.preview!(h.env),[]);assert.match(tool.hint(h.env),/Incomplete pair/);
+    tool.down!(h.env,{}as never);await tick();assert.equal(h.commands.length,0);tool.cancel(h.env);
   });
 });

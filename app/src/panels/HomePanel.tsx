@@ -1,10 +1,15 @@
-import { ArrowRight, BookOpen, CircuitBoard, FileCode2, FileInput, FolderOpen, History, Plus, Sparkles } from "lucide-react";
+import { ArrowRight, BookOpen, CircuitBoard, FileCode2, FileInput, FolderOpen, History, LifeBuoy, Plus, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Kbd } from "@/components/ui/kbd";
-import { importDesign, importLibrary, newDocument, newProject, openAnyFile, openProject } from "../core/actions";
+import { importLibrary, newDocument, openAnyFile, openProject } from "../core/actions";
 import { useEditor } from "../core/store";
 import { readPreference } from "../core/preferences";
+
+import {openRecovery} from "../project/Recovery";
+import {useRecoveryStatus} from "../core/recovery";
+import { openLocalHub } from "../project/LocalHub";
+import { openImportWizard } from "../project/ImportWizard";
 
 const LAST_PROJECT_KEY = "pcbplannercad.lastProject";
 
@@ -63,6 +68,7 @@ const SHORTCUTS: [string[], string][] = [
 export function HomePanel() {
   const project = useEditor((s) => s.project);
   const last = lastProject();
+  const recovery=useRecoveryStatus();
   return (
     <div className="h-full overflow-auto bg-doc">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-4 px-6 py-6">
@@ -75,6 +81,7 @@ export function HomePanel() {
             <p className="mt-2 max-w-[100ch] text-[13px] leading-relaxed text-muted-foreground">
               Capture schematics, build component libraries, route boards and generate fabrication files. Import existing projects, schematics and libraries — everything stays on this PC.
             </p>
+            <button onClick={openRecovery} className="mt-3 flex items-center gap-2 rounded border border-line bg-secondary px-3 py-1.5 text-xs hover:bg-hover"><LifeBuoy className="tone-recovery size-4"/>{recovery.hasCopies?"Recovery copies available":"Recovery copies…"}{recovery.error&&<span className="text-err-line"> · Check recovery status</span>}</button>
             {!project && last && (
               <button onClick={() => void openProject(last)} className="mt-4 inline-flex items-center gap-2 rounded-[5px] border border-line bg-secondary px-3 py-1.5 text-xs hover:bg-[var(--ui-btn-hover)]">
                 <History className="size-3.5 text-accent-ink" /> Reopen <span className="font-medium">{last.split(/[\\/]/).pop()}</span>
@@ -87,10 +94,10 @@ export function HomePanel() {
             )}
           </div>
           <div className="grid grid-cols-1 gap-3 border-t border-line bg-panel-head px-6 py-5 sm:grid-cols-2 xl:grid-cols-4">
-            <Task icon={<Plus />} eyebrow="Start" title="New project" text="A project with a first schematic sheet; add libraries and a board as you go." action="Get started" onClick={() => void newProject()} />
-            <Task icon={<FolderOpen />} eyebrow="Open" title="Open a file" text="Project, schematic, board or library (.arproj, .arsch, .arpcb, .arlib)." action="Browse" onClick={() => void openAnyFile()} />
-            <Task icon={<FileInput />} eyebrow="Import project" title="Structured project" text="Hierarchical sheets, embedded libraries and the board." action="Import" onClick={() => void importDesign("structuredProject")} />
-            <Task icon={<FileInput />} eyebrow="Import schematic" title="XML design" text="Import a schematic and its board from XML design files (.sch / .brd)." action="Import" onClick={() => void importDesign("xmlSchematic")} />
+            <Task icon={<Plus className="tone-project" />} eyebrow="Start" title="Local project hub" text="Browse nested folders, create schematic + board projects and recover saved revisions." action="Open hub" onClick={() => openLocalHub()} />
+            <Task icon={<FolderOpen className="tone-folder" />} eyebrow="Open" title="Open a file" text="Project, schematic, board or library (.arproj, .arsch, .arpcb, .arlib)." action="Browse" onClick={() => void openAnyFile()} />
+            <Task icon={<FileInput className="tone-model" />} eyebrow="Import" title="Import wizard" text="Review designs and electronics libraries, and map local 3D models to footprints." action="Import" onClick={() => openImportWizard()} />
+            <Task icon={<FileInput className="tone-model" />} eyebrow="Import schematic" title="XML design" text="Import a schematic and its board from XML design files (.sch / .brd)." action="Import" onClick={() => openImportWizard()} />
           </div>
         </Card>
 
@@ -100,10 +107,10 @@ export function HomePanel() {
               <CardTitle className="text-xs font-semibold">Libraries &amp; scratch documents</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
-              <Task icon={<BookOpen />} eyebrow="Library" title="Import symbol library" text="Import a structured symbol library, or browse installed libraries in the Components panel." action="Choose file" onClick={() => void importLibrary("structuredSymbols")} />
-              <Task icon={<BookOpen />} eyebrow="Library" title="Import XML library" text="Parts, symbols and packages from an .lbr file." action="Choose file" onClick={() => void importLibrary("xmlLibrary")} />
-              <Task icon={<FileCode2 />} eyebrow="Scratch" title="Free schematic" text="A sheet outside any project — handy for sketching circuits." action="Create" onClick={() => void newDocument("schematic")} />
-              <Task icon={<CircuitBoard />} eyebrow="Scratch" title="Free board" text="An empty PCB with a default 2-layer stack and design rules." action="Create" onClick={() => void newDocument("pcb")} />
+              <Task icon={<BookOpen className="tone-library" />} eyebrow="Library" title="Import symbol library" text="Import a structured symbol library, or browse installed libraries in the Components panel." action="Choose file" onClick={() => void importLibrary("structuredSymbols")} />
+              <Task icon={<BookOpen className="tone-library" />} eyebrow="Library" title="Import XML library" text="Parts, symbols and packages from an .lbr file." action="Choose file" onClick={() => void importLibrary("xmlLibrary")} />
+              <Task icon={<FileCode2 className="tone-schematic" />} eyebrow="Scratch" title="Free schematic" text="A sheet outside any project — handy for sketching circuits." action="Create" onClick={() => void newDocument("schematic")} />
+              <Task icon={<CircuitBoard className="tone-board" />} eyebrow="Scratch" title="Free board" text="An empty PCB with a default 2-layer stack and design rules." action="Create" onClick={() => void newDocument("pcb")} />
             </CardContent>
           </Card>
           <Card className="gap-0 rounded-[5px] border-line py-0">

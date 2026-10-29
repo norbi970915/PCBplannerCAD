@@ -16,11 +16,13 @@ export function routedLengths(items:ReadonlyMap<ItemId,Item>):ReadonlyMap<string
 /** Replacements are subtracted before adding the accepted preview, including shoved copper. */
 export function prospectiveLength(items:ReadonlyMap<ItemId,Item>,net:string,preview:readonly Item[],moved:readonly {id:ItemId;item:Item}[]):number {
   let total=routedLengths(items).get(net)??0;
-  for(const {id,item} of moved){const old=items.get(id);if(old&&(old.kind==='track'||old.kind==='arcTrack')&&old.net===net)total-=copperLength(old);if((item.kind==='track'||item.kind==='arcTrack')&&item.net===net)total+=copperLength(item);}
+  const removed=new Set<ItemId>();
+  for(const {id,item} of moved){const old=items.get(id);if(!removed.has(id)&&old&&(old.kind==='track'||old.kind==='arcTrack')&&old.net===net)total-=copperLength(old);if((item.kind==='track'||item.kind==='arcTrack')&&item.net===net)total+=copperLength(item);removed.add(id);}
   for(const item of preview)if((item.kind==='track'||item.kind==='arcTrack')&&item.net===net)total+=copperLength(item);
   return Math.round(Math.max(0,total));
 }
 export function lengthBand(length:number,bounds:{min:number;max:number}|null):'unset'|'invalid'|'below'|'within'|'above' {
+  if(!Number.isFinite(length)||length<0)return 'invalid';
   if(!bounds)return 'unset';
   if(!Number.isFinite(length)||!Number.isFinite(bounds.min)||!Number.isFinite(bounds.max)||bounds.min<0||bounds.max<bounds.min)return 'invalid';
   return length<bounds.min?'below':length>bounds.max?'above':'within';
@@ -28,5 +30,6 @@ export function lengthBand(length:number,bounds:{min:number;max:number}|null):'u
 /** A manual target cannot widen the board rule's permitted interval. */
 export function targetBounds(rule:LengthConstraint|null,target:number|null,tolerance:number):{min:number;max:number}|null {
   if(target===null)return rule;
+  if(!Number.isFinite(target)||target<=0||!Number.isFinite(tolerance)||tolerance<0)return {min:NaN,max:NaN};
   return {min:Math.max(rule?.min??0,target-tolerance),max:Math.min(rule?.max??Infinity,target+tolerance)};
 }

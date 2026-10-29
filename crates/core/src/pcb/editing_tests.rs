@@ -86,3 +86,73 @@ fn selected_pour_refill_preserves_unrelated_fill() {
     assert!(matches!(session.document().get(zones[0]),Some(Item::Zone(z))if !z.fill.is_empty()));
     assert_eq!(session.document().get(zones[1]),Some(&untouched));
 }
+
+
+// A rejected edit must preserve pending Redo as well as saved geometry and IDs.
+fn assert_rejected_without_history_change(document: Document, command: Command) {
+    let mut session=Session::with_document(document);
+    session.execute(Command::Add{items:vec![track((80.,80.),(81.,80.),0.2,TOP_COPPER,"TEST")]}).unwrap();
+    let redo_target=session.document().clone();
+    session.undo().unwrap();session.mark_saved();
+    let before=session.document().clone();
+    assert!(session.execute_with_via_checks(command,true).is_err());
+    assert_eq!(session.document(),&before);
+    assert!(!session.is_dirty());assert!(!session.can_undo());assert!(session.can_redo());
+    session.redo().unwrap();assert_eq!(session.document(),&redo_target);
+}
+
+#[test]
+fn unlocking_cannot_sneak_geometry_or_net_changes_into_locked_items() {
+    let mut items=vec![track((0.,0.),(5.,0.),0.2,TOP_COPPER,"A"),via(10.,0.,"A"),fp("J1","L/F",20.,0.,&[("1","A")]),zone(30.,0.,40.,10.,TOP_COPPER,"A")];
+    items.push(Item::ArcTrack(super::ArcTrack{locked:false,center:Point::new(mm(50.),0),radius:mm(5.),start_angle:0.,sweep:90.,width:mm(0.2),layer:TOP_COPPER,net:"A".into()}));
+    for mut item in items {
+        match &mut item {Item::Track(v)=>v.locked=true,Item::Via(v)=>v.locked=true,Item::Footprint(v)=>v.locked=true,Item::Zone(v)=>v.locked=true,Item::ArcTrack(v)=>v.locked=true,_=>unreachable!()}
+        let document=doc(vec![item.clone()]);
+        let id=document.items().find(|(_,i)|*i==&item).unwrap().0;
+        let mut changed=item.clone();
+        match &mut changed {Item::Track(v)=>{v.locked=false;v.net="B".into();},Item::Via(v)=>{v.locked=false;v.pos.x+=mm(1.);},Item::Footprint(v)=>{v.locked=false;v.pos.x+=mm(1.);},Item::Zone(v)=>{v.locked=false;v.priority+=1;},Item::ArcTrack(v)=>{v.locked=false;v.width+=mm(0.1);},_=>unreachable!()}
+        for command in [Command::Replace{id,item:changed.clone()},Command::ReplaceMany{items:vec![IdItem{id,item:changed.clone()}]},Command::Route{delete:vec![],add:vec![],replace:vec![IdItem{id,item:changed.clone()}]}] {
+            assert_rejected_without_history_change(document.clone(),command);
+        }
+        let mut unlocked=item.clone();
+        match &mut unlocked {Item::Track(v)=>v.locked=false,Item::Via(v)=>v.locked=false,Item::Footprint(v)=>v.locked=false,Item::Zone(v)=>v.locked=false,Item::ArcTrack(v)=>v.locked=false,_=>unreachable!()}
+        let mut session=Session::with_document(document);
+        session.execute_with_via_checks(Command::Replace{id,item:unlocked},true).unwrap();
+        session.undo().unwrap();assert_eq!(session.document().get(id),Some(&item));
+    }
+}
+
+#[test]
+fn mixed_bulk_edit_with_locked_change_rejects_every_replacement() {
+    let mut locked=track((0.,0.),(5.,0.),0.2,TOP_COPPER,"A");if let Item::Track(v)=&mut locked{v.locked=true;}
+    let document=doc(vec![track((0.,10.),(5.,10.),0.2,TOP_COPPER,"A"),locked]);
+    let items=document.items().filter_map(|(id,i)|if let Item::Track(t)=i{let mut t=t.clone();t.locked=false;t.width=mm(0.5);Some(IdItem{id,item:Item::Track(t)})}else{None}).collect();
+    assert_rejected_without_history_change(document,Command::ReplaceMany{items});
+}
+
+#[test]
+fn repeated_targets_and_delete_replace_conflicts_are_rejected_before_editing() {
+    let item=track((0.,0.),(5.,0.),0.2,TOP_COPPER,"A");let document=doc(vec![item.clone()]);
+    let id=document.items().find(|(_,i)|*i==&item).unwrap().0;
+    let replacement=IdItem{id,item:item.translated(0,mm(1.))};
+    for command in [Command::Delete{ids:vec![id,id]},Command::Move{ids:vec![id,id],dx:mm(1.),dy:0},Command::ReplaceMany{items:vec![replacement.clone(),replacement.clone()]},Command::Change{delete:vec![id,id],add:vec![item.clone()]},Command::Route{delete:vec![id],replace:vec![replacement],add:vec![item]}] {
+        assert_rejected_without_history_change(document.clone(),command);
+    }
+}
+
+#[test]
+fn nonfinite_rotation_is_rejected_without_collapsing_geometry() {
+    let item=track((10.,10.),(15.,10.),0.2,TOP_COPPER,"A");let document=doc(vec![item.clone()]);
+    let id=document.items().find(|(_,i)|*i==&item).unwrap().0;
+    for angle in [f64::NAN,f64::INFINITY,f64::NEG_INFINITY] {
+        assert_rejected_without_history_change(document.clone(),Command::Rotate{ids:vec![id],center:Point::default(),angle});
+    }
+}
+
+
+#[test]
+fn rotation_that_rounds_a_tiny_segment_to_zero_length_is_atomic() {
+    let item=Item::Track(super::Track{locked:false,a:Point::new(1,0),b:Point::new(2,0),width:mm(0.2),layer:TOP_COPPER,net:"A".into()});
+    let document=doc(vec![item.clone()]);let id=document.items().find(|(_,i)|*i==&item).unwrap().0;
+    assert_rejected_without_history_change(document,Command::Rotate{ids:vec![id],center:Point::default(),angle:45.});
+}

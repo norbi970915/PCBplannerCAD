@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 
 
 import * as React from "react"
@@ -22,7 +23,8 @@ function DialogTrigger({
 function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+  const surface=useSurfaceWindow();
+  return <DialogPrimitive.Portal container={surface.document.body} data-slot="dialog-portal" {...props} />
 }
 
 function DialogClose({

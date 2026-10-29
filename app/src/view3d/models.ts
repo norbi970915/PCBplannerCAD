@@ -19,19 +19,21 @@ interface Occt {
 
 let occt: Promise<Occt> | null = null;
 function getOcct(): Promise<Occt> {
-  occt ??= import("occt-import-js").then((m) => (m.default as (o: object) => Promise<Occt>)({ locateFile: () => wasmUrl }));
+  occt ??= import("virtual:pcad-step-bindings").then((m) => (m.default as (o: object) => Promise<Occt>)({ locateFile: () => wasmUrl }));
   return occt;
 }
 
 /** Parsed models by resolved path; clones are handed out per placement. */
 const cache = new Map<string, Promise<THREE.Object3D | null>>();
 
-async function parse(path: string): Promise<THREE.Object3D | null> {
+export async function readModelAsset(path: string, thumbnail = false): Promise<THREE.Object3D | null> {
   const bytes = new Uint8Array(await api.readFileBytes(path));
   const lower = path.toLowerCase();
   if (lower.endsWith(".wrl")) {
     const text = new TextDecoder().decode(bytes);
-    const scene = new VRMLLoader().parse(text, "");
+    const loader=new VRMLLoader();
+    if(thumbnail){const manager=new THREE.LoadingManager();manager.setURLModifier(()=>"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6iCEAAAAASUVORK5CYII=");loader.manager=manager;}
+    const scene = loader.parse(text, "");
     // Imported VRML models use 0.1 inch units.
     scene.scale.setScalar(2.54);
     const root = new THREE.Group();
@@ -60,7 +62,7 @@ export async function loadModel(model: Model3d, baseDir: string | null): Promise
   if (!resolved) return null;
   let p = cache.get(resolved);
   if (!p) {
-    p = parse(resolved).catch((e) => {
+    p = readModelAsset(resolved).catch((e) => {
       console.warn("3D model failed", resolved, e);
       return null;
     });

@@ -326,8 +326,21 @@ fn read_placed(l: &List, nets: &HashMap<String, String>, cache: &mut FootprintCa
     if l.lists().any(|c| c.head() == "pad" && c.child("primitives").is_some()) {
         notes.info("custom pad outlines reduced to their anchor shape", &designator);
     }
+    let attrs = l.child("attr");
+    if attrs.is_some_and(|a| a.has_atom("exclude_from_bom") || a.has_atom("virtual")) {
+        parameters.insert(pcbplannercad_core::item::FIELD_EXCLUDE_BOM.into(), "1".into());
+    }
+    if attrs.is_some_and(|a| a.has_atom("exclude_from_pos_files") || a.has_atom("virtual")) {
+        parameters.insert(pcbplannercad_core::item::FIELD_EXCLUDE_POSITION.into(), "1".into());
+    }
+    if l.flag("dnp") { parameters.insert(pcbplannercad_core::item::FIELD_DNP.into(), "1".into()); }
+    let graphic_only = !fp.items.iter().any(|item| matches!(item, Item::Pad(p) if !p.number.is_empty()));
+    let board_only = attrs.is_some_and(|a| a.has_atom("board_only")
+        || (a.has_atom("exclude_from_bom") && a.has_atom("exclude_from_pos_files") && graphic_only));
+    if board_only { notes.info("independent board footprint retained during schematic updates", &designator); }
     let key = cache.key_for(if lib_id.is_empty() { "board:unnamed" } else { lib_id }, fp);
     Some(PlacedFootprint {
+        board_only,
         designator,
         value,
         footprint: key,

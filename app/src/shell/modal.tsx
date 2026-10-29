@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import {getCurrentWindow} from "@tauri-apps/api/window";
 import { create } from "zustand";
 import { Button } from "@/components/ui/button";
 import { Dialog as UiDialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +15,7 @@ interface ModalState {
 
 export const useModal = create<ModalState>()((set) => ({
   content: null,
-  show: (content) => set({ content }),
+  show: (content) => {window.focus();try{void getCurrentWindow().setFocus().catch(()=>{});}catch{/* Browser preview has no native window. */}set({ content });},
   close: () => set({ content: null }),
 }));
 
@@ -29,9 +30,9 @@ export function ModalHost() {
 }
 
 /** Standard dialog chrome used by every modal in the app. */
-export function Dialog({ title, description, children, footer, wide, xwide }: { title: string; description?: string; children: ReactNode; footer?: ReactNode; wide?: boolean; xwide?: boolean }) {
+export function Dialog({ title, description, children, footer, wide, xwide, busy=false }: { title: string; description?: string; children: ReactNode; footer?: ReactNode; wide?: boolean; xwide?: boolean; busy?: boolean }) {
   return (
-    <DialogContent className={cn("gap-0 p-0", xwide ? "sm:max-w-[1240px]" : wide ? "sm:max-w-[880px]" : "sm:max-w-[440px]")} onPointerDownOutside={(e) => e.preventDefault()}>
+    <DialogContent className={cn("gap-0 p-0", xwide ? "sm:max-w-[1240px]" : wide ? "sm:max-w-[880px]" : "sm:max-w-[440px]")} showCloseButton={!busy} onEscapeKeyDown={e=>{if(busy)e.preventDefault();}} onPointerDownOutside={(e) => e.preventDefault()}>
       <DialogHeader className="border-b border-line bg-panel-head px-4 py-3">
         <DialogTitle className="text-[13px]">{title}</DialogTitle>
         {description && <DialogDescription className="text-xs">{description}</DialogDescription>}

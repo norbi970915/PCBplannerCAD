@@ -160,6 +160,9 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacedFootprint {
+    /// Retain this independently placed item when absent from the schematic.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub board_only: bool,
     pub designator: String,
     #[serde(default)]
     pub value: String,
@@ -182,6 +185,8 @@ pub struct PlacedFootprint {
     #[serde(default)]
     pub parameters: BTreeMap<String, String>,
 }
+
+fn is_false(value: &bool) -> bool { !value }
 
 impl PlacedFootprint {
     /// local → world for footprint geometry.

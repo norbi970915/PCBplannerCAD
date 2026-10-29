@@ -50,3 +50,6 @@ pub struct BoardImport {
     pub libraries: Vec<Library>,
     pub report: ImportReport,
 }
+
+/// Read-only import preparation for the guided desktop workflow.
+pub mod wizard;

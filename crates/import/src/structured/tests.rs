@@ -879,3 +879,25 @@ fn structured_missing_files_are_errors() {
     assert!(matches!(import_project(Path::new("does/not/exist.kicad_pro")), Err(ImportError::Io(_))));
     assert!(import_footprint_dir(Path::new("does/not/exist.pretty"), "X").is_err());
 }
+
+#[test]
+fn source_board_and_bom_exclusions_survive_import_and_reopen() {
+    use pcbplannercad_core::{DocKind,Document};
+    let dir=std::env::temp_dir().join(format!("pcad-placement-flags-{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source=synthetic_sheet("ROOT",&[],"PART",&[("/ROOT","R1")],&[]).replacen("(kicad_sch", "(kicad_sch (bus_alias \"PAIR\" (members \"P\" \"N\"))", 1).replace("(symbol (lib_id", "(symbol (on_board no) (in_bom no) (dnp yes) (lib_id");
+    let path=dir.join("flags.kicad_sch");std::fs::write(&path,source).unwrap();
+    let imported=import_schematic(&path).unwrap();
+    let text=pcbplannercad_core::io::document_to_string(&imported.sheets[0].document).unwrap();
+    let reopened=pcbplannercad_core::io::document_from_str(DocKind::Schematic,&text).unwrap();
+    assert_eq!(reopened.bus_aliases().get("PAIR").unwrap(), &vec!["P".to_string(),"N".to_string()]);
+    let compiled=pcbplannercad_core::schematic::compile(&[pcbplannercad_core::schematic::SheetRef::new("flags.arsch",&reopened)]);
+    let part=compiled.part("R1").unwrap();
+    assert!(part.excluded_from_board()&&part.excluded_from_bom()&&part.parameter_flag("DNP"));
+    let board=Document::new(DocKind::Pcb);
+    let plan=pcbplannercad_core::pcb::sync::plan(&compiled,&board,&|_|None);
+    assert!(plan.changes.is_empty(),"excluded parts neither place nor warn about missing footprints");
+    let bom=pcbplannercad_core::schematic::bom_csv(&compiled);
+    assert!(!bom.contains("R1"));
+    std::fs::remove_file(path).unwrap();
+}

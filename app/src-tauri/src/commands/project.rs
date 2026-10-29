@@ -8,7 +8,7 @@ use tauri::State;
 use super::docs::open_doc_file;
 use super::{Res, lock};
 use crate::AppState;
-use crate::workspace::{DocInfo, OpenProject, Origin, ProjectInfo, Workspace};
+use crate::workspace::{DocInfo, OpenProject, ProjectInfo, Workspace};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +31,7 @@ pub fn project_info(state: State<AppState>) -> Res<ProjectState> {
 pub fn load_project(ws: &mut Workspace, path: &Path) -> Res<Vec<String>> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let project = io::project_from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let open = OpenProject { path: path.to_path_buf(), project };
+    let open = OpenProject { path: path.to_path_buf(), project, revision:Some(pcbplannercad_core::storage::FileRevision::from_bytes(text.as_bytes())) };
     let mut messages = Vec::new();
     for rel in open.project.sheets.clone() {
         if let Err(e) = open_doc_file(ws, &open.resolve(&rel)) {
@@ -52,7 +52,7 @@ pub fn load_project(ws: &mut Workspace, path: &Path) -> Res<Vec<String>> {
     Ok(messages)
 }
 
-fn ensure_closed_cleanly(ws: &Workspace) -> Res<()> {
+pub(crate) fn ensure_closed_cleanly(ws: &Workspace) -> Res<()> {
     if let Ok(sheets) = ws.project_sheet_docs() {
         for (rel, id) in sheets {
             if ws.doc(&id)?.session.is_dirty() {
@@ -67,10 +67,13 @@ fn ensure_closed_cleanly(ws: &Workspace) -> Res<()> {
             }
         }
     }
+    if let Some(p)=ws.project_info() {
+        for id in p.libraries {if ws.lib(&id)?.dirty{return Err("Project library has unsaved changes; save it before switching or checkpointing".into());}}
+    }
     Ok(())
 }
 
-fn close_project_docs(ws: &mut Workspace) {
+pub(crate) fn close_project_docs(ws: &mut Workspace) {
     if let Ok(sheets) = ws.project_sheet_docs() {
         for (_, id) in sheets {
             ws.docs.remove(&id);
@@ -86,6 +89,8 @@ fn close_project_docs(ws: &mut Workspace) {
 pub fn project_open(state: State<AppState>, path: String) -> Res<ProjectState> {
     let mut ws = lock(&state);
     ensure_closed_cleanly(&ws)?;
+    let text=std::fs::read_to_string(&path).map_err(|e|format!("Cannot read project: {e}"))?;
+    io::project_from_str(&text).map_err(|e|e.to_string())?;
     close_project_docs(&mut ws);
     let messages = load_project(&mut ws, &PathBuf::from(path))?;
     Ok(state_of(&ws, messages))
@@ -133,26 +138,21 @@ pub fn project_add_sheet(state: State<AppState>, path: String) -> Res<ProjectSta
     let mut ws = lock(&state);
     let path = PathBuf::from(path);
     let dir = ws.project()?.dir();
+    ws.ensure_project_revision()?;
     if !path.exists() {
         let text = io::document_to_string(&Document::new(DocKind::Schematic)).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        pcbplannercad_core::storage::atomic_write_if_unchanged(&path,text,None).map_err(|e|e.to_string())?;
     }
     open_doc_file(&mut ws, &path)?;
     let rel = relative_to(&dir, &path);
-    let p = ws.project.as_mut().ok_or("no project")?;
-    if !p.project.sheets.contains(&rel) {
-        p.project.sheets.push(rel);
-    }
-    ws.save_project_file()?;
+    ws.edit_project(|p|{if !p.sheets.contains(&rel){p.sheets.push(rel);}})?;
     Ok(state_of(&ws, vec![]))
 }
 
 #[tauri::command]
 pub fn project_remove_sheet(state: State<AppState>, file: String) -> Res<ProjectState> {
     let mut ws = lock(&state);
-    let p = ws.project.as_mut().ok_or("no project")?;
-    p.project.sheets.retain(|s| *s != file);
-    ws.save_project_file()?;
+    ws.edit_project(|p|p.sheets.retain(|s|*s!=file))?;
     Ok(state_of(&ws, vec![]))
 }
 
@@ -163,11 +163,7 @@ pub fn project_add_library(state: State<AppState>, id: String) -> Res<ProjectSta
     let path = ws.lib(&id)?.path.clone().ok_or("save the library to a file first")?;
     let dir = ws.project()?.dir();
     let rel = relative_to(&dir, &path);
-    let p = ws.project.as_mut().ok_or("no project")?;
-    if !p.project.libraries.contains(&rel) {
-        p.project.libraries.push(rel);
-    }
-    ws.save_project_file()?;
+    ws.edit_project(|p|{if !p.libraries.contains(&rel){p.libraries.push(rel);}})?;
     Ok(state_of(&ws, vec![]))
 }
 
@@ -178,9 +174,7 @@ pub fn project_remove_library(state: State<AppState>, id: String) -> Res<Project
     let dir = ws.project()?.dir();
     if let Some(path) = path {
         let rel = relative_to(&dir, &path);
-        let p = ws.project.as_mut().ok_or("no project")?;
-        p.project.libraries.retain(|l| *l != rel);
-        ws.save_project_file()?;
+        ws.edit_project(|p|p.libraries.retain(|l|*l!=rel))?;
     }
     Ok(state_of(&ws, vec![]))
 }
@@ -189,23 +183,7 @@ pub fn project_remove_library(state: State<AppState>, id: String) -> Res<Project
 #[tauri::command]
 pub fn project_save_all(state: State<AppState>) -> Res<Vec<DocInfo>> {
     let mut ws = lock(&state);
-    let mut saved = Vec::new();
-    let ids: Vec<String> = ws.docs.keys().cloned().collect();
-    for id in ids {
-        let d = ws.doc(&id)?;
-        if let (Origin::File(Some(path)), true) = (d.origin.clone(), d.session.is_dirty()) {
-            ws.save_doc_file(&id, &path)?;
-            saved.push(ws.doc_info(&id)?);
-        }
-    }
-    let libs: Vec<String> = ws.libs.iter().filter(|(_, l)| l.dirty && l.path.is_some() && !l.readonly).map(|(id, _)| id.clone()).collect();
-    for id in libs {
-        ws.save_lib(&id, None)?;
-    }
-    if ws.project.is_some() {
-        ws.save_project_file()?;
-    }
-    Ok(saved)
+    ws.save_all_files()
 }
 
 fn with_sheets<T>(ws: &Workspace, f: impl FnOnce(&[SheetRef]) -> T) -> Res<T> {
@@ -254,7 +232,7 @@ pub fn project_annotate(state: State<AppState>, all: bool) -> Res<AnnotateResult
 pub fn project_export_bom(state: State<AppState>, path: String) -> Res<usize> {
     let ws = lock(&state);
     let compiled = with_sheets(&ws, schematic::compile)?;
-    std::fs::write(&path, schematic::bom_csv(&compiled)).map_err(|e| format!("cannot write {path}: {e}"))?;
+    ws.write_export_file(Path::new(&path),schematic::bom_csv(&compiled).as_bytes())?;
     Ok(compiled.parts.len())
 }
 
@@ -282,20 +260,19 @@ pub fn project_new_pcb(state: State<AppState>) -> Res<ProjectState> {
     }
     let rel = format!("{}.arpcb", p.project.name.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_"));
     let path = p.resolve(&rel);
+    ws.ensure_project_revision()?;
     if !path.exists() {
         let doc = Document::from_item_list(DocKind::Pcb, [pcbplannercad_core::Item::Board(Default::default())]);
-        std::fs::write(&path, io::document_to_string(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        pcbplannercad_core::storage::atomic_write_if_unchanged(&path, io::document_to_string(&doc).map_err(|e| e.to_string())?,None).map_err(|e| e.to_string())?;
     }
     open_doc_file(&mut ws, &path)?;
-    ws.project.as_mut().ok_or("no project")?.project.pcb = Some(rel);
-    ws.save_project_file()?;
+    ws.edit_project(|p|p.pcb=Some(rel))?;
     Ok(state_of(&ws, vec![]))
 }
 
 #[tauri::command]
 pub fn project_set_variants(state: State<AppState>, variants: Vec<pcbplannercad_core::project::Variant>) -> Res<ProjectState> {
     let mut ws = lock(&state);
-    ws.project.as_mut().ok_or("no project")?.project.variants = variants;
-    ws.save_project_file()?;
+    ws.edit_project(|p|p.variants=variants)?;
     Ok(state_of(&ws, vec![]))
 }

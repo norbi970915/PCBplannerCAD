@@ -1,3 +1,4 @@
+import {useSurfaceWindow} from "../../shell/SurfaceWindow";
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
@@ -12,8 +13,9 @@ function DropdownMenu({
 function DropdownMenuPortal({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
+  const surface=useSurfaceWindow();
   return (
-    <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />
+    <DropdownMenuPrimitive.Portal container={surface.document.body} data-slot="dropdown-menu-portal" {...props} />
   )
 }
 
@@ -33,8 +35,9 @@ function DropdownMenuContent({
   sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const surface=useSurfaceWindow();
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={surface.document.body}>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}

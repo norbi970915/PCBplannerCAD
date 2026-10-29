@@ -215,6 +215,7 @@ export interface SheetItem {
 export type Side = "top" | "bottom";
 
 export interface PlacedFootprintItem {
+  boardOnly?: boolean;
   kind: "footprint";
   designator: string;
   value: string;

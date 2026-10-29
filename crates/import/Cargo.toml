@@ -8,6 +8,7 @@ description = "Structured and XML design-file importers for pCAD"
 [dependencies]
 pcbplannercad-core.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 roxmltree = "0.21"
 
 [dev-dependencies]

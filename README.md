@@ -65,15 +65,15 @@ For a standalone app, run `pnpm.cmd build`. Share `target/release/bundle/nsis/pC
 
 ## View controls
 
-With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. View settings do not modify the design. Large copper fills prepare in the background: the canvas shows outlines first and a preparation status until their display is ready. Pours remain selectable around their holes during preparation. This changes display preparation only; saved geometry and design-rule checks are unchanged.
+With nothing selected in a board or footprint editor, switch the Properties panel to **View**. Control visible layers, component references and values, pad numbers and net names, graphics, tracks, vias and markers. **Snap to grid** controls placement and drag snapping; the idle selection cursor always moves freely. **Show grid** controls the grid display independently. **Saved views** stores named layer/label/object visibility presets locally per editor type; applying one preserves the current grid, snapping and active layer. View settings do not modify the design. Large copper fills prepare in the background: the canvas shows outlines first and a preparation status until their display is ready. Pours remain selectable around their holes during preparation. This changes display preparation only; saved geometry and design-rule checks are unchanged.
 
 For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow and editing update](docs/PROGRESS-2026-10-27-WORKFLOW.md) for continuation on another computer. The [current development and validation plan](docs/DEVELOPMENT-PLAN-2026-10-28.md) records implementation status, use cases, priorities and acceptance gates. The [earlier feature proposal](docs/NEXT-FEATURES-2026-10-27.md) remains historical context.
 
 ## Bringing designs in
 
-Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. pCAD stores its sheets, board and embedded libraries together.
+Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. pCAD stores its sheets, board and embedded libraries together. Group/vector bus members and project bus aliases are retained across schematic sheets. Explicit board/BOM exclusions are preserved. Independent board graphics remain on the board during schematic updates; removals and connectivity changes require explicit selection in the review dialog.
 
-The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project.
+The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project. Native documents carrying bus aliases or independent-footprint retention use version 2; rebuild pCAD on both computers before opening them. Earlier files remain readable, and older executables refuse these newer documents to protect their metadata.
 
 ## Keyboard shortcuts
 
@@ -114,8 +114,20 @@ Board selection filters are in the right **View** tab and stay available with an
 
 **PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Align, Distribute and Pack & Move use the current connected-move behavior; Tab changes that behavior during an M move. Blocked connected moves can be placed again or cancelled with Esc. An incomplete multi-part plan applies no changes. Tools → Teardrops can persist automatic updates after routing and connected moves.
 
+**Routing and length tuning:** Route feedback shows whole-net copper length and session pair mismatch. Length tuning previews a selected track chain, tries smaller meanders up to the chosen amplitude, preserves existing fixed copper contacts and rechecks the displayed plan before applying it. Tuned tracks and dependent pour refill share one undo step. Pair continuation preserves the partner endpoint and rejects invalid gaps. Coordinated pair tuning and paired layer transitions remain pending.
+
+**Local project hub:** Browse a working folder with nested subfolders and saved-content thumbnails, create complete schematic + board projects, review electronics-library imports and map local STEP/VRML assets. Project revisions save local checkpoints, compare and export readable changes between them and restore them into a fresh copy. See [the local workflow guide](docs/LOCAL-PROJECT-WORKFLOW-2026-10-29.md) for supported formats and current limits.
+
 ## Local diagnostics
 
-Use Help → **Record/Stop Canvas Timings** for a 30-second local CPU timing report in Messages. For background checks, `pnpm.cmd -C app test:editor` runs editor regressions; `pnpm.cmd -C app test:renderer` runs the optional isolated headless rendering check when Playwright is available. Read-only board profiling is available through `pnpm.cmd -C app benchmark:navigation <absolute-native-board-path>`. See [the latest handoff](docs/HANDOFF-2026-10-28.md) for setup, measured limits and home-laptop acceptance steps.
+Use Help → **Record/Stop Canvas Timings** for a 30-second local CPU timing report in Messages. For background checks, `pnpm.cmd -C app test:editor` runs editor regressions; `pnpm.cmd -C app test:renderer` runs the optional isolated headless rendering check when Playwright is available. Read-only board profiling is available through `pnpm.cmd -C app benchmark:navigation <absolute-native-board-path>`. See [the latest handoff](docs/HANDOFF-2026-10-29.md) for setup, measured limits and home-laptop acceptance steps.
 
 Library folders are discovered by their layout. Set `PCAD_LIBRARY_ROOT` to a data folder containing `symbols`, `footprints` or `3dmodels` to select one explicitly. The naming check scans source paths, identifiers, messages, metadata and documentation; only exact file-compatibility markers and required notices are exempt.
+
+**Fabrication packages:** Each export publishes a complete new named folder, preserving previous packages. The dialog opens either its ZIP or unpacked folder in the viewer. Assembly variants apply to the current project board, with consistent CSV/XML BOM filtering.
+
+**Recovery copies:** Periodically preserve unsaved native documents and editable libraries in local app data. File → Recovery copies restores into a new folder, with project links when available. External model assets and Undo history are excluded. File cards and icons use consistent colors in both themes.
+
+## Continuing on another PC
+
+See [the October 29 home-PC guide](docs/HOME-PC-CONTINUATION-2026-10-29.md) for safe sync, dependencies, rebuilding and prioritized native tests. Private designs and generated executables are not transferred by Git.

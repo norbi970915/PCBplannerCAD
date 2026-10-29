@@ -1,3 +1,4 @@
+import {revealLinkedComponent} from "../../core/crossProbe";
 import { moveRejection } from "../connectedMove";
 import { api } from "../../core/api";
 import { highlightNet, navigateTo, report } from "../../core/actions";
@@ -370,6 +371,7 @@ export function selectTool(): Tool {
       const hit = env.scene.pick(env.raw(), PICK_PX / env.scale());
       const item = hit !== null ? env.doc().items.get(hit) : undefined;
       if (item?.kind === "sheet") void navigateTo({ sheet: item.file });
+      else if(item?.kind==="part"&&hit!==null)void revealLinkedComponent(env.docId,hit);
     },
     pickUp(env, list) {
       generation++;

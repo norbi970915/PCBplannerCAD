@@ -254,13 +254,18 @@ impl Ctx {
                 "table" => notes.info("tables skipped", ""),
                 "rule_area" => notes.info("rule areas skipped", ""),
                 "netclass_flag" | "directive_label" => notes.info("net class / directive labels skipped", ""),
-                "bus_alias" => notes.warn("bus aliases are not supported; buses using them lose their member names", ""),
+                "bus_alias" => {}, // Stored as schematic metadata below.
                 _ => {}
             }
         }
 
         self.k6_instances = k6;
-        let mut doc = Document::from_item_list(DocKind::Schematic, items);
+        let aliases = root.children("bus_alias").filter_map(|alias| {
+            let name = alias.atom(1)?.to_string();
+            let members = alias.child("members")?.items.iter().skip(1).filter_map(|a| a.as_atom().map(unescape)).collect();
+            Some((name, members))
+        }).collect();
+        let mut doc = Document::from_item_list(DocKind::Schematic, items).with_bus_aliases(aliases);
         for cp in cache.into_values().chain(extra_caches) {
             doc.put_cached_part(cp);
         }
@@ -454,7 +459,15 @@ fn read_instance(
         }
     }
 
-    Some((Item::Part(Part { pos, rotation, mirror, lib_ref, unit, fields }), missing))
+    let mut part = Part { pos, rotation, mirror, lib_ref, unit, fields };
+    for (source,field,invert) in [("on_board",pcbplannercad_core::item::FIELD_EXCLUDE_BOARD,true),
+        ("in_bom",pcbplannercad_core::item::FIELD_EXCLUDE_BOM,true),("dnp",pcbplannercad_core::item::FIELD_DNP,false)] {
+        if l.child(source).is_some() {
+            part.fields.retain(|f| !f.name.eq_ignore_ascii_case(field));
+            if l.flag(source) != invert { part.set_field(field,"1"); }
+        }
+    }
+    Some((Item::Part(part), missing))
 }
 
 /// Power port look from the symbol name.

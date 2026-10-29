@@ -61,6 +61,7 @@ fn with_footprint(items: &mut Vec<Item>, pads: Vec<Pad>, pos: Point, net: &str) 
     let pad_nets = pads.iter().map(|p| (p.number.clone(), net.to_string())).collect();
     f.items = pads.into_iter().map(Item::Pad).collect();
     items.push(Item::Footprint(PlacedFootprint {
+        board_only: false,
         designator: "U1".into(),
         value: String::new(),
         footprint: "L/X".into(),
@@ -624,6 +625,7 @@ fn perf_large_board() {
         let pos = p(5.0 + (k % 7) as f64 * 13.0, 5.0 + (k / 7) as f64 * 12.5);
         let pad_nets = (0..10).map(|i| (format!("{}", i + 1), if i % 5 == 0 { "GND".to_string() } else { format!("N{k}_{i}") })).collect();
         items.push(Item::Footprint(PlacedFootprint {
+            board_only: false,
             designator: format!("U{k}"),
             value: String::new(),
             footprint: "L/X".into(),

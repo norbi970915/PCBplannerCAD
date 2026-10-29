@@ -36,6 +36,7 @@ fn pad(number: &str, x: f64, y: f64, w: f64, h: f64) -> Item {
 
 fn placed(designator: &str, at: Point, nets: &[(&str, &str)]) -> Item {
     Item::Footprint(PlacedFootprint {
+        board_only: false,
         designator: designator.into(),
         value: String::new(),
         footprint: "L/P".into(),
@@ -538,4 +539,124 @@ fn tuning_rejects_locked_tracks_without_mutating_board() {
     let id=doc.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap().0;
     let err=tune_length(&doc,&TuneRequest{tracks:vec![id],target_length:mm(24.0),amplitude:mm(1.0),spacing:mm(0.6),style:TuneStyle::Accordion}).unwrap_err();
     assert!(err.contains("locked")); assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+}
+
+#[test]
+fn tuning_checks_the_actual_height_instead_of_only_maximum_amplitude() {
+    let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A"),placed("U1",pt(2.65,0.45),&[("1","B")])],0.04,0.04);
+    let id=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).unwrap().0;
+    let out=tune_length(&doc,&TuneRequest{tracks:vec![id],target_length:mm(20.4),amplitude:mm(1.),spacing:mm(1.6),style:TuneStyle::Accordion}).unwrap();
+    assert!(min_gap(&doc,&out,"A",0.04,0.04)>=mm(0.2) as f64-2.,"final meander collides after shrinking its height");
+}
+
+#[test]
+fn tuning_retains_a_via_touching_the_middle_of_a_selected_track() {
+    let at=pt(1.05,0.);
+    let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A"),Item::Via(Via{locked:false,pos:at,diameter:mm(0.3),drill:mm(0.15),from_layer:TOP,to_layer:layer::BOTTOM_COPPER,net:"A".into()})],1.,1.);
+    let id=doc.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap().0;
+    let out=tune_length(&doc,&TuneRequest{tracks:vec![id],target_length:mm(21.4),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion}).unwrap();
+    assert!(out.iter().any(|t|super::geom::point_seg_dist(V::of(at),V::of(t.a),V::of(t.b)) <= (t.width as f64+mm(0.3) as f64)/2.),"interior via became disconnected");
+}
+
+#[test]
+fn tuning_uses_smaller_legal_heights_when_the_maximum_does_not_fit() {
+    let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A"),track(pt(0.,0.85),pt(20.,0.85),"B"),track(pt(0.,-0.85),pt(20.,-0.85),"C")],1.,1.);
+    let id=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).unwrap().0;
+    let out=tune_length(&doc,&TuneRequest{tracks:vec![id],target_length:mm(21.),amplitude:mm(2.),spacing:mm(0.6),style:TuneStyle::Trombone}).unwrap();
+    assert!(min_gap(&doc,&out,"A",1.,1.)>=mm(0.2) as f64-2.);
+    assert!(out.iter().all(|t|t.a.y.abs()<=mm(0.4)&&t.b.y.abs()<=mm(0.4)));
+    let total:f64=out.iter().map(|t|(V::of(t.b)-V::of(t.a)).len()).sum();assert!((total-mm(21.) as f64).abs()<=mm(21.) as f64*0.005);
+}
+
+#[test]
+fn tuning_keeps_fixed_branch_junctions_and_recovers_in_one_step() {
+    use crate::Session;
+    let at=pt(1.05,0.);let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A"),track(at,pt(1.05,-2.),"A")],1.,1.);
+    let id=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.b==pt(20.,0.))).unwrap().0;
+    let request=TuneRequest{tracks:vec![id],target_length:mm(21.4),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion};
+    let plan=tune_length(&doc,&request).unwrap();let verified=tune_length_checked(&doc,&request,Some(&plan)).unwrap();
+    assert!(verified.iter().any(|t|super::geom::point_seg_dist(V::of(at),V::of(t.a),V::of(t.b))<1.));
+    let command=tune_length_command(&doc,&request,Some(&verified)).unwrap();
+    let mut session=Session::with_document(doc.clone());session.execute(command).unwrap();
+    let after=crate::io::document_to_string(session.document()).unwrap();session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),crate::io::document_to_string(&doc).unwrap());assert!(!session.can_undo());
+    session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+    assert_eq!(crate::io::document_to_string(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()).unwrap(),after);
+}
+
+#[test]
+fn tuning_rejects_duplicate_degenerate_and_too_tightly_spaced_input() {
+    let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A")],1.,1.);let id=ItemId(1);
+    let mut request=TuneRequest{tracks:vec![id,id],target_length:mm(22.),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion};
+    assert!(tune_length(&doc,&request).unwrap_err().contains("once"));
+    request.tracks=vec![id];request.spacing=mm(0.1);assert!(tune_length(&doc,&request).unwrap_err().contains("spacing"));
+    let degenerate=board(vec![track(pt(0.,0.),pt(0.,0.),"A")],1.,1.);request.spacing=mm(0.6);
+    assert!(tune_length(&degenerate,&request).unwrap_err().contains("degenerate"));
+}
+
+#[test]
+fn tuning_apply_rejects_a_changed_reviewed_shape_before_any_document_edit() {
+    use crate::{Command,Session};
+    let doc=board(vec![track(pt(0.,0.),pt(20.,0.),"A")],1.,1.);
+    let request=TuneRequest{tracks:vec![ItemId(1)],target_length:mm(21.),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion};
+    let mut reviewed=tune_length(&doc,&request).unwrap();reviewed[0].b.x+=1;
+    let mut session=Session::with_document(doc);session.mark_saved();let before=session.document().clone();
+    assert!(tune_length_checked(session.document(),&request,Some(&reviewed)).unwrap_err().contains("preview"));
+    assert_eq!(session.document(),&before);assert!(!session.can_undo()&&!session.is_dirty());
+    let actual=tune_length(session.document(),&request).unwrap();
+    session.execute(Command::Add{items:vec![track(pt(0.,0.6),pt(20.,0.6),"B")]}).unwrap();let changed=session.document().clone();
+    assert!(tune_length_checked(session.document(),&request,Some(&actual)).is_err());assert_eq!(session.document(),&changed);
+}
+
+#[test]
+fn differential_pair_continuation_retains_both_endpoints_through_an_outer_turn() {
+    let doc=board(vec![],1.,1.);let gap=mm(0.2);
+    let mut request=req("D_P",pt(0.,0.),pt(10.,0.),RouteMode::Walkaround);request.width=mm(0.2);
+    let (first,other)=route_diff_pair(&doc,&request,"D_N",gap);assert!(first.reached&&other.reached);
+    let anchor=other.tracks.last().unwrap().b;request.start=pt(10.,0.);request.end=pt(15.,5.);
+    let (next,partner)=route_diff_pair_from(&doc,&request,"D_N",gap,Some(anchor));assert!(next.reached&&partner.reached,"{}",next.message);
+    assert_connected(&next.tracks,request.start,Some(request.end));assert_connected(&partner.tracks,anchor,None);
+    for p in &next.tracks {for n in &partner.tracks{assert!(seg_seg_dist(V::of(p.a),V::of(p.b),V::of(n.a),V::of(n.b))+4.>=(request.width+gap) as f64);}}
+}
+
+#[test]
+fn invalid_pair_dimensions_or_shorting_partner_anchor_return_no_committable_geometry() {
+    let doc=board(vec![],1.,1.);let request=req("D_P",pt(0.,0.),pt(10.,0.),RouteMode::Walkaround);
+    for (other,gap) in [("D_P",mm(0.2)),("D_N",0),("D_N",-1)] {let (p,n)=route_diff_pair(&doc,&request,other,gap);assert!(!p.reached&&!n.reached);assert!(p.tracks.is_empty()&&n.tracks.is_empty());}
+    let (p,n)=route_diff_pair_from(&doc,&request,"D_N",mm(0.2),Some(request.start));assert!(!p.reached&&!n.reached);assert!(p.tracks.is_empty()&&n.tracks.is_empty());assert!(p.moved.is_empty()&&n.moved.is_empty());
+}
+
+#[test]
+fn tuning_an_already_in_range_chain_keeps_ids_dirty_state_and_undo_history() {
+    use crate::Session;
+    let doc=board(vec![track(pt(20.,0.),pt(0.,0.),"A")],1.,1.);
+    let request=TuneRequest{tracks:vec![ItemId(1)],target_length:mm(20.05),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion};
+    let preview=tune_length(&doc,&request).unwrap();let command=tune_length_command(&doc,&request,Some(&preview)).unwrap();
+    let mut session=Session::with_document(doc.clone());session.mark_saved();session.execute(command).unwrap();
+    assert_eq!(session.document(),&doc);assert!(!session.is_dirty()&&!session.can_undo());
+}
+
+#[test]
+fn tuning_refills_dependent_pours_and_recovers_in_one_history_step() {
+    use crate::{Session,document::Edit,pcb::{fill,drc}};
+    let zone:Item=serde_json::from_value(serde_json::json!({
+        "kind":"zone","outline":[{"x":-5000000,"y":-5000000},{"x":25000000,"y":-5000000},{"x":25000000,"y":5000000},{"x":-5000000,"y":5000000}],
+        "layer":0,"net":"GND","removeIslands":false
+    })).unwrap();
+    let mut doc=board(vec![track(pt(0.,0.),pt(20.,0.),"SIGNAL"),zone],1.,1.);
+    for (id,polygons) in fill::fill_all(&doc) {
+        let before=doc.get(id).cloned();
+        if let Some(Item::Zone(mut zone))=before.clone(){zone.fill=polygons;doc.apply(&[Edit{id,before,after:Some(Item::Zone(zone))}]);}
+    }
+    let request=TuneRequest{tracks:vec![ItemId(1)],target_length:mm(21.4),amplitude:mm(1.),spacing:mm(0.6),style:TuneStyle::Accordion};
+    let preview=tune_length(&doc,&request).unwrap();
+    let command=tune_length_command(&doc,&request,Some(&preview)).unwrap();
+    let original=crate::io::document_to_string(&doc).unwrap();let mut session=Session::with_document(doc);
+    let delta=session.execute(command).unwrap();
+    assert!(delta.upserted.iter().any(|i|matches!(i.item,Item::Zone(_))),"tuning must refill the dependent pour in its transaction");
+    let errors:Vec<_>=drc::run(session.document()).violations.into_iter().filter(|v|matches!(v.code,"short"|"clearance")).collect();
+    assert!(errors.is_empty(),"{errors:?}");
+    let after=crate::io::document_to_string(session.document()).unwrap();
+    session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),original);assert!(!session.can_undo());
+    session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+    let reopened=crate::io::document_from_str(DocKind::Pcb,&after).unwrap();assert_eq!(crate::io::document_to_string(&reopened).unwrap(),after);
 }

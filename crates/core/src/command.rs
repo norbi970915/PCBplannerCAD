@@ -53,6 +53,7 @@ impl Command {
     }
 
     pub(crate) fn resolve(self, doc: &mut Document) -> Result<Vec<Edit>, CoreError> {
+        self.check_targets()?;
         self.check_locks(doc)?;
         let existing = |doc: &Document, id: ItemId| doc.get(id).cloned().ok_or(CoreError::UnknownItem(id));
         let transform = |doc: &Document, ids: Vec<ItemId>, f: &dyn Fn(&Item) -> Item| -> Result<Vec<Edit>, CoreError> {
@@ -60,6 +61,7 @@ impl Command {
                 .map(|id| {
                     let before = existing(doc, id)?;
                     let after = f(&before);
+                    after.validate()?;
                     Ok(Edit { id, before: Some(before), after: Some(after) })
                 })
                 .collect()
@@ -77,7 +79,10 @@ impl Command {
                 .map(|id| Ok(Edit { id, before: Some(existing(doc, id)?), after: None }))
                 .collect(),
             Command::Move { ids, dx, dy } => transform(doc, ids, &|i| i.translated(dx, dy)),
-            Command::Rotate { ids, center, angle } => transform(doc, ids, &|i| i.rotated(center, angle)),
+            Command::Rotate { ids, center, angle } => {
+                if !angle.is_finite() { return Err(CoreError::InvalidGeometry("rotation angle must be finite")); }
+                transform(doc, ids, &|i| i.rotated(center, angle))
+            },
             Command::Mirror { ids, center } => transform(doc, ids, &|i| i.mirrored(center)),
             Command::Replace { id, item } => Command::ReplaceMany { items: vec![IdItem { id, item }] }.resolve(doc),
             Command::ReplaceMany { items } => items
@@ -97,6 +102,24 @@ impl Command {
 }
 
 impl Command {
+    /// Every source item has one intent. In particular, routing may not both
+    /// remove and replace an item; its delta and Undo must describe one result.
+    fn check_targets(&self) -> Result<(), CoreError> {
+        let mut seen = std::collections::HashSet::new();
+        let mut check = |id: ItemId| if seen.insert(id) { Ok(()) } else { Err(CoreError::DuplicateItem(id)) };
+        match self {
+            Self::Delete { ids } | Self::Move { ids, .. } | Self::Rotate { ids, .. } | Self::Mirror { ids, .. } |
+            Self::Change { delete: ids, .. } => { for id in ids { check(*id)?; } }
+            Self::ReplaceMany { items } | Self::EditPours { items, .. } => { for item in items { check(item.id)?; } }
+            Self::Route { delete, replace, .. } => {
+                for id in delete { check(*id)?; }
+                for item in replace { check(item.id)?; }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn check_locks(&self, doc: &Document) -> Result<(), CoreError> {
         let check = |id: ItemId, after: Option<&Item>| -> Result<(), CoreError> {
             let Some(before) = doc.get(id) else { return Ok(()) };
@@ -114,7 +137,7 @@ impl Command {
                     }
                     item
                 };
-                if !is_locked(after) || normalize(before) == normalize(after) { return Ok(()) }
+                if normalize(before) == normalize(after) { return Ok(()) }
             }
             Err(CoreError::InvalidGeometry("locked item: unlock it before editing"))
         };
