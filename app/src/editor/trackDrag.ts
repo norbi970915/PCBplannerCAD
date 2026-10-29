@@ -35,19 +35,23 @@ const key = (p: Point) => `${p.x},${p.y}`;
 const same = (p: Point, q: Point) => p.x === q.x && p.y === q.y;
 
 /** Copper holding a point fixed: vias and pad centres/areas on the track's layer. */
-function anchorAt(items: ReadonlyMap<ItemId, Item>, footprints: Record<string, Footprint>, p: Point, layer: number): boolean {
+function anchorAt(items: ReadonlyMap<ItemId, Item>, footprints: Record<string, Footprint>, p: Point, layer: number, net:string): boolean {
+  const board=[...items.values()].find(i=>i.kind==="board");
+  const copper=board?.kind==="board"?board.stackup.layers.filter(l=>l.kind==="copper"&&l.layer!==null).map(l=>l.layer!):[0,1];
   for (const it of items.values()) {
-    if (it.kind === "via" && Math.hypot(it.pos.x - p.x, it.pos.y - p.y) <= it.diameter / 2) return true;
+    if (it.kind === "via" && it.net===net && viaSpan(copper,it.fromLayer,it.toLayer).includes(layer) && Math.hypot(it.pos.x - p.x, it.pos.y - p.y) <= it.diameter / 2) return true;
     if (it.kind !== "footprint") continue;
     const geom = footprints[it.footprint];
     if (!geom) continue;
     const pl = { pos: it.pos, rotation: it.rotation, mirror: it.side === "bottom" };
     for (const pad of geom.items) {
-      if (pad.kind !== "pad") continue;
+      if (pad.kind !== "pad" || pad.padKind==="npth" || it.padNets[pad.number]!==net) continue;
+      const localLayer=it.side==="bottom"?(layer===0?1:layer===1?0:layer):layer;
+      const land=pad.copperShapes?.[localLayer];
       const smdLayer = it.side === "bottom" ? (pad.layer === 0 ? 1 : pad.layer === 1 ? 0 : pad.layer) : pad.layer;
       if (pad.padKind === "smd" && smdLayer !== layer) continue;
       const c = place(pad.pos, pl);
-      if (Math.hypot(c.x - p.x, c.y - p.y) <= Math.min(pad.width, pad.height) / 2) return true;
+      if (Math.hypot(c.x - p.x, c.y - p.y) <= Math.min(land?.width??pad.width, land?.height??pad.height) / 2) return true;
     }
   }
   return false;
@@ -76,7 +80,7 @@ export function planTrackDrag(items: ReadonlyMap<ItemId, Item>, footprints: Reco
         if (same(n.a, at)) neighbours.push({ id: nid, track: n, end: "a" });
         else if (same(n.b, at)) neighbours.push({ id: nid, track: n, end: "b" });
       }
-      ends.push({ track: id, end, at, neighbours, anchored: neighbours.some(n=>n.track.locked) || anchorAt(items, footprints, at, t.layer) });
+      ends.push({ track: id, end, at, neighbours, anchored: neighbours.some(n=>n.track.locked) || anchorAt(items, footprints, at, t.layer,t.net) });
     }
   }
   let normal: Pt | null = null;

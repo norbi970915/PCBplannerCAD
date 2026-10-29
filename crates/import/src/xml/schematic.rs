@@ -455,16 +455,12 @@ pub(crate) fn import_schematic_text(text: &str, stem: &str) -> Result<SchematicI
         sheet_cache.push(cache);
     }
 
-    // XML connects all segments of a net by name, across sheets: make sure
-    // each segment of a multi-segment net carries a global label.
-    let mut seg_count: HashMap<&str, usize> = HashMap::new();
-    for s in &segments {
-        *seg_count.entry(s.net.as_str()).or_default() += 1;
-    }
+    // Preserve source names even for a single unlabelled segment: the board
+    // uses those identities too, so generated compiler names would break parity.
     let mut synthesized = 0usize;
     let mut unlabeled = 0usize;
     for s in &segments {
-        if s.net.is_empty() || s.has_label || s.has_port || seg_count[s.net.as_str()] < 2 {
+        if s.net.is_empty() || s.has_label || s.has_port {
             continue;
         }
         match synth_label_pos(s) {

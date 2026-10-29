@@ -67,6 +67,10 @@ impl DesignRules {
         }
     }
 
+    fn inner_pad_rules(&self) -> PadRules {
+        PadRules {rv:self.ratio("rvPadInner").unwrap_or(0.25).clamp(0.0,10.0),min_mm:self.len_mm("rlMinPadInner").unwrap_or(0.254).max(0.0),max_mm:self.len_mm("rlMaxPadInner").unwrap_or(0.508).max(0.0),board:true,elongation:0.0}
+    }
+
     fn via_rules(&self) -> PadRules {
         PadRules {
             rv: self.ratio("rvViaOuter").unwrap_or(0.25).clamp(0.0, 10.0),
@@ -490,7 +494,20 @@ pub(crate) fn import_board_text(text: &str, stem: &str) -> Result<BoardImport, I
         let name = unique_name(if ename.is_empty() { "library".into() } else { ename.clone() }, &mut lib_names);
         let mut l = Library { name: name.clone(), ..Library::default() };
         for p in grandchildren(lib, "packages", "package") {
-            let fp = convert_package(p, &mut skips, &mut notes, &pad_rules);
+            let mut fp = convert_package(p, &mut skips, &mut notes, &pad_rules);
+            let inner_rules=rules.inner_pad_rules();
+            let use_diameter=rules.raw("useDiameter").and_then(|s|s.parse::<u32>().ok()).unwrap_or(13)&2!=0;
+            for source_pad in children(p,"pad") {
+                let number=attr_str(source_pad,"name");
+                let Some(drill)=super::util::num(source_pad,"drill").filter(|d|*d>0.0) else{continue};
+                let given=if use_diameter{super::util::num(source_pad,"diameter")}else{None};
+                let diameter=inner_rules.diameter(drill,given);
+                let slot=super::util::num(source_pad,"slotLength").filter(|s|*s>drill).unwrap_or(drill);
+                let land=pcbplannercad_core::library::PadCopperShape{shape:if slot>drill{pcbplannercad_core::item::PadShape::Oval}else{pcbplannercad_core::item::PadShape::Circle},width:mm(slot+diameter-drill),height:mm(diameter),corner_ratio:0.0};
+                for layer in copper.0.values().filter(|l|**l!=layer::TOP_COPPER&&**l!=layer::BOTTOM_COPPER) {
+                    if let Some(Item::Pad(pad))=fp.items.iter_mut().find(|item|matches!(item,Item::Pad(pad)if pad.number==number)){pad.copper_shapes.insert(layer.0,land.clone());}
+                }
+            }
             if l.footprint(&fp.name).is_none() {
                 l.footprints.push(fp);
             }

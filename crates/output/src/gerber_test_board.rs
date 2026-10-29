@@ -44,7 +44,7 @@ pub(crate) fn smd_pad(number: &str, x: f64, w: f64, h: f64, shape: PadShape, rot
         kind: PadKind::Smd,
         layer: layer::TOP_COPPER,
         drill: None,
-    })
+     copper_shapes: Default::default(),})
 }
 
 pub(crate) fn place(designator: &str, key: &str, pos: Point, rotation: f64) -> Item {

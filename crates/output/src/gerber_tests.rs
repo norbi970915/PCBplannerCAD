@@ -146,7 +146,7 @@ fn tht_pad(number: &str, x: f64) -> Item {
         kind: PadKind::Tht,
         layer: layer::MULTI_LAYER,
         drill: Some(Drill { width: mm(0.8), height: mm(0.8) }),
-    })
+     copper_shapes: Default::default(),})
 }
 
 /// Two resistors sharing one footprint, a THT header, a track, an arc track and a via.
@@ -415,4 +415,18 @@ fn dimensions_plot_as_strokes_on_their_layer() {
     assert!(after.draws.len() > before + 7, "extension lines, dimension line, arrows and the text");
     // The dimension line runs along y = 5 mm from x = 0 to 20.
     assert!(after.draws.iter().any(|d| near((d.0, d.1), (20.0, 5.0))));
+}
+
+#[test]
+fn layer_specific_pad_lands_export_distinct_apertures_and_one_physical_drill() {
+    let mut item=tht_pad("1",0.);if let Item::Pad(p)=&mut item{p.shape=PadShape::Rect;}
+    let mut geometry=footprint_with(vec![item]);if let Some(Item::Pad(pad))=geometry.items.first_mut(){pad.copper_shapes.insert(layer::inner_copper(1).0,pcbplannercad_core::library::PadCopperShape{shape:PadShape::Circle,width:mm(1.2),height:mm(1.2),corner_ratio:0.});}
+    let document=board_doc(vec![place("J1","L/P",Point::new(mm(10.),mm(10.)),0.)],&[("L/P",geometry)]);
+    let id=document.items().find(|(_,i)|matches!(i,Item::Board(_))).unwrap().0;
+    let mut session=pcbplannercad_core::Session::with_document(document);let mut board=if let Some(Item::Board(b))=session.document().get(id){b.clone()}else{unreachable!()};board.stackup=pcbplannercad_core::pcb::board::Stackup::with_copper(4);
+    session.execute(pcbplannercad_core::Command::Replace{id,item:Item::Board(board)}).unwrap();
+    let top=parse(&write_layer(session.document(),LayerFunction::Copper(layer::TOP_COPPER),&opts()).unwrap());let inner=parse(&write_layer(session.document(),LayerFunction::Copper(layer::inner_copper(1)),&opts()).unwrap());
+    assert!(top.apertures.values().any(|(template,_)|template.starts_with("R,1.600000X1.600000")));
+    assert!(inner.apertures.values().any(|(template,_)|template=="C,1.200000"));assert_eq!(top.flashes.len(),1);assert_eq!(inner.flashes.len(),1);
+    let drill=crate::excellon::write_drill(session.document(),true).unwrap();assert_eq!(drill.lines().filter(|l|l.starts_with('X')&&!l.contains("G85")).count(),1,"{drill}");
 }

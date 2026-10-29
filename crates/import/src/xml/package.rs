@@ -100,7 +100,7 @@ fn smd(n: Node<'_, '_>, notes: &mut PackageNotes) -> Option<Item> {
         kind: PadKind::Smd,
         layer: side,
         drill: None,
-    }))
+     copper_shapes: Default::default(),}))
 }
 
 /// How THT pad diameters are derived from drills.
@@ -179,7 +179,7 @@ fn tht(n: Node<'_, '_>, notes: &mut PackageNotes, rules: &PadRules) -> Option<It
         kind: PadKind::Tht,
         layer: layer::MULTI_LAYER,
         drill: Some(Drill { width: mm(drill_xy.0), height: mm(drill_xy.1) }),
-    }))
+     copper_shapes: Default::default(),}))
 }
 
 fn hole(n: Node<'_, '_>, notes: &mut PackageNotes) -> Option<Item> {
@@ -199,7 +199,7 @@ fn hole(n: Node<'_, '_>, notes: &mut PackageNotes) -> Option<Item> {
         kind: PadKind::Npth,
         layer: layer::MULTI_LAYER,
         drill: Some(Drill { width: drill, height: drill }),
-    }))
+     copper_shapes: Default::default(),}))
 }
 
 /// Corner points covering an item's extent (for the synthesized courtyard).

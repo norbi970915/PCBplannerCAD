@@ -7,6 +7,8 @@ import {useTheme} from '../core/theme';
 import {installShortcuts,setPending} from './shortcuts';
 import {useContextMenu} from './ContextMenu';
 
+// Document surfaces stay separate from tool sidebars.
+export const documentPanel = (id:string) => id==='home'||id.startsWith('doc:')||id.startsWith('sym:')||id.startsWith('lib:')||id.startsWith('view3d:')||id==='gerbers';
 type DockWindow=Window&{__PCAD_DOCK_LABEL__?:string};
 const labelOf=(w:Window)=>{try{return (w as DockWindow).__PCAD_DOCK_LABEL__;}catch{return undefined;}};
 export function focusPanelWindow(panel:IDockviewPanel){
@@ -51,6 +53,15 @@ export function installDocking(api:DockviewApi){
       offKeys();offTheme();setPending(null);useContextMenu.getState().close();
     });
   };
+  const guardDrop=(event:{getData():{panelId:string|null;groupId:string}|undefined;group:DockviewGroupPanel|undefined;kind:string;preventDefault():void})=>{
+    const data=event.getData();if(!data)return;
+    const source=data.panelId?[api.getPanel(data.panelId)].filter((p):p is IDockviewPanel=>!!p):api.groups.find(g=>g.id===data.groupId)?.panels??[];
+    if(!source.length)return;
+    const docs=source.some(p=>documentPanel(p.id)),tools=source.some(p=>!documentPanel(p.id));
+    const target=event.group?.panels??[];
+    if((docs&&(event.kind==='edge'||!target.length||target.some(p=>!documentPanel(p.id))))||(tools&&target.some(p=>documentPanel(p.id))))event.preventDefault();
+  };
+  disposables.push(api.onWillDrop(guardDrop),api.onWillShowOverlay(guardDrop));
   track(window);
   disposables.push(api.onDidAddPopoutGroup(({window:surface})=>track(surface)));
   disposables.push(api.onWillClosePopoutWindow(({window:surface})=>{

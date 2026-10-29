@@ -144,7 +144,7 @@ pub(crate) fn footprint_extent(f: &crate::library::Footprint) -> f64 {
     let mut add = |p: Point, extra: Coord| r = r.max((p.x as f64).hypot(p.y as f64) + extra as f64);
     for item in &f.items {
         match item {
-            Item::Pad(p) => add(p.pos, p.width.max(p.height)),
+            Item::Pad(p) => {add(p.pos,p.width.max(p.height));for shape in p.copper_shapes.values(){add(p.pos,shape.width.max(shape.height));}},
             Item::Line(l) => {
                 add(l.a, l.width);
                 add(l.b, l.width);
@@ -266,6 +266,8 @@ pub(crate) fn build_objects(doc: &Document, board: &BoardSettings, region: Optio
                     if p.copper.is_empty() {
                         continue;
                     }
+                    let variants=if p.layer_shapes.is_empty(){vec![p]}else{p.copper.iter().map(|layer|{let mut variant=p.for_layer(*layer);variant.copper=vec![*layer];variant}).collect()};
+                    for p in variants {
                     let bb = Bb::of(pt(p.pos), pt(p.pos)).grow((p.width as f64).hypot(p.height as f64) / 2.0 + 1.0);
                     if !keep(id, bb) {
                         continue;
@@ -284,6 +286,7 @@ pub(crate) fn build_objects(doc: &Document, board: &BoardSettings, region: Optio
                         pos: p.pos,
                         pad: Some(p.number),
                     });
+                    }
                 }
             }
             _ => {}
@@ -608,7 +611,7 @@ pub(crate) mod fixtures {
             kind,
             layer: if kind == PadKind::Smd { layer::TOP_COPPER } else { layer::MULTI_LAYER },
             drill: (kind != PadKind::Smd).then_some(Drill { width: mm(0.8), height: mm(0.8) }),
-        })
+         copper_shapes: Default::default(),})
     }
 
     /// "L/R": two 0.8×0.9 mm SMD pads at x = ±0.8 mm, courtyard ±1.5×±0.8 mm.

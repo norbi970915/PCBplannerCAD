@@ -28,6 +28,11 @@ mockIPC((command,args)=>{
  if(command==='pcb_object_at')return null;
  if(command==='plugin:event|listen')return 1;
  if(command==='plugin:event|unlisten'||command.startsWith('plugin:window|')||command==='dock_close_window'||command==='dock_focus_window')return;
+ if(command==='doc_undo'||command==='doc_redo'){
+  const info=useEditor.getState().docs[args!.id as string].info;
+  return {info:{...info,canUndo:command==='doc_redo',canRedo:command==='doc_undo'},delta:{removed:[],upserted:[]},touchedLibrary:null};
+ }
+ if(command==='pcb_ratsnest')return [];
  if(command==='pcb_route')return {tracks:[],reached:false,moved:[],blockedAt:null,message:''};
  throw Error('Unexpected test IPC '+command);
 },{shouldMockEvents:true});

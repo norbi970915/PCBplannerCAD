@@ -83,7 +83,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     let themeKey = "";
 
     const doc = () => st().docs[docId];
-    const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, pourFills: st().showPourFills, view: doc().view });
+    const ctx = (): DrawContext => ({ kind: doc().info.kind, cache: doc().cache, symbol: symbolRef.current, footprints: doc().footprints, copperLayer: doc().activeLayer, pourFills: st().showPourFills, view: doc().view });
     const isActive = () => st().activeDocId === docId;
     const pours = new PourTriangles(() => { if (isActive() && doc()) rebuildRef.current(); }, {
       schedule:cb=>viewWindow.requestAnimationFrame(cb),cancel:id=>viewWindow.cancelAnimationFrame(id),
@@ -144,7 +144,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       overlayDirty = false;
       const d = doc();
       if (!d) return;
-      const groups: DrawGroup[] = buildPreview(tool.preview?.(env) ?? [], { ...ctx(), getFillTriangles: pours.peek }, theme, toolId === "select" ? 0.5 : 0.25);
+      const groups: DrawGroup[] = buildPreview(tool.preview?.(env) ?? [], { ...ctx(), getFillTriangles: pours.peek }, theme, tool.routingMetrics ? 0 : toolId === "select" ? 0.2 : 0.25);
       const lines: DrawLine[] = [...(tool.overlay?.(env) ?? [])];
       if (cursorScreen) {
         const arm = CURSOR_ARM_PX / cam.scale;
@@ -597,6 +597,10 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       }
     });
 
+    const offCancel = bus.on("cancelTransient", ({docId:target}) => {
+      if (target !== docId) return;
+      tool.reset?.(); env.setBox(null); rebuildScene(); updateHint(); rebuildOverlay();
+    });
     const offPickUp = bus.on("pickUp", ({ docId: target, ids }) => {
       if (target !== docId) return;
       if (doc().tool !== "select") st().patchDoc(docId, { tool: "select" });
@@ -634,6 +638,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       unsubscribe();
       offView();
       offPickUp();
+      offCancel();
       offFilter();
       offTheme();
       rebuildRef.current = () => {};

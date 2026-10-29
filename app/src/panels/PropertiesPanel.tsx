@@ -680,9 +680,9 @@ function DocumentOptions({ doc }: { doc: DocState }) {
   );
 }
 
-export function PropertiesPanel() {
+export function PropertiesPanel({docId}: {docId?:string} = {}) {
   const [panelTab, setPanelTab] = useState<"properties" | "view">("properties");
-  const doc = useEditor((s) => (s.activeDocId ? s.docs[s.activeDocId] : undefined));
+  const doc = useEditor((s) => ((docId ?? s.activeDocId) ? s.docs[(docId ?? s.activeDocId)!] : undefined));
   const units = useEditor((s) => s.units);
   if (!doc)
     return (

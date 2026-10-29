@@ -88,7 +88,7 @@ fn smd_pad(number: &str, w: f64, h: f64, shape: PadShape) -> Pad {
         kind: PadKind::Smd,
         layer: layer::TOP_COPPER,
         drill: None,
-    }
+     copper_shapes: Default::default(),}
 }
 
 fn first_zone(doc: &Document) -> ItemId {
@@ -497,7 +497,7 @@ fn npth_hole_is_cleared_on_every_layer() {
         kind: PadKind::Npth,
         layer: layer::MULTI_LAYER,
         drill: Some(Drill { width: mm(3.0), height: mm(3.0) }),
-    };
+     copper_shapes: Default::default(),};
     let f = with_footprint(&mut items, vec![hole], p(25.0, 15.0), "");
     items.push(Item::Zone(zone(rect(-10.0, -10.0, 60.0, 40.0), "GND")));
     let mut bottom = zone(rect(-10.0, -10.0, 60.0, 40.0), "GND");

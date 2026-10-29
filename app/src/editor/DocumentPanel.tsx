@@ -6,13 +6,20 @@ import { api } from "../core/api";
 import { report } from "../core/actions";
 import { useEditor } from "../core/store";
 import type { LibSymbol } from "../core/types";
+import { PropertiesPanel } from "../panels/PropertiesPanel";
+import { useSurfaceWindow } from "../shell/SurfaceWindow";
 import { CanvasView } from "./CanvasView";
 
 /** A schematic, PCB or footprint document tab. */
 export function DocumentPanel({ docId }: { docId: string }) {
+  const detached = useSurfaceWindow() !== window;
   const exists = useEditor((s) => !!s.docs[docId]);
   if (!exists) return <div className="grid h-full place-items-center bg-panel text-xs text-muted-foreground">This document is closed.</div>;
-  return <CanvasView docId={docId} />;
+  if (!detached) return <CanvasView docId={docId} />;
+  return <div className="flex h-full min-h-0" onPointerDownCapture={() => useEditor.getState().setActiveDoc(docId)}>
+    <div className="min-w-0 flex-1"><CanvasView docId={docId} /></div>
+    <aside aria-label="Document properties and view" className="w-72 shrink-0 border-l border-line"><PropertiesPanel docId={docId} /></aside>
+  </div>;
 }
 
 const unitLetter = (i: number) => String.fromCharCode(65 + i);

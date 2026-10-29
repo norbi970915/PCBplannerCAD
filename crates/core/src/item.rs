@@ -262,6 +262,9 @@ pub struct Pad {
     pub layer: LayerId,
     #[serde(default)]
     pub drill: Option<Drill>,
+    /// Copper lands stay attached to the physical pad through editing and Undo.
+    #[serde(default,skip_serializing_if="std::collections::BTreeMap::is_empty",deserialize_with="crate::library::read_copper_shapes")]
+    pub copper_shapes: std::collections::BTreeMap<u16,crate::library::PadCopperShape>,
 }
 
 // ---------- Schematic connectivity ----------
@@ -598,7 +601,8 @@ impl Item {
             Item::Pad(p) => {
                 check(p.width > 0 && p.height > 0, "pad size must be positive")?;
                 check(p.kind == PadKind::Smd || p.drill.is_some_and(|d| d.width > 0 && d.height > 0), "hole pads need a drill")?;
-                check((0.0..=0.5).contains(&p.corner_ratio), "corner ratio must be between 0 and 0.5")
+                check((0.0..=0.5).contains(&p.corner_ratio), "corner ratio must be between 0 and 0.5")?;
+                check(p.copper_shapes.iter().all(|(layer,shape)|(*layer==0||*layer==1||(33..=62).contains(layer))&&shape.width>0&&shape.height>0&&(0.0..=0.5).contains(&shape.corner_ratio)),"invalid pad copper layer or land geometry")
             }
             Item::Wire(w) => check(w.a != w.b, "wire has zero length"),
             Item::Bus(b) => check(b.a != b.b, "bus has zero length"),

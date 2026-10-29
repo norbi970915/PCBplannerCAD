@@ -268,7 +268,8 @@ impl<'a> Ctx<'a> {
                 w.flash(ap, v.pos);
             }
         }
-        for p in self.pads() {
+        for physical in self.pads() {
+            let p=physical.for_layer(l);
             if !p.on_layer(l) {
                 continue;
             }
@@ -286,7 +287,8 @@ impl<'a> Ctx<'a> {
 
     fn mask(&self, w: &mut Writer, bottom: bool) {
         let copper = if bottom { layer::BOTTOM_COPPER } else { layer::TOP_COPPER };
-        for p in self.pads() {
+        for physical in self.pads() {
+            let p=physical.for_layer(copper);
             let opens = match p.kind {
                 PadKind::Smd => p.bottom == bottom && p.on_layer(copper),
                 PadKind::Tht | PadKind::Npth => true,
@@ -319,7 +321,8 @@ impl<'a> Ctx<'a> {
 
     fn paste(&self, w: &mut Writer, bottom: bool) {
         let copper = if bottom { layer::BOTTOM_COPPER } else { layer::TOP_COPPER };
-        for p in self.pads() {
+        for physical in self.pads() {
+            let p=physical.for_layer(copper);
             if p.kind != PadKind::Smd || p.bottom != bottom || !p.on_layer(copper) {
                 continue;
             }

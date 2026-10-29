@@ -22,7 +22,7 @@ export function copperLayers(items: Items): LayerId[] {
   return [L.topCopper, L.bottomCopper];
 }
 
-interface WorldPad { owner: ItemId; number: string; net: string; at: Point; w: number; h: number; rot: number; smd: boolean; layer: LayerId; padKind: "smd" | "tht" | "npth"; drill: { width: number; height: number } | null }
+interface WorldPad { owner: ItemId; number: string; net: string; at: Point; w: number; h: number; rot: number; smd: boolean; layer: LayerId; padKind: "smd" | "tht" | "npth"; drill: { width: number; height: number } | null; lands: Record<number, { width: number; height: number }> }
 
 function worldPads(fp: PlacedFootprintItem, owner: ItemId, footprints: Footprints): WorldPad[] {
   const geom = footprints[fp.footprint];
@@ -43,6 +43,7 @@ function worldPads(fp: PlacedFootprintItem, owner: ItemId, footprints: Footprint
       layer: fp.side === "bottom" ? flipLayer(pad.layer) : pad.layer,
       padKind: pad.padKind,
       drill: pad.drill,
+      lands: Object.fromEntries(Object.entries(pad.copperShapes ?? {}).map(([layer, shape]) => [pl.mirror ? flipLayer(Number(layer)) : Number(layer), shape])),
     });
   }
   return out;
@@ -172,7 +173,9 @@ export function footprintBox(fp: PlacedFootprintItem, footprints: Footprints): B
   };
   const pl = { pos: fp.pos, rotation: fp.rotation, mirror: fp.side === "bottom" };
   for (const it of footprints[fp.footprint]?.items ?? []) {
-    if (it.kind === "pad") rectPoints(place(it.pos, pl), it.width, it.height, fp.rotation + (pl.mirror ? -it.rotation : it.rotation)).forEach(add);
+    if (it.kind === "pad") {
+      for(const land of [it,...Object.values(it.copperShapes??{})]) rectPoints(place(it.pos,pl),land.width,land.height,fp.rotation+(pl.mirror?-it.rotation:it.rotation)).forEach(add);
+    }
     else if (it.kind === "line" || it.kind === "rect") [it.a, it.b].forEach((p) => add(place(p, pl)));
     else if (it.kind === "circle") [-1, 1].forEach((k) => add(place({ x: it.center.x + k * it.radius, y: it.center.y + k * it.radius }, pl)));
     else if (it.kind === "polyline") it.points.forEach((p) => add(place(p, pl)));
@@ -315,7 +318,7 @@ export function walkCopper(items: Items, footprints: Footprints, start: Iterable
       vias.push({ id, pos: it.pos, r: it.diameter / 2, net: it.net, layers: i < 0 || j < 0 ? [it.fromLayer, it.toLayer] : copper.slice(Math.min(i, j), Math.max(i, j) + 1) });
     } else if (it.kind === "zone" && !it.keepout && !it.teardrop) pours.push({ net: it.net, layer: it.layer, outline: it.outline });
   }
-  const padAt = (p: Point, layer: LayerId) => pads.some((d) => (!d.smd || d.layer === layer) && Math.hypot(d.at.x - p.x, d.at.y - p.y) <= Math.min(d.w, d.h) / 2);
+  const padAt = (p: Point, layer: LayerId) => pads.some((d) => (!d.smd || d.layer === layer) && Math.hypot(d.at.x - p.x, d.at.y - p.y) <= Math.min(d.lands[layer]?.width ?? d.w, d.lands[layer]?.height ?? d.h) / 2);
   const viaAt = (p: Point, layer: LayerId) => vias.find((v) => v.layers.includes(layer) && Math.hypot(v.pos.x - p.x, v.pos.y - p.y) <= v.r);
   const near = (p: Point, layer: LayerId, r: number) => {
     if (!r) return byEnd.get(`${layer}|${key(p)}`) ?? [];
@@ -374,7 +377,7 @@ export function unrouteFootprints(items: Items, footprints: Footprints, ids: Ite
       if (!pad.net) continue;
       for (const w of all) {
         if (w.net !== pad.net || (pad.smd && w.layer !== pad.layer)) continue;
-        if (w.ends.some((e) => Math.hypot(e.x - pad.at.x, e.y - pad.at.y) <= Math.max(pad.w, pad.h) / 2)) start.push(w.id);
+        if (w.ends.some((e) => Math.hypot(e.x - pad.at.x, e.y - pad.at.y) <= Math.max(pad.lands[w.layer]?.width ?? pad.w, pad.lands[w.layer]?.height ?? pad.h) / 2)) start.push(w.id);
       }
     }
   }

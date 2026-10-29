@@ -96,6 +96,27 @@ pub fn project_open(state: State<AppState>, path: String) -> Res<ProjectState> {
     Ok(state_of(&ws, messages))
 }
 
+/// Create both new files without adopting an unrelated companion or overwriting a race.
+/// A failed second write removes only our unchanged companion; this is not crash-atomic.
+fn create_project_files(path: &Path, before_project: impl FnOnce() -> Res<()>) -> Res<()> {
+    use pcbplannercad_core::storage::{self, FileRevision};
+    let dir=path.parent().ok_or("invalid project path")?;
+    let sheet_path=dir.join("Sheet1.arsch");
+    storage::verify_revision(path,None).map_err(|e|e.to_string())?;
+    storage::verify_revision(&sheet_path,None).map_err(|e|format!("Cannot create project companion: {e}; choose a different folder"))?;
+    let sheet=io::document_to_string(&Document::new(DocKind::Schematic)).map_err(|e|e.to_string())?;
+    let project=Project{name:path.file_stem().map(|s|s.to_string_lossy().into_owned()).unwrap_or_else(||"Project".into()),sheets:vec!["Sheet1.arsch".into()],pcb:None,libraries:vec![],variants:vec![]};
+    storage::atomic_write_if_unchanged(&sheet_path,sheet.as_bytes(),None).map_err(|e|e.to_string())?;
+    let result=before_project().and_then(|()|storage::atomic_write_if_unchanged(path,io::project_to_string(&project),None).map_err(|e|e.to_string()));
+    if let Err(error)=result {
+        if storage::verify_revision(&sheet_path,Some(FileRevision::from_bytes(sheet.as_bytes()))).is_ok() {
+            std::fs::remove_file(&sheet_path).map_err(|cleanup|format!("{error}; companion cleanup failed: {cleanup}"))?;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Creates `<dir>/<name>.arproj` with one empty sheet.
 #[tauri::command]
 pub fn project_new(state: State<AppState>, path: String) -> Res<ProjectState> {
@@ -105,16 +126,7 @@ pub fn project_new(state: State<AppState>, path: String) -> Res<ProjectState> {
     }
     let mut ws = lock(&state);
     ensure_closed_cleanly(&ws)?;
-    let dir = path.parent().ok_or("invalid project path")?.to_path_buf();
-    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Project".into());
-    let sheet = "Sheet1.arsch".to_string();
-    let sheet_path = dir.join(&sheet);
-    if !sheet_path.exists() {
-        let text = io::document_to_string(&Document::new(DocKind::Schematic)).map_err(|e| e.to_string())?;
-        std::fs::write(&sheet_path, text).map_err(|e| e.to_string())?;
-    }
-    let project = Project { name, sheets: vec![sheet], pcb: None, libraries: vec![], variants: vec![] };
-    std::fs::write(&path, io::project_to_string(&project)).map_err(|e| e.to_string())?;
+    create_project_files(&path, || Ok(()))?;
     close_project_docs(&mut ws);
     let messages = load_project(&mut ws, &path)?;
     Ok(state_of(&ws, messages))
@@ -275,4 +287,20 @@ pub fn project_set_variants(state: State<AppState>, variants: Vec<pcbplannercad_
     let mut ws = lock(&state);
     ws.edit_project(|p|p.variants=variants)?;
     Ok(state_of(&ws, vec![]))
+}
+
+#[cfg(test)]
+mod creation_tests {
+    use super::*;
+    struct Folder(PathBuf);
+    impl Drop for Folder {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    fn folder()->Folder{static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);let p=std::env::temp_dir().join(format!("pcad-project-create-{}-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));std::fs::create_dir(&p).unwrap();Folder(p)}
+    #[test]
+    fn existing_companion_is_not_silently_adopted(){let f=folder();let sheet=f.0.join("Sheet1.arsch");std::fs::write(&sheet,b"unrelated saved design").unwrap();let p=f.0.join("New.arproj");assert!(create_project_files(&p,||Ok(())).is_err());assert!(!p.exists());assert_eq!(std::fs::read(sheet).unwrap(),b"unrelated saved design");}
+    #[test]
+    fn failed_publication_preserves_external_project_and_rolls_back_own_companion(){let f=folder();let p=f.0.join("New.arproj");assert!(create_project_files(&p,||{std::fs::write(&p,b"external writer").unwrap();Ok(())}).is_err());assert_eq!(std::fs::read(p).unwrap(),b"external writer");assert!(!f.0.join("Sheet1.arsch").exists());}
+    #[test]
+    fn rollback_does_not_remove_a_companion_changed_by_another_writer(){let f=folder();let p=f.0.join("New.arproj");let sheet=f.0.join("Sheet1.arsch");assert!(create_project_files(&p,||{std::fs::write(&sheet,b"external sheet").unwrap();Err("injected publication failure".into())}).is_err());assert_eq!(std::fs::read(sheet).unwrap(),b"external sheet");assert!(!p.exists());}
+    #[test]
+    fn complete_new_project_and_companion_reopen(){let f=folder();let p=f.0.join("New.arproj");create_project_files(&p,||Ok(())).unwrap();let project=io::project_from_str(&std::fs::read_to_string(p).unwrap()).unwrap();assert_eq!(project.sheets,vec!["Sheet1.arsch"]);io::document_from_str(DocKind::Schematic,&std::fs::read_to_string(f.0.join("Sheet1.arsch")).unwrap()).unwrap();}
 }

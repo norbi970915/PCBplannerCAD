@@ -235,6 +235,80 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
 /// Continue a pair from both accepted endpoints. The partner's old endpoint
 /// must not be recomputed from a different outgoing direction.
 pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: Coord, neg_start: Option<Point>) -> (RouteResult, RouteResult) {
+    let pads:Vec<_> = super::geometry::all_pads(doc, world::board_of(doc)).into_iter().map(|pad|pad.for_layer(pos.layer)).collect();
+    let source = pads.iter().find(|pad| pad.net == pos.net && pad.on_layer(pos.layer) && pad.pos == pos.start);
+    let anchor_at = |at:Point| {
+        let source=pads.iter().find(|pad|pad.net==pos.net && pad.on_layer(pos.layer) && pad.pos==at);
+        source.and_then(|source| {
+        pads.iter().filter(|pad| pad.owner == source.owner && pad.net == neg_net && pad.on_layer(pos.layer))
+            .min_by_key(|pad| {let x=(pad.pos.x-at.x) as i128;let y=(pad.pos.y-at.y) as i128;x*x+y*y}).map(|pad|pad.pos)
+    }).or_else(|| {
+        // Resuming on copper must use the existing partner track, rather than
+        // invent an offset that can pass through its copper or a ground pad.
+        let on_track=doc.items().any(|(_,item)|matches!(item,Item::Track(t) if t.net==pos.net && t.layer==pos.layer && geom::point_seg_dist(V::of(at),V::of(t.a),V::of(t.b))<=4.0));
+        if !on_track {return None;}
+        doc.items().filter_map(|(_,item)|{
+            let Item::Track(t)=item else{return None};
+            if t.net!=neg_net || t.layer!=pos.layer {return None;}
+            let a=V::of(t.a);let d=V::of(t.b)-a;
+            let projected=if d.dot(d)<1.0 {a}else{a+d*((V::of(at)-a).dot(d)/d.dot(d)).clamp(0.0,1.0)};
+            let distance=(projected-V::of(at)).len();
+            (distance <= 4.0*(pos.width+gap).max(1) as f64).then_some((projected.round(),distance))
+        }).min_by(|a,b|a.1.total_cmp(&b.1)).map(|(at,_)|at)
+    })
+    };
+    let partner=neg_start.or_else(||anchor_at(pos.start));
+    let target=anchor_at(pos.end);
+    if source.is_some() && partner.is_none() {
+        let blocked=RouteResult{tracks:vec![],reached:false,moved:vec![],blocked_at:Some(pos.start),message:"No partner pad on this component and copper layer; choose a paired pad".into()};
+        return (blocked.clone(),blocked);
+    }
+    if let Some(anchor)=partner {
+        let pitch=(V::of(anchor)-V::of(pos.start)).len();
+        // Pad escapes may start uncoupled, then widen to the requested pair gap.
+        // Existing track anchors still need the selected coupled spacing.
+        let clearance=RuleSet::new(world::board_of(doc)).clearance(&Obj::new(ObjKind::Track,&pos.net,Some(pos.layer)),&Obj::new(ObjKind::Track,neg_net,Some(pos.layer)));
+        let required=(pos.width+if source.is_some(){clearance}else{gap}) as f64;
+        if pitch+4.0<required {
+            let blocked=RouteResult{tracks:vec![],reached:false,moved:vec![],blocked_at:Some(pos.start),message:format!("Pair anchors are {:.4} mm apart; {:.4} mm required by the selected width and gap. Review the pair settings or choose another start",pitch/1e6,required/1e6)};
+            return (blocked.clone(),blocked);
+        }
+    }
+    let result = route_pair_corridor(doc,pos,neg_net,gap,partner,target);
+    if result.0.reached || pos.width <= 0 || gap <= 0 || pos.net == neg_net {return result;}
+    let Some(anchor) = partner else {return result};
+    let separation = V::of(anchor)-V::of(pos.start);
+    if source.is_none() && separation.len() < (pos.width+gap) as f64-4.0 {return result;}
+    // Escape narrow pad rows with two independently checked necks before coupling.
+    // Bounded walkaround candidates never shove already accepted copper.
+    let mut direction = V::new(-separation.y,separation.x).norm();
+    if direction.dot(V::of(pos.end)-V::of(pos.start)) < 0.0 {direction=direction*-1.0;}
+    let spacing = (pos.width+gap) as f64;
+    let side = separation.norm();
+    let extent = source.map_or(spacing,|pad|pad.width.max(pad.height) as f64);
+    for factor in [1.0,2.0,4.0] {
+        let distance=extent.max(separation.len()).max(spacing)*factor;
+        if distance >= (V::of(pos.end)-V::of(pos.start)).len() {continue;}
+        let launch=(V::of(pos.start)+direction*distance).round();
+        let other=(V::of(launch)+side*spacing).round();
+        let mut request=pos.clone();request.mode=RouteMode::Walkaround;request.start=launch;
+        let (mut p,mut n)=route_pair_corridor(doc,&request,neg_net,gap,Some(other),target);
+        if !p.reached || !n.reached {continue;}
+        request.start=pos.start;request.end=launch;
+        let neck=route(doc,&request);
+        request.net=neg_net.into();request.start=anchor;request.end=other;
+        let other_neck=route(doc,&request);
+        if !neck.reached || !other_neck.reached || !neck.moved.is_empty() || !other_neck.moved.is_empty() {continue;}
+        p.tracks.splice(0..0,neck.tracks);n.tracks.splice(0..0,other_neck.tracks);
+        // The coupled section already satisfies gap. Escape necks must satisfy
+        // electrical clearance while transitioning from the actual pad pitch.
+        let required=RuleSet::new(world::board_of(doc)).clearance(&Obj::new(ObjKind::Track,&pos.net,Some(pos.layer)),&Obj::new(ObjKind::Track,neg_net,Some(pos.layer)));
+        if p.tracks.iter().all(|p|n.tracks.iter().all(|n|geom::seg_seg_dist(V::of(p.a),V::of(p.b),V::of(n.a),V::of(n.b))+4.0 >= (pos.width+required) as f64)) {return (p,n);}
+    }
+    result
+}
+
+fn route_pair_corridor(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: Coord, neg_start: Option<Point>, neg_end: Option<Point>) -> (RouteResult, RouteResult) {
     let fail = |msg: &str| {
         let r = RouteResult { tracks: vec![], reached: false, moved: vec![], blocked_at: Some(pos.start), message: msg.to_string() };
         (r.clone(), r)
@@ -313,7 +387,15 @@ pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, g
     if o.reached {
         fix(&mut ppath, false, pos.end);
     }
-    if let Some(anchor)=neg_start { if anchor!=npath[0] {
+    if let Some(anchor)=neg_start {
+        // At an existing bend the outer mate starts beyond the positive corner.
+        // Trim the virtual offset prefix instead of connecting backwards to it.
+        if (V::of(anchor)-V::of(npath[0])).len()<=8.0*c {
+            if let Some(index)=npath.windows(2).position(|segment|geom::point_seg_dist(V::of(anchor),V::of(segment[0]),V::of(segment[1]))<=4.0) {
+                npath.drain(..index);npath[0]=anchor;
+            }
+        }
+        if anchor!=npath[0] {
         let previous=V::new(-(anchor.y-pos.start.y) as f64,(anchor.x-pos.start.x) as f64).norm()*side;
         let next=unit_dir(npath[0],npath[1]);let cross=previous.cross(next);
         if cross.abs()>1e-6 {
@@ -326,11 +408,23 @@ pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, g
         }
         npath.insert(0,anchor);
     }}
+    if o.reached {if let Some(anchor)=neg_end {
+        let last=*npath.last().unwrap();
+        if anchor!=last {
+            if (V::of(anchor)-V::of(last)).len()>8.0*c {return fail("Partner target needs a longer fanout; route closer to the paired pads first");}
+            if let Some(index)=npath.windows(2).rposition(|segment|geom::point_seg_dist(V::of(anchor),V::of(segment[0]),V::of(segment[1]))<=4.0) {
+                npath.truncate(index+2);*npath.last_mut().unwrap()=anchor;
+            }else{
+                npath.extend(corner_path(last,anchor,pos.corner,pos.posture_flip).into_iter().skip(1));
+            }
+        }
+    }}
     let ppath = simplify(&ppath);
     npath = simplify(&npath);
+    if ppath.len()<2 || npath.len()<2 {return fail("Move beyond the pair corner to continue both tracks");}
     // Verify both tracks against the (possibly shoved) world.
-    let tprobe = Probe { hw: w as f64 / 2.0, net: pnet, excl: &excl };
-    let nprobe = Probe { hw: w as f64 / 2.0, net: nnet, excl: &excl };
+    let tprobe = Probe { hw: w as f64 / 2.0, net: pnet, excl: &[pnet] };
+    let nprobe = Probe { hw: w as f64 / 2.0, net: nnet, excl: &[nnet] };
     let clean = world.path_clear(&ppath, &tprobe) && world.path_clear(&npath, &nprobe);
     let required_gap=if pos.mode==RouteMode::Ignore {gap}else{gap.max(world.rules.clearance(&Obj::new(ObjKind::Track,&pos.net,Some(pos.layer)),&Obj::new(ObjKind::Track,neg_net,Some(pos.layer))))};
     let closest=ppath.windows(2).flat_map(|p|npath.windows(2).map(move|n|geom::seg_seg_dist(V::of(p[0]),V::of(p[1]),V::of(n[0]),V::of(n[1])))).fold(f64::INFINITY,f64::min)-w as f64;
@@ -379,6 +473,26 @@ pub fn net_length(doc: &Document, net: &str) -> Coord {
     total.round() as Coord
 }
 
+/// Clearance for paired annuli and their source-layer escape necks.
+/// Only the actual shared via span and the two pair nets affect fanout size.
+pub fn pair_via_clearance(doc: &Document, positive: &Via, negative: &Via, source: LayerId) -> Result<Coord,String> {
+    let board=world::board_of(doc);let copper=board.stackup.copper_layers();
+    if positive.net.is_empty() || negative.net.is_empty() || positive.net==negative.net {return Err("Pair vias need two different assigned nets".into());}
+    for via in [positive,negative] {
+        if via.from_layer==via.to_layer || !copper.contains(&via.from_layer) || !copper.contains(&via.to_layer) || !board.stackup.span(via.from_layer,via.to_layer).contains(&source) {
+            return Err("Pair vias must cross the active routing layer with valid copper spans".into());
+        }
+    }
+    let rules=RuleSet::new(board);let pspan=board.stackup.span(positive.from_layer,positive.to_layer);let nspan=board.stackup.span(negative.from_layer,negative.to_layer);let mut required=0;
+    for layer in pspan.into_iter().filter(|layer|nspan.contains(layer)) {
+        required=required.max(rules.clearance(&Obj::new(ObjKind::Via,&positive.net,Some(layer)),&Obj::new(ObjKind::Via,&negative.net,Some(layer))));
+    }
+    for (p,n) in [(ObjKind::Track,ObjKind::Track),(ObjKind::Track,ObjKind::Via),(ObjKind::Via,ObjKind::Track)] {
+        required=required.max(rules.clearance(&Obj::new(p,&positive.net,Some(source)),&Obj::new(n,&negative.net,Some(source))));
+    }
+    Ok(required)
+}
+
 /// A new through via for `net` at `pos`, sized by the via-style rule.
 pub fn via_for(doc: &Document, net: &str, pos: Point) -> Via {
     let board = world::board_of(doc);
@@ -402,4 +516,51 @@ pub fn via_between(doc: &Document, net: &str, pos: Point, a: LayerId, b: LayerId
         Some(t) => Via { locked: false, pos, diameter: t.diameter, drill: t.drill, from_layer: t.from_layer, to_layer: t.to_layer, net: net.to_string() },
         None => via_for(doc, net, pos),
     }
+}
+
+/// Read-only connected-track drag plan, including pushed foreign tracks.
+pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:RouteMode)->Result<super::drag::DragResult,String> {
+    let mut ids=std::collections::BTreeSet::new();let mut tracks=Vec::new();
+    for entry in &replace {
+        if !ids.insert(entry.id){return Err("Duplicate track in drag plan".into());}
+        let (Some(Item::Track(before)),Item::Track(after))=(doc.get(entry.id),&entry.item) else{return Err("Select straight tracks for connected dragging".into());};
+        let mut allowed=before.clone();allowed.a=after.a;allowed.b=after.b;
+        if before.locked || allowed!=*after{return Err("Locked tracks or track properties changed during drag".into());}
+        if after.a!=after.b {tracks.push(after.clone());}
+    }
+    if replace.is_empty(){return Err("Select tracks to drag".into());}
+    for item in &add {let Item::Track(t)=item else{return Err("Track drag can add only joining tracks".into());};if t.a!=t.b {tracks.push(t.clone());}}
+    let mut out=super::drag::DragResult{replace,add,..Default::default()};
+    if mode!=RouteMode::Ignore {
+        let ignored=routing_ignored(doc,&ids.iter().copied().collect::<Vec<_>>());
+        let layers:std::collections::BTreeSet<_>=tracks.iter().map(|t|t.layer).collect();
+        for layer in layers {
+            let mut world=World::build(doc,layer,&ignored);let mut roots=Vec::new();
+            for t in tracks.iter().filter(|t|t.layer==layer){let net=world.net_id(&t.net);roots.push(shove::Pusher{a:V::of(t.a),b:V::of(t.b),hw:t.width as f64/2.,net});}
+            if mode==RouteMode::Shove {
+                for (id,pieces) in shove::shove_many(&mut world,&roots)? {out.delete.push(id);out.add.extend(pieces.into_iter().map(Item::Track));out.rerouted+=1;}
+            }else{for p in roots {let excl=[p.net];if !world.seg_clear(p.a,p.b,&Probe{hw:p.hw,net:p.net,excl:&excl}){return Err("Track drag is blocked; choose another position or Push mode".into());}}}
+        }
+        // Pours are regenerated on commit; check all fixed copper and mechanical obstacles now.
+        let mut delete:Vec<_>=out.replace.iter().map(|r|r.id).chain(out.delete.iter().copied()).collect();
+        delete.extend(doc.items().filter_map(|(id,item)|matches!(item,Item::Zone(z)if !z.keepout).then_some(id)));
+        let added=out.replace.iter().map(|r|r.item.clone()).chain(out.add.iter().cloned()).collect();
+        let mut check=crate::Session::with_document(doc.clone());let delta=check.execute(crate::Command::Change{delete,add:added}).map_err(|e|e.to_string())?;
+        let touched:Vec<_>=delta.upserted.iter().map(|r|r.id).collect();
+        // A pushed span must not lift away from a fixed pad, via, arc or branch.
+        let removed:std::collections::HashSet<_>=out.replace.iter().map(|r|r.id).chain(out.delete.iter().copied()).collect();
+        let before=super::connectivity::Index::new(super::connectivity::build_objects(doc,world::board_of(doc),None,None));
+        let after=super::connectivity::Index::new(super::connectivity::build_objects(check.document(),world::board_of(check.document()),None,None));
+        for (i,original) in before.objs.iter().enumerate().filter(|(_,o)|removed.contains(&o.item)) {
+            for j in before.tree.query(before.geos[i].bb.grow(super::connectivity::geo::TOUCH)) {
+                let fixed=&before.objs[j];if removed.contains(&fixed.item)||fixed.net!=original.net||!fixed.shares_layer(original)||matches!(doc.get(fixed.item),Some(Item::Zone(_))){continue;}
+                let touch=|a:&super::connectivity::geo::Geo,b:&super::connectivity::geo::Geo|super::connectivity::geo::gap(a,b,super::connectivity::geo::TOUCH).is_some_and(|(gap,_)|gap<=super::connectivity::geo::TOUCH);
+                if !touch(&before.geos[i],&before.geos[j]){continue;}
+                if !after.objs.iter().enumerate().any(|(k,o)|touched.contains(&o.item)&&o.net==fixed.net&&o.shares_layer(fixed)&&touch(&after.geos[k],&before.geos[j])){return Err("Track drag would detach fixed copper; choose another position".into());}
+            }
+        }
+
+        if let Some(v)=super::drc::run_near(check.document(),&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error){return Err(format!("Track drag blocked: {}",v.message));}
+    }
+    Ok(out)
 }

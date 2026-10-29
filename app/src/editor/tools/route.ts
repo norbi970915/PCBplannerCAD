@@ -15,6 +15,8 @@ import { place } from "../draw";
 import { ringHandles, ringLines } from "./polygon";
 import type { Tool, ToolEnv } from "./types";
 
+import { snapRouteDirection } from "../routeDirection";
+import { pairViaFanout } from "../pairVia";
 import { prospectiveLength } from "../routeLengths";
 
 const MODES: RouteMode[] = ["walkaround", "shove", "ignore"];
@@ -49,8 +51,10 @@ export function routeViaLayer(copper:readonly number[],from:number,preferred:num
   return layers[((at<0?0:at)+(reverse?-1:1)+layers.length)%layers.length];
 }
 
-function trackWidth(env: ToolEnv, net: string): number {
-  return env.placement().trackWidth ?? classOf(boardSettings(env), net)?.trackWidth ?? Math.round(0.25 * NM_PER_MM);
+function trackWidth(env: ToolEnv, net: string, pair = false): number {
+  const netClass=classOf(boardSettings(env),net);
+  const preferred=pair ? netClass?.diffPairWidth : netClass?.trackWidth;
+  return env.placement().trackWidth ?? (preferred && preferred>0 ? preferred : netClass?.trackWidth) ?? Math.round(0.25 * NM_PER_MM);
 }
 
 /** The active net can have a different segment count from its paired net. */
@@ -106,15 +110,24 @@ export function routeTool(pair = false): Tool {
   const history: { from:Point; negativeFrom?:Point; layer:number; items:unknown }[] = [];
   let lastPreview: { session: Session; items: unknown; footprints: unknown; epoch: number; key: string } | null = null;
 
+  let directionAxis:number|null=null,directionOrigin="";
+  const routeCursor=(env:ToolEnv,to:Point)=>{
+    if(!s||useEditor.getState().placement.cornerStyle==="any")return to;
+    const origin=s.from.x+"/"+s.from.y;if(origin!==directionOrigin){directionOrigin=origin;directionAxis=null;}
+    if(s.targets.some(t=>samePoint(t,to)))return to;
+    const snapped=snapRouteDirection(s.from,to,6/env.scale(),directionAxis);directionAxis=snapped.axis;return snapped.point;
+  };
+
   const requestPreview = (env: ToolEnv, to: Point) => {
     if (!s) return;
+    to=routeCursor(env,to);
     const session = s;
     const req = {
       net: session.net,
       layer: session.layer,
       start: session.from,
       end: to,
-      width: trackWidth(env, session.net),
+      width: trackWidth(env, session.net, pair),
       mode: routeModeOf(useEditor.getState()),
       corner: useEditor.getState().placement.cornerStyle,
       ignore: [],
@@ -150,7 +163,7 @@ export function routeTool(pair = false): Tool {
       .then((r) => {
         if (my !== seq || s !== session) return;
         if(env.doc().items!==sourceItems || env.doc().footprints!==sourceFootprints || env.doc().epoch!==sourceEpoch
-          || routeModeOf(useEditor.getState())!==req.mode || useEditor.getState().placement.cornerStyle!==req.corner || trackWidth(env,session.net)!==req.width || flip!==req.postureFlip){lastPreview=null;pending=env.cursor();return;}
+          || routeModeOf(useEditor.getState())!==req.mode || useEditor.getState().placement.cornerStyle!==req.corner || trackWidth(env,session.net,pair)!==req.width || flip!==req.postureFlip){lastPreview=null;pending=env.cursor();return;}
         const hadMoved = session.moved.length > 0;
         session.preview = r.tracks;
         session.moved = r.moved;
@@ -191,7 +204,7 @@ export function routeTool(pair = false): Tool {
     return out;
   };
 
-  const commit = async (env: ToolEnv, transition?: { to: Point; via: ViaItem }): Promise<boolean> => {
+  const commit = async (env: ToolEnv, transition?: { to: Point; target: number }): Promise<boolean> => {
     if (!s || committing) return false;
     const session = s;
     committing = true;
@@ -201,12 +214,32 @@ export function routeTool(pair = false): Tool {
       while (inflight || pending) await previewSettled;
       if (s !== session || (!session.preview.length && !transition)) return false;
       // A blocked/partial route must never drop a via back at its previous source.
-      if (transition && (!session.reached || !samePoint(session.preview.at(-1)?.b ?? session.from, transition.to))) return false;
-      const tracks = session.preview;
+      if (transition && (!session.reached || !samePoint((pair ? routeEnd(session.preview,session.net) : session.preview.at(-1)?.b) ?? session.from, transition.to))) return false;
+      let tracks = session.preview;
       const moved = session.moved;
+      let vias:ViaItem[]=[];
+      if(transition){
+        const document=env.doc(),items=document.items,footprints=document.footprints,epoch=document.epoch;
+        const settings=()=>JSON.stringify([trackWidth(env,session.net,pair),diffGap(env,session.net),routeModeOf(useEditor.getState()),useEditor.getState().placement.cornerStyle,flip]);
+        const plannedSettings=settings();
+        const other=pair?routeEnd(tracks,negativeOf(env,session.net)):undefined;
+        if(pair&&!other)return false;
+        const active=await api.pcbVia(env.docId,session.net,transition.to,session.layer,transition.target);
+        if(s!==session)return false;
+        if(pair&&other){
+          const partner=await api.pcbVia(env.docId,negativeOf(env,session.net),other,session.layer,transition.target);
+          const last=tracks.filter(t=>t.net===session.net).at(-1);
+          if(s!==session)return false;
+          const clearance=await api.pcbPairViaClearance(env.docId,active,partner,session.layer);
+          const fanout=pairViaFanout(active,partner,{x:transition.to.x-(last?.a.x??session.from.x),y:transition.to.y-(last?.a.y??session.from.y)},trackWidth(env,session.net,pair),clearance);
+          // Via types can span layers in either order; necks stay on the current layer.
+          tracks=[...tracks,...fanout.tracks.map(t=>({...t,layer:session.layer}))];vias=fanout.vias;
+        }else vias=[active];
+        if(s!==session||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch||settings()!==plannedSettings){session.message='Board or routing settings changed while planning vias; try again.';return false;}
+      }
       seq++;
       pending = null;
-      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...(transition ? [transition.via] : [])] });
+      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...vias] });
       if (s !== session) return false;
       if (!ok) {
         if (transition) {
@@ -267,7 +300,7 @@ export function routeTool(pair = false): Tool {
     id: pair ? "diffPair" : "route",
     hint: (env) =>
       s
-        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"}${s.net ? ` · ${otherEnds(s, s.from).length} other ends (cyan rings)` : ""} · width ${(trackWidth(env, s.net) / NM_PER_MM).toFixed(2)} mm (W / Shift+W) · click to commit · Backspace removes last step · Space chooses via layer · V quick via · / flip corner · ${useEditor.getState().drcEnforce ? `Shift+R mode (${useEditor.getState().placement.routeMode})` : "design rules OFF: ignoring violators (Ctrl+Shift+D)"} · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
+        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"}${s.net ? ` · ${otherEnds(s, s.from).length} other ends (cyan rings)` : ""} · width ${(trackWidth(env, s.net, pair) / NM_PER_MM).toFixed(2)} mm (W / Shift+W) · click to commit · Backspace removes last step · Space chooses via layer · V quick via · / flip corner · ${useEditor.getState().drcEnforce ? `Shift+R mode (${useEditor.getState().placement.routeMode})` : "design rules OFF: ignoring violators (Ctrl+Shift+D)"} · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
         : `Click a pad or track to start ${pair ? "a differential pair" : "routing"}`,
     reset: finish,
     down(env) {
@@ -371,7 +404,7 @@ export function routeTool(pair = false): Tool {
       }
       if (key === "w" || key === "W") {
         const widths = routeWidths(boardSettings(env));
-        const current = trackWidth(env, s.net);
+        const current = trackWidth(env, s.net, pair);
         const next = e.shiftKey ? [...widths].reverse().find((w) => w < current) ?? widths[0] : widths.find((w) => w > current) ?? widths[widths.length - 1];
         env.setPlacement({ trackWidth: next });
         requestPreview(env, env.cursor());
@@ -386,8 +419,7 @@ export function routeTool(pair = false): Tool {
       if (key === " " || key === "*" || key === "v" || key === "V") {
         if (viaSession === s || committing) return true;
         const session = s;
-        if (pair) { session.message="Paired via fanout is not available yet; finish the pair before placing layer transitions."; env.redraw(); return true; }
-        const to = { ...env.cursor() };
+        const to = routeCursor(env,env.cursor());
         const cu = copperLayers(boardSettings(env));
         const next = routeViaLayer(cu, session.layer, env.placement().routeViaLayer ?? null, e.shiftKey);
         if (next === null) { session.message = "A via needs two copper layers in the stack"; env.redraw(); return true; }
@@ -405,10 +437,8 @@ export function routeTool(pair = false): Tool {
             target=chosen;
           }
           if(s!==session)return;
-          const via = await api.pcbVia(env.docId, session.net, to, session.layer, target);
-          if (s !== session) return;
-          // Copper, via and dependent refill are one transaction and one undo.
-          if (!await commit(env, { to, via }) || s !== session) return;
+          // Both pair necks, vias, copper and refill share one transaction and Undo.
+          if (!await commit(env, { to, target }) || s !== session) return;
           session.layer = target;
           useEditor.getState().patchDoc(env.docId, { activeLayer: session.layer });
           requestPreview(env, env.cursor());
@@ -431,27 +461,27 @@ export function routeTool(pair = false): Tool {
     excluded: () => new Set(s?.moved.map((m) => m.id) ?? []),
     overlay: env => {
       if (!s) return [];
-      const width = 1.5 / env.scale();
-      const lines = s.preview.map(t => ({ a: t.a, b: t.b, width: t.width, color: [1, 0.85, 0.3, 0.95] as [number, number, number, number] }));
+      const width = 1 / env.scale();
+      const lines:import("../renderer").DrawLine[] = [];
       const mark = (p: Point, color: [number,number,number,number]) => {
         const r=5/env.scale();
         lines.push({a:{x:p.x-r,y:p.y},b:{x:p.x+r,y:p.y},width,color});
         lines.push({a:{x:p.x,y:p.y-r},b:{x:p.x,y:p.y+r},width,color});
       };
-      mark(s.from,[0.3,1,0.65,1]);
+      lines.push({a:s.from,b:s.from,width:3/env.scale(),color:[.65,.95,.85,.9]});
       if (!s.reached && s.blockedAt) mark(s.blockedAt,[1,0.3,0.25,1]);
       // The other ends of the net: a ring on each target pad and a guide from the route's end to the nearest one.
       const end = routeEnd(s.preview,s.net) ?? s.from;
       const targets = otherEnds(s, end);
-      const cyan: [number, number, number, number] = [0.25, 0.85, 1, 0.95];
-      const ring = 9 / env.scale();
-      for (const t of targets) {
+      const cyan: [number, number, number, number] = [0.5, 0.8, 0.95, 0.6];
+      const ring = 5 / env.scale();
+      for (const t of targets.slice(0,4)) {
         for (let i = 0; i < 16; i++) {
           const a0 = (i / 16) * 2 * Math.PI, a1 = ((i + 1) / 16) * 2 * Math.PI;
           lines.push({ a: { x: t.x + ring * Math.cos(a0), y: t.y + ring * Math.sin(a0) }, b: { x: t.x + ring * Math.cos(a1), y: t.y + ring * Math.sin(a1) }, width, color: cyan });
         }
       }
-      if (targets.length) lines.push({ a: end, b: targets[0], width: width * 0.8, color: [0.25, 0.85, 1, 0.55] });
+      if (targets.length) lines.push({ a: end, b: targets[0], width: width * 0.8, color: [0.5, 0.8, 0.95, 0.3] });
       return lines;
     },
   };

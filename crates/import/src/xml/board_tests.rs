@@ -404,3 +404,19 @@ fn example_boards_keep_copper_on_pads() {
         assert_eq!(&back, doc, "document changed in the save/load round trip");
     }
 }
+
+#[test]
+fn xml_inner_lands_use_round_shapes_and_their_own_annular_dimensions() {
+    for (flags,expected) in [(0,1.2),(2,1.8)] {
+        let xml=format!(r#"<eagle><drawing><board>
+        <designrules><param name="layerSetup" value="(1*2*15*16)"/><param name="rvPadInner" value="0.1"/><param name="rlMinPadInner" value="0.1mm"/><param name="rlMaxPadInner" value="0.5mm"/><param name="useDiameter" value="{flags}"/></designrules>
+        <libraries><library name="L"><packages><package name="P"><pad name="1" x="0" y="0" drill="1" diameter="1.8" shape="square"/></package></packages></library></libraries>
+        <elements><element name="J1" library="L" package="P" value="" x="10" y="10"/></elements>
+        <signals><signal name="P"><contactref element="J1" pad="1"/></signal></signals>
+        </board></drawing></eagle>"#);
+        let imported=parse_board(&xml,"inner-lands").unwrap();let board=board_settings(&imported.document).unwrap().1;let pads=all_pads(&imported.document,board);
+        assert_eq!(pads.len(),1);assert_eq!(pads[0].copper.len(),4);
+        assert_eq!(pads[0].for_layer(layer::TOP_COPPER).shape,pcbplannercad_core::item::PadShape::Rect);
+        for layer in [inner_copper(1),inner_copper(2)] {let land=pads[0].for_layer(layer);assert_eq!(land.shape,pcbplannercad_core::item::PadShape::Circle);assert_eq!(land.width,mm(expected));assert_eq!(land.height,mm(expected));assert_eq!(land.drill,pads[0].drill);}
+    }
+}

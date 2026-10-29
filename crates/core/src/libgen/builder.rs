@@ -182,7 +182,7 @@ impl FpBuilder {
             kind: PadKind::Smd,
             layer: TOP_COPPER,
             drill: None,
-        };
+         copper_shapes: Default::default(),};
         self.push_pad(pad, x, y, w, h);
     }
 
@@ -199,7 +199,7 @@ impl FpBuilder {
             kind: PadKind::Tht,
             layer: MULTI_LAYER,
             drill: Some(Drill { width: mm(drill), height: mm(drill) }),
-        };
+         copper_shapes: Default::default(),};
         self.push_pad(pad, x, y, w, h);
     }
 

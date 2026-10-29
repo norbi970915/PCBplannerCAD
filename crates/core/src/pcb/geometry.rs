@@ -31,6 +31,7 @@ pub struct WorldPad {
     /// Copper layers the pad occupies, top to bottom.
     pub copper: Vec<LayerId>,
     pub drill: Option<Drill>,
+    pub layer_shapes: std::collections::BTreeMap<LayerId,crate::library::PadCopperShape>,
     /// Board side for SMD pads (mask/paste openings); THT pads open both.
     pub bottom: bool,
 }
@@ -38,6 +39,15 @@ pub struct WorldPad {
 impl WorldPad {
     pub fn on_layer(&self, l: LayerId) -> bool {
         self.copper.contains(&l)
+    }
+
+    /// Select copper land geometry without changing the physical drill or pad identity.
+    pub fn for_layer(&self, layer:LayerId) -> Self {
+        let mut pad=self.clone();
+        if let Some(shape)=self.layer_shapes.get(&layer) {
+            pad.shape=shape.shape;pad.width=shape.width;pad.height=shape.height;pad.corner_ratio=shape.corner_ratio;
+        }
+        pad
     }
 
     /// Outline polygon grown by `inflate` (use a negative value to shrink).
@@ -95,6 +105,7 @@ pub fn world_pads(owner: ItemId, fp: &PlacedFootprint, footprint: &Footprint, bo
                 kind: p.kind,
                 copper: pad_copper(p.kind, world_layer, board),
                 drill: p.drill,
+                layer_shapes: p.copper_shapes.iter().map(|(layer,shape)|(fp.world_layer(LayerId(*layer)),shape.clone())).collect(),
                 bottom: world_layer == layer::BOTTOM_COPPER,
             }
         })
@@ -285,7 +296,7 @@ mod tests {
             kind: PadKind::Smd,
             layer: layer::TOP_COPPER,
             drill: None,
-        })
+         copper_shapes: Default::default(),})
     }
 
     #[test]
@@ -345,11 +356,68 @@ mod tests {
             corner_ratio: 0.0,
             kind: PadKind::Smd,
             copper: vec![layer::TOP_COPPER],
+            layer_shapes: Default::default(),
             drill: None,
             bottom: false,
         };
         let a0 = signed_area(&p.polygon(0)).abs();
         let a1 = signed_area(&p.polygon(mm(0.1))).abs();
         assert!(a1 > a0);
+    }
+}
+
+#[cfg(test)]
+mod copper_land_tests {
+    use super::*;
+    use crate::{DocKind,Document,Session,Command,io,Library};
+    use crate::item::{Pad,Drill};use crate::pcb::{PlacedFootprint,Side,board::Stackup};use crate::units::mm;
+    fn fixture()->Document {
+        let mut f=Footprint::new("layered");f.items.push(Item::Pad(Pad{number:"1".into(),pos:Point::default(),rotation:0.,shape:PadShape::Rect,width:mm(2.),height:mm(2.),corner_ratio:0.,kind:PadKind::Tht,layer:layer::MULTI_LAYER,drill:Some(Drill{width:mm(0.8),height:mm(0.8)}), copper_shapes: Default::default(),}));
+        if let Some(Item::Pad(pad))=f.items.first_mut(){pad.copper_shapes.insert(layer::inner_copper(1).0,crate::library::PadCopperShape{shape:PadShape::Circle,width:mm(1.2),height:mm(1.2),corner_ratio:0.});}
+        let fp=PlacedFootprint{board_only:false,designator:"J1".into(),value:String::new(),footprint:"L/P".into(),pos:Point::new(mm(10.),mm(10.)),rotation:0.,side:Side::Top,locked:false,pad_nets:[("1".into(),"P".into())].into(),component:String::new(),parameters:Default::default()};
+        let mut d=Document::from_item_list(DocKind::Pcb,[Item::Board(BoardSettings{stackup:Stackup::with_copper(4),..Default::default()}),Item::Footprint(fp)]);d.put_cached_footprint("L/P",f);d
+    }
+    #[test]
+    fn layer_lands_keep_one_drill_and_native_file_versions_preserve_shapes() {
+        let d=fixture();let board=board_settings(&d).unwrap().1;let pads=all_pads(&d,board);assert_eq!(pads.len(),1);assert_eq!(pads.iter().filter(|p|p.drill.is_some()).count(),1);
+        assert_eq!(pads[0].for_layer(layer::TOP_COPPER).shape,PadShape::Rect);assert_eq!(pads[0].for_layer(layer::inner_copper(1)).shape,PadShape::Circle);
+        assert_eq!(pads[0].for_layer(layer::inner_copper(1)).width,mm(1.2));assert_eq!(pads[0].drill,pads[0].for_layer(layer::inner_copper(1)).drill);
+        let saved=io::document_to_string(&d).unwrap();assert_eq!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["version"],3);
+        let reopened=io::document_from_str(DocKind::Pcb,&saved).unwrap();assert_eq!(io::document_to_string(&reopened).unwrap(),saved);
+        let lib=Library{name:"lands".into(),footprints:d.footprint_cache().values().cloned().collect(),..Default::default()};let text=io::library_to_string(&lib);assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"],3);assert_eq!(io::library_from_str(&text).unwrap(),lib);
+        let bad=text.replace("\"33\"","\"15\"");assert!(io::library_from_str(&bad).is_err());
+    }
+    #[test]
+    fn library_pad_renumber_copy_delete_and_undo_preserve_copper_lands() {
+        let source=fixture().footprint_cache()["L/P"].items[0].clone();
+        let mut session=Session::with_document(Document::from_item_list(DocKind::Footprint,[source.clone()]));
+        let mut renamed=source.clone();if let Item::Pad(p)=&mut renamed{p.number="8".into();}
+        session.execute(Command::Replace{id:ItemId(0),item:renamed.clone()}).unwrap();
+        let mut copy=renamed.translated(mm(3.),0).rotated(Point::default(),90.);if let Item::Pad(p)=&mut copy{p.number="9".into();}
+        let copied=session.execute(Command::Add{items:vec![copy.clone()]}).unwrap().upserted[0].id;
+        session.execute(Command::Delete{ids:vec![ItemId(0)]}).unwrap();session.undo().unwrap();
+        assert_eq!(session.document().get(ItemId(0)),Some(&renamed));assert_eq!(session.document().get(copied),Some(&copy));
+        let before_save=session.document().item_list();let mut f=Footprint::new("edited");f.items=before_save.clone();
+        let lib=Library{name:"edited".into(),footprints:vec![f],..Default::default()};let reopened=io::library_from_str(&io::library_to_string(&lib)).unwrap();assert_eq!(reopened.footprints[0].items,before_save);
+        for item in &reopened.footprints[0].items {let Item::Pad(p)=item else{panic!("pad")};let Item::Pad(original)=&source else{unreachable!()};assert_eq!(p.copper_shapes,original.copper_shapes);}
+        session.undo().unwrap();assert_eq!(session.document().len(),1);session.undo().unwrap();assert_eq!(session.document().get(ItemId(0)),Some(&source));
+        session.redo().unwrap();session.redo().unwrap();assert_eq!(session.document().item_list(),before_save);
+    }
+
+    #[test]
+    fn invalid_copper_shape_edits_leave_pad_and_history_untouched() {
+        let source=fixture().footprint_cache()["L/P"].items[0].clone();let mut invalid=source.clone();if let Item::Pad(p)=&mut invalid{p.copper_shapes.values_mut().next().unwrap().width=0;}
+        let mut session=Session::with_document(Document::from_item_list(DocKind::Footprint,[source.clone()]));assert!(session.execute(Command::Replace{id:ItemId(0),item:invalid}).is_err());assert_eq!(session.document().get(ItemId(0)),Some(&source));assert!(!session.can_undo());assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn inner_circle_avoids_outer_square_corner_but_outer_short_is_still_reported() {
+        for l in [layer::TOP_COPPER,layer::inner_copper(1)]{
+            let d=fixture();let mut session=Session::with_document(d);
+            let track=crate::pcb::Track{locked:false,a:Point::new(mm(10.9),mm(10.8)),b:Point::new(mm(11.3),mm(11.2)),width:mm(0.15),layer:l,net:"N".into()};
+            let id=session.execute(Command::Add{items:vec![Item::Track(track)]}).unwrap().upserted[0].id;
+            let violations=crate::pcb::drc::run_near(session.document(),&[id]);
+            assert_eq!(violations.iter().any(|v|matches!(v.code,"short"|"clearance")),l==layer::TOP_COPPER,"{violations:?}");
+        }
     }
 }

@@ -266,3 +266,122 @@ fn deleting_a_via_restores_its_pour_clearance_and_undo_restores_both() {
     let after=snapshot(session.document());session.undo().unwrap();assert_eq!(snapshot(session.document()),before);
     session.redo().unwrap();assert_eq!(snapshot(session.document()),after);
 }
+
+#[test]
+fn paired_transition_checks_both_vias_on_every_spanned_layer_and_rolls_back_together() {
+    let clean=board(vec![]);
+    let positive=p(12.65001,10.200005);let negative=p(12.65001,9.349995);
+    let mut pv=router::via_for(&clean,"D_P",positive);let mut nv=router::via_for(&clean,"D_N",negative);
+    pv.diameter=mm(0.6);pv.drill=mm(0.3);nv.diameter=mm(0.6);nv.drill=mm(0.3);
+    let command=Command::Route{delete:vec![],replace:vec![],add:vec![
+        track((5.,10.),(12.,10.),0.2,layer::TOP_COPPER,"D_P"),
+        track((5.,9.55),(12.,9.55),0.2,layer::TOP_COPPER,"D_N"),
+        track((12.,10.),(12.65001,10.200005),0.2,layer::TOP_COPPER,"D_P"),
+        track((12.,9.55),(12.65001,9.349995),0.2,layer::TOP_COPPER,"D_N"),
+        Item::Via(pv),Item::Via(nv),
+    ]};
+    for at in [positive,negative] {for copper in super::geometry::board_settings(&clean).unwrap().1.stackup.copper_layers() {
+        let mut setup=Session::with_document(clean.clone());
+        setup.execute(Command::Add{items:vec![track((at.x as f64/1e6-0.1,at.y as f64/1e6),(at.x as f64/1e6+0.1,at.y as f64/1e6),0.2,copper,"GND")]}).unwrap();
+        let mut session=Session::with_document(setup.document().clone());let before=snapshot(session.document());
+        assert!(session.execute_with_via_checks(command.clone(),true).is_err(),"must reject both vias on layer {}",copper.0);
+        assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());assert!(!session.is_dirty());
+    }}
+    let mut session=Session::with_document(clean);let before=snapshot(session.document());
+    session.execute_with_via_checks(command,true).unwrap();let after=snapshot(session.document());
+    session.undo().unwrap();assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());
+    session.redo().unwrap();assert_eq!(snapshot(session.document()),after);
+}
+
+#[test]
+fn transition_checks_route_necks_even_far_from_via_annuli() {
+    let document=board(vec![track((6.,9.),(6.,11.),0.2,layer::TOP_COPPER,"GND")]);
+    let via=router::via_for(&document,"D_P",p(15.,10.));
+    let mut session=Session::with_document(document);let before=snapshot(session.document());
+    assert!(session.execute_with_via_checks(Command::Route{delete:vec![],replace:vec![],add:vec![track((5.,10.),(15.,10.),0.2,layer::TOP_COPPER,"D_P"),Item::Via(via)]},true).is_err());
+    assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());
+}
+
+fn with_mounting_hole(width:f64,height:f64,rotation:f64,bottom:bool)->Document {
+    let mut placed=fp("H1","fixture/hole",10.,10.,&[]);
+    if let Item::Footprint(p)=&mut placed{p.rotation=rotation;p.side=if bottom{Side::Bottom}else{Side::Top};}
+    let mut document=board(vec![placed]);let mut footprint=crate::Footprint::new("hole");
+    footprint.items.push(Item::Pad(crate::item::Pad{number:String::new(),pos:p(0.,0.),rotation:0.,shape:crate::item::PadShape::Oval,width:mm(width),height:mm(height),corner_ratio:0.,kind:crate::item::PadKind::Npth,layer:layer::MULTI_LAYER,drill:Some(crate::item::Drill{width:mm(width),height:mm(height)}), copper_shapes: Default::default(),}));
+    document.put_cached_footprint("fixture/hole",footprint);document
+}
+
+#[test]
+fn mounting_holes_reject_vias_on_all_requested_spans_without_electrical_shorts() {
+    let document=with_mounting_hole(1.5,1.5,0.,false);
+    for layer in super::geometry::board_settings(&document).unwrap().1.stackup.copper_layers().into_iter().skip(1){
+        let via=router::via_between(&document,"A",p(10.,10.),crate::layer::TOP_COPPER,layer);
+        let mut session=Session::with_document(document.clone());let before=snapshot(session.document());
+        let error=session.execute_with_via_checks(place(via),true).unwrap_err();
+        assert!(error.to_string().contains("Mounting-hole clearance"),"{error}");assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());assert!(!session.is_dirty());
+    }
+    let report=super::drc::run(&document);assert!(report.violations.iter().all(|v|v.code!="short"));
+}
+
+#[test]
+fn slotted_mounting_hole_uses_rotated_drill_capsule_on_both_board_sides() {
+    for angle in [0.0_f64,45.,90.] {for bottom in [false,true]{
+        let document=with_mounting_hole(3.,1.,angle,bottom);let a=angle.to_radians();
+        let pos=p(10.+1.4*a.cos(),10.+1.4*a.sin());let via=router::via_for(&document,"A",pos);
+        let mut session=Session::with_document(document.clone());assert!(session.execute_with_via_checks(place(via),true).unwrap_err().to_string().contains("Mounting-hole clearance"));
+        let clear=router::via_for(&document,"A",p(15.,15.));session.execute_with_via_checks(place(clear),true).unwrap();
+        let after=snapshot(session.document());session.undo().unwrap();assert_eq!(snapshot(session.document()),snapshot(&document));session.redo().unwrap();assert_eq!(snapshot(session.document()),after);
+    }}
+}
+
+#[test]
+fn paired_vias_reject_together_if_either_intersects_a_mounting_hole() {
+    let document=with_mounting_hole(1.5,1.5,0.,false);
+    for swap in [false,true]{
+        let one=router::via_for(&document,"P",if swap{p(15.,15.)}else{p(10.,10.)});
+        let other=router::via_for(&document,"N",if swap{p(10.,10.)}else{p(15.,15.)});
+        let mut session=Session::with_document(document.clone());let before=snapshot(session.document());
+        assert!(session.execute_with_via_checks(Command::Route{delete:vec![],replace:vec![],add:vec![Item::Via(one),Item::Via(other)]},true).unwrap_err().to_string().contains("Mounting-hole clearance"));
+        assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());assert!(!session.is_dirty());
+    }
+}
+
+#[test]
+fn mounting_hole_checks_report_track_crossings_for_full_and_online_drc() {
+    let mut setup=Session::with_document(with_mounting_hole(1.5,1.5,0.,false));
+    for layer in [crate::layer::TOP_COPPER,crate::layer::inner_copper(3),crate::layer::BOTTOM_COPPER] {
+        let delta=setup.execute(Command::Add{items:vec![track((8.,10.),(12.,10.),0.2,layer,"A")]}).unwrap();
+        let id=delta.upserted[0].id;
+        assert!(super::drc::run_near(setup.document(),&[id]).iter().any(|v|v.message.contains("Mounting-hole clearance")&&v.layer==Some(layer)));
+        assert!(super::drc::run(setup.document()).violations.iter().any(|v|v.message.contains("Mounting-hole clearance")&&v.items.contains(&id)));
+        setup.undo().unwrap();
+    }
+}
+
+#[test]
+fn pair_via_fanout_clearance_uses_pair_nets_shared_span_and_neck_scopes() {
+    use super::board::{Rule,RuleKind,NetClass};
+    let source=layer::inner_copper(2);let target=layer::inner_copper(4);
+    let doc=board(vec![]);let (id,settings)=super::geometry::board_settings(&doc).unwrap();let mut settings=settings.clone();let base=settings.net_classes[0].clone();
+    settings.net_classes=vec![NetClass{nets:vec!["P".into(),"N".into()],clearance:mm(0.127),..base.clone()},NetClass{name:"Unrelated".into(),nets:vec!["POWER".into()],clearance:mm(2.),..base}];
+    let clearance=|name:&str,first:&str,second:&str,min:f64|Rule{name:name.into(),enabled:true,kind:RuleKind::Clearance{first:first.into(),second:second.into(),min:mm(min)}};
+    settings.rules=vec![clearance("Outside","IsVia and OnLayer('Top Layer')","IsVia",0.9),clearance("Neck","IsTrack and OnLayer('Inner 2')","IsVia",0.4),clearance("Inside","IsVia and OnLayer('Inner 3')","IsVia",0.3)];
+    let mut session=Session::with_document(doc);session.execute(Command::Replace{id,item:Item::Board(settings.clone())}).unwrap();
+    let doc=session.document();let positive=router::via_between(doc,"P",p(10.,10.),source,target);let mut negative=router::via_between(doc,"N",p(10.,11.),target,source);
+    assert_eq!(router::pair_via_clearance(doc,&positive,&negative,source).unwrap(),mm(0.4));
+    settings.rules.remove(1);session.execute(Command::Replace{id,item:Item::Board(settings.clone())}).unwrap();
+    assert_eq!(router::pair_via_clearance(session.document(),&positive,&negative,source).unwrap(),mm(0.3));
+    settings.rules.clear();session.execute(Command::Replace{id,item:Item::Board(settings)}).unwrap();
+    assert_eq!(router::pair_via_clearance(session.document(),&positive,&negative,source).unwrap(),mm(0.127));
+    std::mem::swap(&mut negative.from_layer,&mut negative.to_layer);
+    assert_eq!(router::pair_via_clearance(session.document(),&positive,&negative,source).unwrap(),mm(0.127));
+}
+
+#[test]
+fn pair_via_clearance_rejects_invalid_spans_nets_and_source_layers() {
+    let doc=board(vec![]);let source=layer::inner_copper(2);let target=layer::inner_copper(4);
+    let positive=router::via_between(&doc,"P",p(10.,10.),source,target);let mut negative=router::via_between(&doc,"N",p(10.,11.),source,target);
+    assert!(router::pair_via_clearance(&doc,&positive,&negative,layer::TOP_COPPER).is_err());
+    negative.to_layer=layer::inner_copper(20);assert!(router::pair_via_clearance(&doc,&positive,&negative,source).is_err());
+    negative.to_layer=target;negative.net="P".into();assert!(router::pair_via_clearance(&doc,&positive,&negative,source).is_err());
+    negative.net.clear();assert!(router::pair_via_clearance(&doc,&positive,&negative,source).is_err());
+}

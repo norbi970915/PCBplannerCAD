@@ -658,3 +658,15 @@ fn wizard_preserves_distinct_case_and_sanitized_library_identities_on_disk(){
     let doc=io::document_from_str(pcbplannercad_core::DocKind::Schematic,&std::fs::read_to_string(dest.join(&project.sheets[0])).unwrap()).unwrap();let pcb=io::document_from_str(pcbplannercad_core::DocKind::Pcb,&std::fs::read_to_string(dest.join(project.pcb.as_ref().unwrap())).unwrap()).unwrap();let compiled=schematic::compile(&[SheetRef::new(&project.sheets[0],&doc)]);assert_eq!(compiled.parts.len(),names.len());let resolve=|part:&schematic::NetlistPart|{let key=part.footprint.replace(':',"/");pcb.cached_footprint(&key).map(|f|(key,f.clone()))};let eco=sync::plan(&compiled,&pcb,&resolve);assert!(!eco.changes.iter().any(|c|matches!(c,EcoChange::AddFootprint{..}|EcoChange::RemoveFootprint{..}|EcoChange::UpdateNets{..}|EcoChange::ChangeFootprint{..})),"{:?}",eco.changes);
     assert_eq!(std::fs::read_to_string(&source).unwrap(),sch);assert_eq!(std::fs::read_to_string(&board).unwrap(),brd);std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn single_unlabelled_source_net_keeps_its_board_identity_after_round_trip() {
+    let text=test_schematic().replace(r#"<label x="41" y="21" size="1.778" layer="95"/>"#,"");
+    let imported=parse_schematic(&text,"single-net").unwrap();
+    let compile=|sheets:&[crate::ImportedSheet]|pcbplannercad_core::schematic::compile(&sheets.iter().map(|s|pcbplannercad_core::schematic::SheetRef::new(&s.file_name,&s.document)).collect::<Vec<_>>());
+    let before=compile(&imported.sheets);
+    let net=before.nets.iter().find(|n|n.name=="N$1").expect("single source segment must retain its exact name");
+    assert!(net.nodes.iter().any(|n|n.designator=="IC1"));
+    let sheets=imported.sheets.iter().map(|s|crate::ImportedSheet{file_name:s.file_name.clone(),document:pcbplannercad_core::io::document_from_str(pcbplannercad_core::DocKind::Schematic,&pcbplannercad_core::io::document_to_string(&s.document).unwrap()).unwrap()}).collect::<Vec<_>>();
+    assert_eq!(serde_json::to_value(before).unwrap(),serde_json::to_value(compile(&sheets)).unwrap());
+}

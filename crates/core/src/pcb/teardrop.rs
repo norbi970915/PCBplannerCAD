@@ -219,7 +219,9 @@ fn plan_near(doc: &Document, o: &TeardropOptions, near: Option<(Point, Point)>) 
             }
             Item::Footprint(fp) => {
                 let Some(geom) = doc.cached_footprint(&fp.footprint) else { continue };
-                for pad in world_pads(id, fp, geom, board) {
+                for physical in world_pads(id, fp, geom, board) {
+                    let variants=if physical.layer_shapes.is_empty(){vec![physical]}else{physical.copper.iter().map(|l|{let mut p=physical.for_layer(*l);p.copper=vec![*l];p}).collect()};
+                    for pad in variants {
                     let smd = pad.kind == PadKind::Smd;
                     if pad.net.is_empty() || pad.kind == PadKind::Npth || (smd && !o.smd_pads) || (!smd && !o.pth_pads) {
                         continue;
@@ -231,6 +233,7 @@ fn plan_near(doc: &Document, o: &TeardropOptions, near: Option<(Point, Point)>) 
                     }
                     let copper = pad.copper.clone();
                     anchors.push(Anchor { center: pad.pos, size: w.min(h), net: pad.net.clone(), on: Box::new(move |l| copper.contains(&l)), reach: w.min(h) / 2.0, via: false });
+                    }
                 }
             }
             _ => {}

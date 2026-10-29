@@ -139,7 +139,7 @@ test('cancelling while pad lookup is pending cannot restart routing',async()=>{
 
 test('clearance-blocked routing explains why no track can be drawn',async()=>{
   const h=toolHarness();await withIPC(cmd=>cmd==='pcb_object_at'?[1,'SIGNAL']:{...result(),tracks:[],reached:false,blockedAt:h.center,message:'start point violates clearance'},async()=>{
-    h.tool.down!(h.env,{} as never);await tick();assert.match(h.tool.hint(h.env),/Blocked: start point violates clearance/);assert(h.tool.overlay!(h.env).length>=4);
+    h.tool.down!(h.env,{} as never);await tick();assert.match(h.tool.hint(h.env),/Blocked: start point violates clearance/);assert(h.tool.overlay!(h.env).some(l=>l.color[0]===1&&l.color[1]===0.3));
   });
 });
 
@@ -175,9 +175,10 @@ test('a click waits for the latest endpoint instead of committing a stale previe
 test('cancelling while a via lookup is pending never inserts the via', async () => {
   const h = toolHarness();
   let resolveVia!: (value: unknown) => void;
-  await withIPC(cmd => {
+  await withIPC((cmd,args) => {
     if (cmd === 'pcb_object_at') return [1, 'SIGNAL'];
     if (cmd === 'pcb_via') return new Promise(resolve => { resolveVia = resolve; });
+    if (cmd === 'pcb_route') { const request=args!.req as RouteRequest; return {...result(),tracks:[{...track,a:request.start,b:request.end}]}; }
     return result();
   }, async () => {
     h.tool.down!(h.env, {} as never); await tick();
@@ -294,7 +295,7 @@ test('routing lights up the net, rings the other ends and restores the earlier h
   const lines = h.tool.overlay!(h.env);
   const other = { x: 21000000, y: 10000000 };
   const near = (p: { x: number; y: number }, q: { x: number; y: number }) => Math.hypot(p.x - q.x, p.y - q.y) < 2e6;
-  assert(lines.some((l) => near(l.a, other) && l.color[2] === 1), 'a cyan ring marks the other pad');
+  assert(lines.some((l) => near(l.a, other) && l.color[2] === 0.95), 'a cyan ring marks the other pad');
   assert(!lines.some((l) => near(l.a, h.center) && l.color[0] === 0.25 && l.color[3] === 0.95), 'the start pad is not ringed');
   assert(lines.some((l) => l.a.x === h.center.x && l.a.y === h.center.y && l.b.x === other.x && l.b.y === other.y), 'a guide runs to the nearest other end');
   h.tool.cancel(h.env);
@@ -671,4 +672,58 @@ test('an inconsistent pair response cannot commit one member or its shove change
     assert.deepEqual(tool.preview!(h.env),[]);assert.match(tool.hint(h.env),/Incomplete pair/);
     tool.down!(h.env,{}as never);await tick();assert.equal(h.commands.length,0);tool.cancel(h.env);
   });
+});
+
+for(const outcome of ['accept','reject','cancel','scoped','clearance-cancel','clearance-edit'] as const)test('paired via transition '+outcome+' is atomic and retains both anchors',async()=>{
+  const h=toolHarness();(h.env.doc().items.get(1) as {padNets:Record<string,string>}).padNets['1']='USB_P';
+  const tool=routeTool(true);const seen:Record<string,unknown>[]=[];let undo=0,resolveVia:((v:unknown)=>void)|undefined,resolveClearance:((v:unknown)=>void)|undefined;
+  useEditor.getState().setPlacement({routeViaLayer:0});
+  const originalExec=h.env.exec;
+  h.env.exec=async command=>{if(outcome==='reject'){h.commands.push(command);return false;}return originalExec(command);};
+  h.env.undo=async()=>{undo++;return true;};
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'USB_P'];if(cmd==='pcb_net_items')return[];
+    if(cmd==='pcb_via'){
+      if(outcome==='cancel')return new Promise(resolve=>{resolveVia=resolve;});
+      return {...via,pos:args!.pos,net:args!.net,fromLayer:args!.from,toLayer:args!.to};
+    }
+    if(cmd==='pcb_pair_via_clearance'){assert.equal(args!.source,1);assert.equal((args!.positive as {net:string}).net,'USB_P');assert.equal((args!.negative as {net:string}).net,'USB_N');if(outcome==='clearance-cancel'||outcome==='clearance-edit')return new Promise(resolve=>{resolveClearance=resolve;});return outcome==='scoped'?130000:250000;}
+    assert.equal(cmd,'pcb_route_pair');seen.push(args!);const r=args!.req as RouteRequest;
+    return [{...result('USB_P'),tracks:[{...track,net:'USB_P',layer:r.layer,a:r.start,b:r.end}]},
+      {...result('USB_N'),tracks:[{...track,net:'USB_N',layer:r.layer,a:args!.negStart??{x:r.start.x,y:r.start.y-450000},b:{x:r.end.x,y:r.end.y-450000}}]}];
+  },async()=>{
+    tool.down!(h.env,{}as never);await tick();await tick();h.move(14e6,9e6);
+    tool.key!(h.env,'v',{}as never);await tick();await tick();
+    if(outcome==='cancel'){assert(resolveVia);tool.cancel(h.env);resolveVia({...via,net:'USB_P'});await tick();assert.equal(h.commands.length,0);return;}
+    if(outcome==='clearance-cancel'||outcome==='clearance-edit'){assert(resolveClearance);if(outcome==='clearance-cancel')tool.cancel(h.env);else h.env.doc().epoch++;resolveClearance(127000);await tick();await tick();assert.equal(h.commands.length,0);if(outcome==='clearance-edit')assert.match(tool.hint(h.env),/changed while planning/);return;}
+    assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'route');if(command.op!=='route')return;
+    const vias=command.add.filter(i=>i.kind==='via');assert.equal(vias.length,2);assert.deepEqual(vias.map(v=>v.net),['USB_P','USB_N']);
+    assert(vias.every(v=>v.fromLayer===1&&v.toLayer===0));
+    const pitch=Math.hypot(vias[0].pos.x-vias[1].pos.x,vias[0].pos.y-vias[1].pos.y);assert(pitch>=(outcome==='scoped'?730000:850000));if(outcome==='scoped')assert(pitch<850000,'unrelated global clearance must not inflate this pair');
+    for(const v of vias)assert(command.add.some(t=>t.kind==='track'&&t.net===v.net&&t.b.x===v.pos.x&&t.b.y===v.pos.y));
+    if(outcome==='reject'){assert.match(tool.hint(h.env),/on bottom/);assert.match(tool.hint(h.env),/Via placement rejected/);return;}
+    assert.match(tool.hint(h.env),/on top/);
+    assert.deepEqual((seen.at(-1)!.req as RouteRequest).start,vias[0].pos);assert.deepEqual(seen.at(-1)!.negStart,vias[1].pos);
+    tool.key!(h.env,'Backspace',{}as never);await tick();await tick();assert.equal(undo,1);
+    assert.deepEqual((seen.at(-1)!.req as RouteRequest).start,h.center);assert.equal((seen.at(-1)!.req as RouteRequest).layer,1);assert.equal(seen.at(-1)!.negStart,null);
+    tool.cancel(h.env);
+  });
+  useEditor.getState().setPlacement({routeViaLayer:null});
+});
+
+for(const [pair,manual,expected] of [[true,null,140000],[false,null,190000],[true,170000,170000]] as const) test('routing uses the selected class width for '+(pair?'pairs':'single traces')+' with override '+manual,async()=>{
+  const h=toolHarness(),tool=routeTool(pair);let seen=0;
+  (h.env.doc().items.get(1) as {padNets:Record<string,string>}).padNets['1']='LINK_P';
+  (h.env.doc().items as Map<number,unknown>).set(3,{kind:'board',diffPairs:[],stackup:{layers:[{kind:'copper',layer:0},{kind:'copper',layer:1}]},netClasses:[
+    {name:'Default',nets:[],trackWidth:250000,diffPairWidth:250000,diffPairGap:250000},
+    {name:'Fast',nets:['LINK_P','LINK_N'],trackWidth:190000,diffPairWidth:140000,diffPairGap:154000}
+  ]});
+  useEditor.getState().setPlacement({trackWidth:manual});
+  try{await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'LINK_P'];if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,pair?'pcb_route_pair':'pcb_route');const r=args!.req as RouteRequest;seen++;assert.equal(r.width,expected);
+    if(pair){assert.equal(args!.gap,154000);return[{...result('LINK_P'),tracks:[]},{...result('LINK_N'),tracks:[]}];}
+    return {...result('LINK_P'),tracks:[]};
+  },async()=>{tool.down!(h.env,{}as never);await tick();await tick();assert(seen>0);tool.cancel(h.env);});}
+  finally{useEditor.getState().setPlacement({trackWidth:null});}
 });

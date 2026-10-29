@@ -76,6 +76,7 @@ pub fn run(doc: &Document) -> DrcReport {
     d.bridged_shorts(&idx, &labels, &shorted);
     d.object_rules(&idx);
     d.pad_holes();
+    d.mounting_hole_clearance(&idx);
     d.outline(&idx);
     d.keepouts(&idx);
     let gfx = d.footprint_graphics(None);
@@ -123,6 +124,7 @@ pub fn run_near(doc: &Document, items: &[ItemId]) -> Vec<DrcViolation> {
     d.copper_pairs(&idx, None);
     d.object_rules(&idx);
     d.pad_holes();
+    d.mounting_hole_clearance(&idx);
     d.outline(&idx);
     d.keepouts(&idx);
     let gfx = d.footprint_graphics(Some(region));
@@ -410,6 +412,40 @@ impl<'a> Drc<'a> {
                 o.footprint = Some(&fp.footprint);
                 let what = format!("Pad {}.{}", p.designator, p.number);
                 self.hole(id, &o, (d.width, d.height), p.pos, what);
+            }
+        }
+    }
+
+    /// Bare holes occupy physical board space on every layer, without joining nets.
+    fn mounting_hole_clearance(&mut self, idx: &Index) {
+        let doc=self.doc;
+        for (id,item) in doc.items() {
+            let Item::Footprint(fp)=item else {continue};
+            let Some(footprint)=doc.cached_footprint(&fp.footprint) else {continue};
+            for pad in world_pads(id,fp,footprint,self.board) {
+                if pad.kind!=crate::item::PadKind::Npth {continue;}
+                let Some(drill)=pad.drill.filter(|d|d.width>0 && d.height>0) else {continue};
+                let angle=(pad.rotation+if drill.width>=drill.height {0.0}else{90.0}).to_radians();
+                let half=(drill.width.max(drill.height)-drill.width.min(drill.height)) as f64/2.0;
+                let center=pt(pad.pos);let offset=[half*angle.cos(),half*angle.sin()];
+                let hole=Geo::cap([center[0]-offset[0],center[1]-offset[1]],[center[0]+offset[0],center[1]+offset[1]],drill.width.min(drill.height) as f64/2.0);
+                let mut object=Obj::new(ObjKind::Pad,"",None);object.designator=Some(&pad.designator);object.footprint=Some(&fp.footprint);
+                for index in idx.tree.query(hole.bb.grow(self.rules.max_clearance() as f64+TOLERANCE)) {
+                    let copper=&idx.objs[index];
+                    if !self.focused(id) && !self.focused(copper.item) {continue;}
+                    let Some(layer)=copper.layers.first().copied() else {continue};
+                    object.layer=Some(layer);
+                    // Scoped layer rules may differ; the hole crosses the full stack.
+                    for layer in &copper.layers {
+                        object.layer=Some(*layer);
+                        let (clearance,rule)=self.rules.clearance_rule(&copper.obj(Some(*layer)),&object);
+                        let Some((gap,pos))=geo::gap(&hole,&idx.geos[index],clearance as f64+TOLERANCE) else {continue};
+                        if gap>=clearance as f64-TOLERANCE {continue;}
+                        let message=format!("Mounting-hole clearance {} < {}: {} to hole on {} on {}",mm_str(gap),mmc(clearance),describe(copper),pad.designator,self.layer_name(*layer));
+                        self.push(Severity::Error,"clearance",rule.to_string(),message,vec![copper.item,id],to_point(pos),Some(*layer));
+                        break;
+                    }
+                }
             }
         }
     }

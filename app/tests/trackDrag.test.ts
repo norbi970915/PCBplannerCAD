@@ -121,3 +121,21 @@ test('dragging a track tethers a locked neighbor without hiding or changing it',
  const result=applyTrackDrag(plan,p(0,1));assert(!result.replace.some(r=>r.id===3),'locked neighbor stays exact');
  assert(result.add.some(t=>JSON.stringify(t.a)===JSON.stringify(p(6,2))&&JSON.stringify(t.b)===JSON.stringify(p(6,3))),'old junction is joined to the new segment');
 });
+
+ test('direction rails hold horizontal and diagonal runs through pointer noise, then release',async()=>{
+ const {snapRouteDirection}=await import('../src/editor/routeDirection.ts');
+ const a=snapRouteDirection(p(0,0),p(5,.03),mm(.05));assert.equal(a.axis,0);assert.deepEqual(a.point,p(5,0));
+ const held=snapRouteDirection(p(0,0),p(5,.07),mm(.05),a.axis);assert.equal(held.axis,0);
+ const released=snapRouteDirection(p(0,0),p(5,.2),mm(.05),held.axis);assert.equal(released.axis,null);assert.deepEqual(released.point,p(5,.2));
+ const diagonal=snapRouteDirection(p(0,0),p(5,5.03),mm(.05));assert.equal(diagonal.axis,1);assert.equal(diagonal.point.x,diagonal.point.y);
+ const reverse=snapRouteDirection(p(0,0),p(-5,0),mm(.05),0);assert.equal(reverse.axis,4);assert.deepEqual(reverse.point,p(-5,0));
+ });
+
+test('track slides ignore foreign-net vias and vias outside the dragged copper span',()=>{
+ for(const foreign of [true,false]){
+  const items=board();items.delete(3);
+  items.set(0,{kind:'board',stackup:{layers:[0,33,34,1].map(layer=>({kind:'copper',layer}))}}as Item);
+  items.set(9,{kind:'via',pos:p(6,2),diameter:mm(.6),drill:mm(.2),fromLayer:foreign?0:33,toLayer:foreign?1:34,net:foreign?'OTHER':'N'});
+  const result=applyTrackDrag(planTrackDrag(items,{},[2])!,p(0,1));assert.equal(result.add.length,0,'unrelated copper must not create a fixed joining stub');
+ }
+});

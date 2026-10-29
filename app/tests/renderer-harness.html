@@ -74,13 +74,24 @@ window.runRendererChecks=async()=>{
  check(sample(1.25,.75)[0]>120&&sample(1,.75)[0]<80,'worker triangles lost copper or a hole');
  check(workerScene.prims(20).fills[0].tris instanceof Float64Array,'worker result was not transferred doubles');
  workerCache.dispose();check(gl.getError()===gl.NO_ERROR,'deferred fill WebGL error');
+ // Verify layer-dependent land shapes reach the actual GPU buffers.
+ const landPad={kind:'pad',number:'1',pos:p(3,2),rotation:0,shape:'rect',width:mm(2),height:mm(2),cornerRatio:0,padKind:'tht',layer:15,drill:{width:mm(.4),height:mm(.4)},copperShapes:{33:{shape:'circle',width:mm(1.2),height:mm(1.2),cornerRatio:0}}};
+ for(const placed of [false,true]){
+  const landScene=new Scene(),landItems=new Map([[30,placed?{kind:'footprint',footprint:'L/P',designator:'J1',value:'',component:'',parameters:{},pos:p(0,0),rotation:0,side:'top',locked:false,padNets:{'1':'P'}}:landPad]]);
+  landItems.set(31,{...zone,outline:workerRing,fill:[{outer:workerRing,holes:[]}],layer:0});
+  const landContext={kind:placed?'pcb':'footprint',cache:{},footprints:{'L/P':{name:'P',description:'',model:null,items:[landPad]}},view:{...DEFAULT_VIEW,padNumbers:false,padNetNames:false,references:false,values:false},copperLayer:0};
+  const show=layer=>{landScene.update(landItems,{...landContext,copperLayer:layer});renderer.setScene(landScene.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),landScene.styleCount);renderer.render(cam,grid);};
+  show(0);check(matches(sample(3.8,2.8),theme.color('L15')),'outer land corner missing');
+  show(33);check(matches(sample(3.8,2.8),theme.color('Z0'))&&matches(sample(3.4,2),theme.color('L15')),'inner land geometry stale or missing');
+  show(0);check(matches(sample(3.8,2.8),theme.color('L15'))&&gl.getError()===gl.NO_ERROR,'returning to outer land left stale GPU geometry');
+ }
  const ext=gl.getExtension('WEBGL_debug_renderer_info');const device=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
- const result={checks:24,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
+ const result={checks:30,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
  if(new URL(location.href).searchParams.has('fixture')){
   const data=await(await fetch('/__fixture')).json(),dense=new Scene(),entries=new Map(data.items.map(e=>[e.id,e.item]));
   const deferred=!new URL(location.href).searchParams.has('syncFills');let fallbacks=0,fillUpdates=0;
   const denseCache=new PourTriangles(()=>{fillUpdates++;dense.update(entries,denseContext);renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));},{onFallback:()=>fallbacks++});
-  const denseContext={kind:'pcb',cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true,...(deferred?{getFillTriangles:denseCache.read}:{})};
+  const denseContext={kind:'pcb',copperLayer:0,cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true,...(deferred?{getFillTriangles:denseCache.read}:{})};
   denseCache.retain(new Set([...entries.values()].filter(i=>i.kind==='zone'&&!i.keepout).flatMap(i=>i.fill)));
   const t=performance.now();dense.update(entries,denseContext);cam.fit(dense.bounds());bytes=0;uploads=0;
   renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),dense.styleCount);renderer.setOverlay([]);renderer.render(cam,grid);

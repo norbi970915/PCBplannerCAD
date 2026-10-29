@@ -19,8 +19,8 @@ use crate::error::CoreError;
 use crate::library::{CachedPart, Library};
 use crate::project::Project;
 
-/// Maximum supported version. Documents with required import metadata use version 2.
-pub const VERSION: u32 = 2;
+/// Maximum supported version. Version 3 requires layer-specific copper lands.
+pub const VERSION: u32 = 3;
 
 pub const PCB_FORMAT: &str = "pcbplannercad.pcb";
 pub const SCH_FORMAT: &str = "pcbplannercad.sch";
@@ -82,7 +82,7 @@ pub fn document_to_string(doc: &Document) -> Result<String, CoreError> {
     let format = format_for(doc.kind()).ok_or_else(|| CoreError::UnsupportedFile("library entries are saved with their library".into()))?;
     let items = doc.items().map(|(id, item)| IdItem { id, item: item.clone() }).collect();
     // Older executables would silently discard these fields when saving. Make them refuse the document instead.
-    let version = if !doc.bus_aliases().is_empty() || doc.items().any(|(_,item)| matches!(item,Item::Footprint(f) if f.board_only)) {2} else {1};
+    let version = if doc.footprint_cache().values().any(|f|f.has_layer_shapes()) || doc.items().any(|(_,item)|matches!(item,Item::Pad(p)if !p.copper_shapes.is_empty())){3} else if !doc.bus_aliases().is_empty() || doc.items().any(|(_,item)| matches!(item,Item::Footprint(f) if f.board_only)) {2} else {1};
     Ok(write_at_version(format, DocBody { items, bus_aliases: doc.bus_aliases().clone(), parts: doc.cache().clone(), footprints: doc.footprint_cache().clone() }, version))
 }
 
@@ -112,7 +112,7 @@ pub fn kind_for_extension(ext: &str) -> Option<DocKind> {
 }
 
 pub fn library_to_string(lib: &Library) -> String {
-    write(LIB_FORMAT, lib)
+    write_at_version(LIB_FORMAT, lib, if lib.footprints.iter().any(|f|f.has_layer_shapes()){3}else{1})
 }
 
 pub fn library_from_str(s: &str) -> Result<Library, CoreError> {

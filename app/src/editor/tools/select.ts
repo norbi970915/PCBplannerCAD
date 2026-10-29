@@ -1,4 +1,5 @@
 import {revealLinkedComponent} from "../../core/crossProbe";
+import { rotateWithConnections } from "../connectedRotation";
 import { moveRejection } from "../connectedMove";
 import { api } from "../../core/api";
 import { highlightNet, navigateTo, report } from "../../core/actions";
@@ -6,7 +7,7 @@ import { toast } from "sonner";
 import { filterActive, selectable, useSelectFilter } from "../../core/selectFilter";
 import { cursorPoint } from "../../core/view";
 import { useEditor, violatorModeOf } from "../../core/store";
-import type { IdItem, Item, ItemId, ItemOf, Point } from "../../core/types";
+import type { IdItem, Item, ItemId, ItemOf, Point, PcbDragPlan } from "../../core/types";
 import { connectionPoints } from "../draw";
 import { applyTrackDrag, attachedIds, attachedTracks, planTrackDrag, stretchAttached, trackDragIds, type Attached, attachedViaArcs, type ViaArcAttachment, type TrackDragPlan } from "../trackDrag";
 import { rotatePoint } from "../shapes";
@@ -40,7 +41,7 @@ function combineSelection(current: ReadonlySet<ItemId>, ids: Iterable<ItemId>, m
 type State =
   | { kind: "idle" }
   | { kind: "box"; sx: number; sy: number; mode: SelectionMode; shown: boolean }
-  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; angle?: number; flipped?: boolean; tracks?: TrackDragPlan | null; attached?: Attached[]; arcs?: ViaArcAttachment[] }
+  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; placing?:boolean; angle?: number; flipped?: boolean; tracks?: TrackDragPlan | null; copper?: PcbDragPlan; copperKey?: string; copperError?: string; trackItems?:unknown; trackFootprints?:unknown; trackEpoch?:number; attached?: Attached[]; arcs?: ViaArcAttachment[] }
   /** Dragging one outline vertex (also a freshly inserted one). */
   | { kind: "vertex"; id: ItemId; item: Item; ring: Point[]; index: number; ring2: Point[]; sx: number; sy: number; moved: boolean }
   /** Dragging an outline edge parallel to itself. */
@@ -106,6 +107,23 @@ export function selectTool(): Tool {
   let excluded: ReadonlySet<ItemId> = new Set();
   let generation = 0;
   let ignoreRelease = false;
+  type Drag = Extract<State,{kind:"drag"}>;
+  let planningTrack=false;let queuedTrack:(()=>void)|null=null;
+  const trackKey=(drag:Drag)=>[drag.delta.x,drag.delta.y,drag.angle??0,drag.flipped??false,violatorModeOf(useEditor.getState())].join("/");
+  const requestTrack=(env:ToolEnv,drag:Drag)=>{
+    if(drag.angle||drag.flipped)return;const plan=trackPlan(env,drag);if(!plan)return;
+    const key=trackKey(drag);if(drag.trackItems!==env.doc().items||drag.trackFootprints!==env.doc().footprints||drag.trackEpoch!==env.doc().epoch){drag.copperError="Board changed during track drag; cancel and start again.";return;}if(drag.copperKey===key)return;
+    if(planningTrack){queuedTrack=()=>{if(s===drag)requestTrack(env,drag);};return;}
+    planningTrack=true;drag.copperKey=key;drag.copper=undefined;drag.copperError=undefined;excluded=new Set(trackDragIds(plan));env.redraw(true);
+    const doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch;
+    const current=()=>s===drag&&env.doc().items===items&&env.doc().footprints===footprints&&env.doc().epoch===epoch&&trackKey(drag)===key;
+    const geometry=applyTrackDrag(plan,drag.delta);
+    void api.pcbTrackEditPlan(env.docId,geometry.replace,geometry.add,violatorModeOf(useEditor.getState())).then(result=>{
+      if(!current())return;drag.copper=result;
+      excluded=new Set([...trackDragIds(plan),...result.delete,...result.replace.map(r=>r.id)]);env.redraw(true);
+    }).catch(error=>{if(current()){drag.copperError=String(error);excluded=new Set(trackDragIds(plan));useEditor.getState().setHint(String(error));env.redraw(true);}}).finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
+  };
+
 
   const far = (e: PointerInfo, sx: number, sy: number) => Math.hypot(e.sx - sx, e.sy - sy) > DRAG_PX;
 
@@ -115,7 +133,7 @@ export function selectTool(): Tool {
       s.kind === "drag" && s.moved && env.doc().info.kind === "pcb"
         ? `Moving${s.angle ? ` · rotated ${s.angle}°` : ""}${s.flipped ? " · flipped to the other side" : ""}${s.ids.some((id) => ["footprint", "via"].includes(env.doc().items.get(id)?.kind ?? ""))
             ? ` · ${MOVE_MODE_LABEL[useEditor.getState().placement.moveMode]}${useEditor.getState().placement.moveMode === "preserveAngles" ? `, ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]}${useEditor.getState().drcEnforce ? "" : " (design rules off)"}` : ""} (Tab / Shift+Tab)`
-            : ""} · R or right-click rotates 90° · middle-click flips components · release / click to place · Esc cancels`
+            : s.ids.every(id=>env.doc().items.get(id)?.kind==="track") ? ` · slide tracks · ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]} (Shift+Tab)` : ""} · R or right-click rotates 90° · middle-click flips components · release / click to place · Esc cancels`
         : editedPolygon(env)
         ? "Polygon: drag a corner · drag a mid-point to add a corner · drag an edge to move it · Ctrl+click or Backspace removes a corner · Shift: 45° · E R reshapes"
         : s.kind === "drag" && s.moved && env.doc().info.kind === "schematic"
@@ -127,6 +145,7 @@ export function selectTool(): Tool {
           (env.doc().info.kind === "pcb" && filterActive(useSelectFilter.getState()) ? " · Selection filter active" : "") +
           (env.doc().info.kind === "pcb" ? (env.doc().marked.size ? " · Net highlighted (Esc clears)" : " · Alt+click or ` highlights a net · I selects its copper") : ""),
     auxPress(env, button, shift) {
+      if(s.kind==="drag"&&s.placing)return true;
       // While moving on a board: right click rotates 90° (Shift: −90°) like R; middle click flips
       // components to the other side like F. Both are committed with the move; Esc discards them.
       if (s.kind !== "drag" || env.doc().info.kind !== "pcb") return false;
@@ -147,6 +166,7 @@ export function selectTool(): Tool {
       excluded = new Set();
     },
     down(env, e) {
+      if(s.kind==="drag"&&s.placing)return;
       ignoreRelease = false;
       generation++;
       if (s.kind === "drag" && s.floating) {
@@ -218,6 +238,7 @@ export function selectTool(): Tool {
       if (ids.length) s = { kind: "drag", sx: e.sx, sy: e.sy, origin: editCursor(env), ids, delta: { x: 0, y: 0 }, moved: false, attach: null };
     },
     move(env, e) {
+      if(s.kind==="drag"&&s.placing)return;
       if (s.kind === "vertex") {
         s.moved ||= far(e, s.sx, s.sy);
         const prev = s.ring[(s.index + s.ring.length - 1) % s.ring.length];
@@ -241,6 +262,7 @@ export function selectTool(): Tool {
         s.moved ||= far(e, s.sx, s.sy);
         const c = env.cursor();
         s.delta = { x: c.x - s.origin.x, y: c.y - s.origin.y };
+        if(s.moved)requestTrack(env,s);
         if (s.moved && (!wasMoved || !s.attach)) {
           s.attach = attachedTo(env, s.ids);
           const plan = trackPlan(env, s);
@@ -250,6 +272,7 @@ export function selectTool(): Tool {
       }
     },
     up(env, e) {
+      if(s.kind==="drag"&&s.placing)return;
       if (ignoreRelease) { ignoreRelease = false; return; }
       const done = s;
       s = { kind: "idle" };
@@ -287,6 +310,7 @@ export function selectTool(): Tool {
       } else if (done.kind === "drag") {
         const moved = done.moved && (done.delta.x || done.delta.y || done.angle || done.flipped);
         const finish = () => {
+          if(s.kind==="drag"&&s.placing)s={kind:"idle"};
           excluded = new Set();
           env.redraw(true);
         };
@@ -294,8 +318,9 @@ export function selectTool(): Tool {
         const { x: dx, y: dy } = done.delta;
         const plan = !done.angle && !done.flipped ? trackPlan(env, done) : null;
         const attached = partTracks(env, done);
-        if (attached.length || (env.doc().info.kind === "pcb" && useEditor.getState().placement.moveMode !== "disconnect" && done.ids.some(id => env.doc().items.get(id)?.kind === "via"))) {
-          // Routed parts: the backend re-routes their attached segments and pushes violators, as one undo step.
+        if (attached.length || (env.doc().info.kind === "pcb" && done.ids.some(id => ["footprint","via"].includes(env.doc().items.get(id)?.kind??"")))) {
+          s={...done,placing:true};
+          // Keep the proposed placement visible while native planning completes.
           const pl = useEditor.getState().placement;
           const at = done.delta;
           const routeMode = violatorModeOf(useEditor.getState());
@@ -305,7 +330,7 @@ export function selectTool(): Tool {
           let retrying = false;
           const retry = () => {
             if (token !== generation || env.doc()?.items !== originalItems || env.doc()?.footprints !== originalFootprints || env.doc()?.epoch !== originalEpoch) return;
-            s = { ...done, floating: true, attached: undefined, arcs: undefined, tracks: undefined };
+            s = { ...done, floating: true, placing:false, attached: undefined, arcs: undefined, tracks: undefined };
             retrying = true;
             excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a => a.whole).map(a => a.id)]);
             env.redraw(true);
@@ -324,14 +349,21 @@ export function selectTool(): Tool {
               if (!ok) retry();
               if (ok && r.blocked) toast.warning(`${r.blocked} connection${r.blocked === 1 ? "" : "s"} could not be re-routed cleanly; joined directly (run DRC to see the conflicts).`);
             })
-            .catch(report)
+            .catch(error=>{report(error);retry();})
             .finally(() => { if (token === generation && !retrying) finish(); });
           return;
         }
         if (plan) {
-          // Dragged tracks, their adjusted neighbours and joining segments, with pour refill, in one undo step.
-          const { replace, add } = applyTrackDrag(plan, done.delta);
-          void env.exec({ op: "route", delete: [], add, replace }).then(finish);
+          if(done.trackItems!==env.doc().items||done.trackFootprints!==env.doc().footprints||done.trackEpoch!==env.doc().epoch){useEditor.getState().setHint("Board changed during track drag; start again.");finish();return;}
+          s={...done,placing:true};
+          const geometry=applyTrackDrag(plan,done.delta),doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch,token=generation;
+          const mode=violatorModeOf(useEditor.getState());let retrying=false;
+          const retry=()=>{if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;retrying=true;s={...done,floating:true,placing:false,copper:undefined,copperKey:undefined,copperError:undefined};excluded=new Set(trackDragIds(plan));env.redraw(true);};
+          void api.pcbTrackEditPlan(env.docId,geometry.replace,geometry.add,mode).then(async result=>{
+            if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;
+            if(violatorModeOf(useEditor.getState())!==mode){retry();return;}
+            if(!await env.exec({op:"route",delete:result.delete,add:result.add,replace:result.replace}))retry();
+          }).catch(error=>{useEditor.getState().setHint(String(error));toast.warning(String(error));retry();}).finally(()=>{if(token===generation&&!retrying)finish();});
           return;
         }
         if (done.angle || done.flipped) {
@@ -388,6 +420,7 @@ export function selectTool(): Tool {
       env.redraw(true);
     },
     key(env, key, event) {
+      if(s.kind==="drag"&&s.placing)return true;
       const doc = env.doc();
       const board = doc.info.kind === "pcb" || doc.info.kind === "footprint";
       // ` highlights the net under the cursor; I selects its tracks and vias.
@@ -408,7 +441,8 @@ export function selectTool(): Tool {
         const item = ids.length === 1 ? doc.items.get(ids[0]) : undefined;
         const origin = item?.kind === "footprint" ? item.pos : editCursor(env);
         if (key.toLowerCase() === "r") {
-          void env.exec({ op: "rotate", ids, center: origin, angle: event.shiftKey ? -90 : 90 });
+          const token=generation;
+          void rotateWithConnections(env.docId,ids,origin,event.shiftKey?-90:90,cmd=>env.exec(cmd),()=>env.doc(),()=>generation===token&&s.kind==="idle").catch(report);
         } else {
           const c = editCursor(env);
           s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x-origin.x, y: c.y-origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
@@ -428,6 +462,7 @@ export function selectTool(): Tool {
       // Tab: move mode (disconnect / free / preserve angles); Shift+Tab: what happens to other nets in the way.
       if (s.kind === "drag" && s.moved && key === "Tab" && doc.info.kind === "pcb") {
         const pl = useEditor.getState().placement;
+        if(!event.shiftKey&&trackPlan(env,s))return true;
         if (event.shiftKey) {
           const order = ["shove", "walkaround", "ignore"] as const;
           env.setPlacement({ moveViolators: order[(order.indexOf(pl.moveViolators) + 1) % order.length] });
@@ -438,13 +473,15 @@ export function selectTool(): Tool {
           s.attached = undefined;
           excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
         }
+        requestTrack(env,s);
         env.redraw(true);
         return true;
       }
       if (s.kind === "drag" && s.moved && (key === " " || key.toLowerCase() === "r" || key === "x" || key === "X")) {
         if (board && (key === " " || key.toLowerCase() === "r")) {
           s.angle = ((s.angle ?? 0) + (event.shiftKey ? -90 : 90) + 360) % 360;
-          env.redraw();
+          s.copper=undefined;s.copperKey=undefined;excluded=new Set(s.ids);
+          env.redraw(true);
           return true;
         }
         // Rotate/mirror the dragged items in place around the grab point.
@@ -458,7 +495,8 @@ export function selectTool(): Tool {
       }
       if (!doc.selection.size) return false;
       if (key === " ") {
-        void env.exec({ op: "rotate", ids: [...doc.selection], center: env.cursor(), angle: 90 });
+        const token=++generation;
+        void rotateWithConnections(env.docId,[...doc.selection],env.cursor(),90,cmd=>env.exec(cmd),()=>env.doc(),()=>generation===token&&s.kind==="idle").catch(report);
         return true;
       }
       if (key === "x" || key === "X" || ((key === "l" || key === "L" || key.toLowerCase() === "f") && doc.info.kind === "pcb")) {
@@ -491,6 +529,7 @@ export function selectTool(): Tool {
       const drag = s;
       const plan = !s.angle && !s.flipped ? trackPlan(env, s) : null;
       if (plan) {
+        if(s.copper&&s.copperKey===trackKey(s))return [...s.copper.replace.map(r=>r.item),...s.copper.add];
         const { replace, add } = applyTrackDrag(plan, s.delta);
         return [...replace.map((r) => r.item), ...add];
       }
@@ -523,7 +562,11 @@ export function selectTool(): Tool {
     overlay(env) {
       const px = 1 / env.scale();
       if (s.kind === "vertex" || s.kind === "edge") return ringHandles(s.ring2, px);
-      if (s.kind === "drag" && s.moved) return [];
+      if (s.kind === "drag" && s.moved) {
+        if(!s.copperError)return [];
+        const p=env.cursor(),r=5*px,color:[number,number,number,number]=[1,.3,.25,.9];
+        return [{a:{x:p.x-r,y:p.y-r},b:{x:p.x+r,y:p.y+r},width:1.5*px,color},{a:{x:p.x-r,y:p.y+r},b:{x:p.x+r,y:p.y-r},width:1.5*px,color}];
+      }
       const poly = editedPolygon(env);
       return poly ? ringHandles(poly.ring, px) : [];
     },
@@ -575,10 +618,11 @@ const MOVE_MODE_LABEL = { disconnect: "disconnect tracks", free: "free (stretch)
 const VIOLATOR_LABEL = { ignore: "ignore violators", walkaround: "avoid violators", shove: "push violators" } as const;
 
 /** Connected-drag plan for a board drag of tracks only (computed once per drag). */
-function trackPlan(env: ToolEnv, d: { ids: ItemId[]; tracks?: TrackDragPlan | null }): TrackDragPlan | null {
+function trackPlan(env: ToolEnv, d: { ids: ItemId[]; tracks?: TrackDragPlan | null; trackItems?:unknown; trackFootprints?:unknown; trackEpoch?:number }): TrackDragPlan | null {
   if (d.tracks === undefined) {
     const doc = env.doc();
     d.tracks = doc.info.kind === "pcb" ? planTrackDrag(doc.items, doc.footprints, d.ids) : null;
+    d.trackItems=doc.items;d.trackFootprints=doc.footprints;d.trackEpoch=doc.epoch;
   }
   return d.tracks;
 }

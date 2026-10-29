@@ -65,6 +65,14 @@ function primBounds(p: Prims): Bounds {
   return { minX, minY, maxX, maxY };
 }
 
+/** Round-capped stroke/box contact, including circular pads and vias. */
+function strokeHitsRect(a:Point,b:Point,width:number,r:Bounds):boolean {
+ if(segHitsRect(a,b,r))return true;
+ const gap=(p:Point)=>Math.hypot(Math.max(r.minX-p.x,0,p.x-r.maxX),Math.max(r.minY-p.y,0,p.y-r.maxY));
+ const corners=[{x:r.minX,y:r.minY},{x:r.maxX,y:r.minY},{x:r.maxX,y:r.maxY},{x:r.minX,y:r.maxY}];
+ return Math.min(gap(a),gap(b),...corners.map(p=>distToSegment(p,a,b)))<=width/2;
+}
+
 const overlaps = (a: Bounds, b: Bounds) => a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
 const contains = (outer: Bounds, inner: Bounds) =>
   inner.minX >= outer.minX && inner.maxX <= outer.maxX && inner.minY >= outer.minY && inner.maxY <= outer.maxY;
@@ -110,6 +118,7 @@ export class Scene {
   private index = new BoundsIndex();
   private ctxSignature: unknown[] = [];
   private pourFills: boolean | undefined;
+  private copperLayer: number | undefined;
   private nextStyle = 1;
   private compiled = new WeakMap<Entry, { theme: Theme; groups: DrawGroup[] }>();
   private built = new Map<number, { sources: DrawGroup[]; group: DrawGroup }>();
@@ -119,20 +128,24 @@ export class Scene {
   update(items: ReadonlyMap<ItemId, Item>, ctx: DrawContext) {
     let rebuildIndex = false;
     const moved: { id: ItemId; bounds: Bounds }[] = [];
-    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.view];
+    const sig = [ctx.kind, ctx.cache, ctx.symbol, ctx.footprints, ctx.view, ctx.smoothCopper];
     if (sig.some((v, i) => v !== this.ctxSignature[i])) {
       rebuildIndex = true;
       this.entries.clear();
       this.nextStyle = 1;
       this.ctxSignature = sig;
     }
+    const layerChanged = ctx.copperLayer !== this.copperLayer;
+    this.copperLayer = ctx.copperLayer;
+    const layerDependent = (item: Item) => item.kind === "pad" ? !!item.copperShapes && Object.keys(item.copperShapes).length > 0
+      : item.kind === "footprint" && !!ctx.footprints?.[item.footprint]?.items.some(pad => pad.kind === "pad" && !!pad.copperShapes && Object.keys(pad.copperShapes).length > 0);
     // Showing or hiding pour fills only changes zones.
     const fillsChanged = ctx.pourFills !== this.pourFills;
     this.pourFills = ctx.pourFills;
     for (const id of this.entries.keys()) if (!items.has(id)) { this.entries.delete(id); rebuildIndex = true; }
     for (const [id, item] of items) {
       const e = this.entries.get(id);
-      if (e && e.item === item && !e.prims.pendingFills?.length && !(fillsChanged && item.kind === "zone")) continue;
+      if (e && e.item === item && !e.prims.pendingFills?.length && !(fillsChanged && item.kind === "zone") && !(layerChanged && layerDependent(item))) continue;
       const prims = drawItem(item, ctx);
       const bounds = primBounds(prims);
       this.entries.set(id, { item, prims, bounds, style: e?.style ?? this.nextStyle++ });
@@ -210,7 +223,7 @@ export class Scene {
       if (!overlaps(r, e.bounds)) continue;
       const hit =
         contains(r, e.bounds) ||
-        e.prims.segs.some((s) => segHitsRect(s.a, s.b, r)) ||
+        e.prims.segs.some((s) => strokeHitsRect(s.a, s.b, s.w, r)) ||
         (!e.prims.fillPolygons && e.prims.fills.some((f) => {
           for (let i = 0; i < f.tris.length; i += 2) {
             const x = f.tris[i];

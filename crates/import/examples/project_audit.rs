@@ -65,10 +65,15 @@ fn main() {
             let pair=settings.diff_pairs.iter().find(|p|p.positive==t.net).unwrap();
             let gap=settings.net_classes.iter().find(|c|c.nets.contains(&t.net)).unwrap_or(&settings.net_classes[0]).diff_pair_gap;
             let (positive,negative)=pcbplannercad_core::pcb::router::route_diff_pair(&b.document,&req,&pair.negative,gap);
+            let pair_errors=if positive.reached && negative.reached {
+                let mut preview=pcbplannercad_core::Session::with_document(b.document.clone());
+                let delta=preview.execute(pcbplannercad_core::Command::Change{delete:vec![id],add:positive.tracks.iter().chain(&negative.tracks).cloned().map(pcbplannercad_core::Item::Track).collect()}).unwrap();
+                Some(drc::run_near(preview.document(),&delta.upserted.iter().map(|i|i.id).collect::<Vec<_>>()).into_iter().filter(|v|v.severity==drc::Severity::Error).map(|v|v.message).collect::<Vec<_>>())
+            }else{None};
             let chain_length=((t.b.x-t.a.x) as f64).hypot((t.b.y-t.a.y) as f64);
             let tune=pcbplannercad_core::pcb::router::tune_length(&b.document,&pcbplannercad_core::pcb::router::TuneRequest{tracks:vec![id],target_length:(chain_length*1.05).round() as i64,amplitude:200000,spacing:300000,style:pcbplannercad_core::pcb::router::TuneStyle::Accordion});
             let tuned=tune.map(|ts|ts.iter().map(|t|((t.b.x-t.a.x)as f64).hypot((t.b.y-t.a.y)as f64)).sum::<f64>());
-            probes.push(serde_json::json!({"net":t.net,"track":id,"routeReached":routed.reached,"routeMessage":routed.message,"routeMs":route_ms,"pairPositiveReached":positive.reached,"pairNegativeReached":negative.reached,"pairMessage":negative.message,"tunedLengthNm":tuned}));
+            probes.push(serde_json::json!({"net":t.net,"track":id,"routeReached":routed.reached,"routeMessage":routed.message,"routeMs":route_ms,"pairPositiveReached":positive.reached,"pairNegativeReached":negative.reached,"pairMessage":negative.message,"pairCommitErrors":pair_errors,"tunedLengthNm":tuned}));
         }
         writes.push(("routing-tuning-probes.json".into(),serde_json::to_string_pretty(&probes).unwrap()));
         let report=drc::run(&b.document);

@@ -117,7 +117,7 @@ impl Session {
         Ok(self.record(edits))
     }
 
-    /// Validate added or changed board vias on their actual copper span before
+    /// Validate component placements and board vias on their actual copper span before
     /// publishing an edit. Includes paste/arrays, properties and transforms.
     /// Rejection preserves geometry, allocated IDs, dirty state and both histories.
     pub fn execute_with_via_checks(&mut self, cmd: Command, enforce: bool) -> Result<Delta, CoreError> {
@@ -134,7 +134,20 @@ impl Session {
             Command::Route { add, replace, .. } => contains_via(add) || replaces_via(replace),
             _ => false,
         };
-        if self.doc.kind() != DocKind::Pcb || !touches_via { return self.execute(cmd); }
+        let part_ids=|ids:&[ItemId]|ids.iter().any(|id|matches!(self.doc.get(*id),Some(Item::Footprint(_))));
+        let part_items=|items:&[Item]|items.iter().any(|i|matches!(i,Item::Footprint(_)));
+        let part_replacements=|items:&[IdItem]|items.iter().any(|i|matches!(i.item,Item::Footprint(_)))||part_ids(&items.iter().map(|i|i.id).collect::<Vec<_>>());
+        let touches_part=match &cmd {
+            Command::Add{items}=>part_items(items),
+            Command::Change{delete,add}=>part_items(add)||part_ids(delete),
+            Command::Delete{ids}=>part_ids(ids),
+            Command::Replace{id,item}=>matches!(item,Item::Footprint(_))||part_ids(&[*id]),
+            Command::ReplaceMany{items}=>part_replacements(items),
+            Command::Move{ids,..}|Command::Rotate{ids,..}|Command::Mirror{ids,..}=>part_ids(ids),
+            Command::Route{add,replace,delete}=>part_items(add)||part_replacements(replace)||part_ids(delete),
+            _=>false,
+        };
+        if self.doc.kind() != DocKind::Pcb || (!touches_via&&!touches_part) { return self.execute(cmd); }
         let routed = matches!(&cmd, Command::Route { .. });
         let mut planned = Self::with_document(self.doc.clone());
         let delta = planned.execute(cmd)?;
@@ -148,9 +161,18 @@ impl Session {
             }
             Some(entry.id)
         }).collect();
+        let components:Vec<_>=delta.upserted.iter().filter_map(|entry|{
+            let Item::Footprint(after)=&entry.item else{return None;};
+            if let Some(Item::Footprint(before))=self.doc.get(entry.id) {
+                if before.pos==after.pos&&before.rotation==after.rotation&&before.side==after.side&&before.footprint==after.footprint&&before.pad_nets==after.pad_nets{return None;}
+            }
+            Some(entry.id)
+        }).collect();
+        let removed_part=delta.removed.iter().any(|id|matches!(self.doc.get(*id),Some(Item::Footprint(_))))
+            ||delta.upserted.iter().any(|i|matches!(self.doc.get(i.id),Some(Item::Footprint(_)))&&!matches!(i.item,Item::Footprint(_)));
         let removed_via = delta.removed.iter().any(|id| matches!(self.doc.get(*id), Some(Item::Via(_))))
             || delta.upserted.iter().any(|i| matches!(self.doc.get(i.id), Some(Item::Via(_))) && !matches!(i.item, Item::Via(_)));
-        if (!vias.is_empty() || removed_via) && !routed {
+        if (!vias.is_empty() || removed_via || !components.is_empty() || removed_part) && !routed {
             // Generic edits need the same final poured copper as routing. Refill
             // first so a legal via can clear a foreign-net pour.
             let mut refill = Vec::new();
@@ -165,8 +187,16 @@ impl Session {
             planned.doc.apply(&refill);
             if let Some(transaction) = planned.undo.last_mut() { transaction.edits.extend(refill); }
         }
+        if enforce&&!components.is_empty() {
+            if let Some(violation)=crate::pcb::drc::run_near(&planned.doc,&components).into_iter().find(|v|v.severity==crate::pcb::drc::Severity::Error){
+                return Err(CoreError::PlacementBlocked(violation.message));
+            }
+        }
         if enforce && !vias.is_empty() {
-            if let Some(violation) = crate::pcb::drc::run_near(&planned.doc, &vias).into_iter()
+            // A paired transition can add fanout necks as well as annuli. Validate
+            // every changed route conductor, including the far ends of those necks.
+            let checked = if routed {delta.upserted.iter().filter(|entry|matches!(entry.item,Item::Track(_)|Item::ArcTrack(_)|Item::Via(_))).map(|entry|entry.id).collect()} else {vias};
+            if let Some(violation) = crate::pcb::drc::run_near(&planned.doc, &checked).into_iter()
                 .find(|v| v.severity == crate::pcb::drc::Severity::Error) {
                 return Err(CoreError::ViaBlocked(violation.message));
             }

@@ -116,24 +116,24 @@ export function boardTheme(activeLayer: LayerId, mode: LayerMode): Theme {
   const only = mode === "only";
   return {
     background: BG_PCB,
-    grid: { dot: [0.42, 0.45, 0.5, 0.85], major: [0.22, 0.24, 0.28, 0.7], axis: [0.85, 0.55, 0.2, 0.35] },
+    grid: { dot: [0.35, 0.39, 0.45, 0.5], major: [0.22, 0.26, 0.32, 0.32], axis: [0.65, 0.49, 0.3, 0.25] },
     cursor: [0.95, 0.95, 0.95, 0.9],
     selectTint: [1, 1, 1, 1],
     color(role) {
       let c = cache.get(role);
       if (c) return c;
       if (role === "hole") c = [0.1, 0.1, 0.11, 1];
-      else if (role === "via") c = only && !isCopper(activeLayer) ? HIDDEN : singleLayer ? lerp(hexToRgba("#c2c4c8"), BG_PCB, 0.4) : hexToRgba("#c2c4c8");
+      else if (role === "via") c = only && !isCopper(activeLayer) ? HIDDEN : singleLayer ? lerp(hexToRgba("#a4b0bb"), BG_PCB, 0.4) : hexToRgba("#c2c4c8");
       else if (role === "keepout") c = hexToRgba("#ff4fc1", 0.9);
-      else if (role === "ratsnest") c = [0.85, 0.88, 0.95, 0.85];
+      else if (role === "ratsnest") c = [0.65, 0.73, 0.82, 0.5];
       else if (role === "drc") c = [0.2, 1, 0.35, 1];
-      else if (role.startsWith("Z")) c = only && Number(role.slice(1)) !== activeLayer ? HIDDEN : lerp(hexToRgba(layer(Number(role.slice(1))).color), BG_PCB, 0.35);
-      else if (role === "padNum") c = [1, 1, 1, 0.95];
+      else if (role.startsWith("Z")) c = only && Number(role.slice(1)) !== activeLayer ? HIDDEN : lerp(hexToRgba(layer(Number(role.slice(1))).color), BG_PCB, Number(role.slice(1))===activeLayer ? 0.35 : 0.86);
+      else if (role === "padNum") c = [0.9, 0.94, 0.98, 1];
       else if (role.startsWith("L")) {
         const id = Number(role.slice(1));
         const base = hexToRgba(layer(id).color);
         const active = id === activeLayer || (id === 15 && isCopper(activeLayer));
-        c = only && !active ? HIDDEN : singleLayer && !active ? lerp(base, BG_PCB, 0.82) : active ? base : lerp(base, BG_PCB, 0.22);
+        c = only && !active ? HIDDEN : singleLayer && !active ? lerp(base, BG_PCB, 0.82) : active ? base : lerp(base, BG_PCB, 0.48);
       } else c = [0.8, 0.8, 0.8, 1];
       cache.set(role, c);
       return c;
@@ -146,11 +146,12 @@ export function boardTheme(activeLayer: LayerId, mode: LayerMode): Theme {
       if (role === "keepout") return 690;
       if (role.startsWith("Z")) {
         const zid = Number(role.slice(1));
-        return zid === activeLayer ? 700 : (order.get(zid) ?? 100);
+        return zid === activeLayer ? 699 : (order.get(zid) ?? 100) - 0.1;
       }
       if (!role.startsWith("L")) return 800;
       const id = Number(role.slice(1));
       if (id === activeLayer) return 700;
+      if (id === 15) return 710;
       // Inner copper paints between bottom and top copper.
       return order.get(id) ?? (id >= 32 && id < 63 ? (order.get(1) ?? 5) + 0.5 + (id - 32) / 100 : 100);
     },

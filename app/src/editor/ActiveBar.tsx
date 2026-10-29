@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { RouteLengthGauge } from "./RouteLengthGauge";
+import { undo, redo, report } from "../core/actions";
 import { bus } from "../core/bus";
 import { filterActive, useSelectFilter } from "../core/selectFilter";
 import { useEditor } from "../core/store";
@@ -17,15 +18,16 @@ import { layer } from "../core/layers";
 import { LAYER_MODES } from "../core/view";
 import { activateTool, cycleLayerMode } from "./toolActions";
 
-function BarButton({ label, keys, active, onClick, children }: { label: string; keys?: string; active?: boolean; onClick: () => void; children: ReactNode }) {
+function BarButton({ label, keys, active, disabled, onClick, children }: { label: string; keys?: string; active?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           aria-label={label}
+          disabled={disabled}
           onClick={onClick}
           className={cn(
-            "grid size-7 place-items-center rounded-[4px] text-muted-foreground transition-colors hover:bg-hover hover:text-ink",
+            "grid size-7 shrink-0 place-items-center rounded-[4px] text-muted-foreground transition-colors hover:bg-hover hover:text-ink disabled:opacity-35 disabled:pointer-events-none",
             active && "bg-sel text-accent-ink shadow-[inset_0_0_0_1px_var(--ui-accent)] hover:bg-sel hover:text-accent-ink",
           )}
         >
@@ -161,6 +163,8 @@ function SelectionFilterButton({ docId }: { docId: string }) {
 
 /** Floating tool strip at the top of the editor. */
 export function ActiveBar({ docId }: { docId: string }) {
+  const canUndo = useEditor(s => s.docs[docId]?.info.canUndo);
+  const canRedo = useEditor(s => s.docs[docId]?.info.canRedo);
   const kind = useEditor((s) => s.docs[docId]?.info.kind);
   const tool = useEditor((s) => s.docs[docId]?.tool);
   const layerMode = useEditor((s) => s.docs[docId]?.layerMode);
@@ -170,9 +174,12 @@ export function ActiveBar({ docId }: { docId: string }) {
 
   return (
     <div
-      className="absolute top-2 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-[5px] border border-line-strong bg-card/95 p-0.5 shadow-[0_4px_14px_#0000001f] backdrop-blur-sm"
+      className="absolute top-2 left-1/2 flex max-w-[calc(100%-16px)] -translate-x-1/2 overflow-x-auto items-center gap-0.5 rounded-[5px] border border-line-strong bg-card/95 p-0.5 shadow-[0_4px_14px_#0000001f] backdrop-blur-sm"
       onPointerDown={(e) => e.stopPropagation()}
     >
+      <BarButton label="Undo" keys="Ctrl+Z" disabled={!canUndo} onClick={() => void undo(docId).catch(report)}>{Icons.undo}</BarButton>
+      <BarButton label="Redo" keys="Ctrl+Y" disabled={!canRedo} onClick={() => void redo(docId).catch(report)}>{Icons.redo}</BarButton>
+      <Separator orientation="vertical" className="mx-1 h-4" />
       {TOOLS[kind]
         .filter((t) => !t.menuOnly)
         .map((t) => (

@@ -67,6 +67,8 @@ pub struct DragResult {
     /// A rejected plan contains no edits and must not be committed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<DragFailure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 fn rejected(failure: DragFailure) -> DragResult {
@@ -195,6 +197,22 @@ fn drag_anchors(doc: &Document, id: ItemId, item: &Item, board: &BoardSettings) 
 /// Split tracks passing through a selected via so their two sides remain attached.
 /// The preparation lives only in the candidate; cancellation/rejection cannot split the board.
 pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
+    let plan=drag_footprints_inner(doc,req);
+    if plan.failure.is_some() || req.route_mode==RouteMode::Ignore {return plan;}
+    let mut candidate=doc.clone();
+    let mut edits:Vec<_>=plan.replace.iter().map(|r|Edit{id:r.id,before:doc.get(r.id).cloned(),after:Some(r.item.clone())}).collect();
+    edits.extend(plan.delete.iter().map(|id|Edit{id:*id,before:doc.get(*id).cloned(),after:None}));
+    candidate.apply(&edits);let mut touched:Vec<_>=plan.replace.iter().map(|r|r.id).collect();
+    let added:Vec<_>=plan.add.iter().map(|item|{let id=candidate.alloc_id();touched.push(id);Edit{id,before:None,after:Some(item.clone())}}).collect();candidate.apply(&added);
+    // Committing regenerates pours; fixed copper and component bodies must be legal first.
+    let pours:Vec<_>=candidate.items().filter_map(|(id,item)|matches!(item,Item::Zone(z)if !z.keepout).then(||Edit{id,before:Some(item.clone()),after:None})).collect();candidate.apply(&pours);
+    if let Some(violation)=super::drc::run_near(&candidate,&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error) {
+        return DragResult{message:Some(format!("Placement blocked: {}",violation.message)),..rejected(DragFailure::Unroutable)};
+    }
+    plan
+}
+
+fn drag_footprints_inner(doc: &Document, req: &DragRequest) -> DragResult {
     if req.mode == MoveMode::Disconnect { return drag_connected(doc,req); }
     let fallback=BoardSettings::default();let board=board_settings(doc).map_or(&fallback,|(_,b)|b);
     let vias:Vec<_>=req.ids.iter().filter_map(|id|match doc.get(*id){Some(Item::Via(v))=>Some(v),_=>None}).collect();
@@ -523,7 +541,7 @@ mod tests {
             kind: PadKind::Smd,
             drill: None,
             layer: layer::TOP_COPPER,
-        })];
+         copper_shapes: Default::default(),})];
         d.put_cached_footprint("L/P", f);
         d
     }
@@ -891,5 +909,48 @@ mod tests {
         session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);assert!(!session.can_undo());
         session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
         assert!(connected(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()));
+    }
+
+    #[test]
+    fn placement_guard_rejects_foreign_pad_and_track_contacts_in_every_move_mode() {
+        for mode in [MoveMode::Disconnect, MoveMode::Free, MoveMode::PreserveAngles] {
+            let d=doc(vec![]);
+            let id=id_of(&d,"U3");
+            let original=d.get(id).cloned();
+            for delta in [p(-10.,8.),p(-7.5,10.5)] {
+                let result=drag_footprints(&d,&req(vec![id],delta,mode));
+                assert_eq!(result.failure,Some(DragFailure::Unroutable),"{mode:?} {delta:?}");
+                assert!(result.replace.is_empty()&&result.add.is_empty()&&result.delete.is_empty());
+                assert!(result.message.as_deref().is_some_and(|m|m.starts_with("Placement blocked:")));
+                assert_eq!(d.get(id),original.as_ref());
+            }
+            let mut ignored=req(vec![id],p(-10.,8.),mode);ignored.route_mode=RouteMode::Ignore;
+            assert!(drag_footprints(&d,&ignored).failure.is_none());
+            assert!(drag_footprints(&d,&req(vec![id],p(0.,-3.),mode)).failure.is_none());
+        }
+    }
+
+    #[test]
+    fn command_placement_guard_preserves_geometry_and_redo_for_direct_edits() {
+        let d=doc(vec![]);let id=id_of(&d,"U3");
+        let mut collision=d.get(id).unwrap().clone();
+        if let Item::Footprint(fp)=&mut collision {fp.pos=p(0.,0.);}
+        let commands=vec![
+            Command::Move{ids:vec![id],dx:mm(-10.),dy:mm(8.)},
+            Command::Rotate{ids:vec![id],center:p(5.,-4.),angle:180.},
+            Command::Replace{id,item:collision.clone()},
+            Command::Add{items:vec![collision]},
+        ];
+        for command in commands {
+            let mut session=Session::with_document(d.clone());
+            session.execute_with_via_checks(Command::Move{ids:vec![id],dx:0,dy:mm(-3.)},true).unwrap();
+            session.undo().unwrap();assert!(session.can_redo());
+            let before=crate::io::document_to_string(session.document()).unwrap();
+            let error=session.execute_with_via_checks(command,true).unwrap_err();
+            assert!(error.to_string().contains("Placement blocked"),"{error}");
+            assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+            assert!(!session.can_undo());assert!(session.can_redo());assert!(!session.is_dirty());
+            session.redo().unwrap();assert!(session.can_undo());
+        }
     }
 }

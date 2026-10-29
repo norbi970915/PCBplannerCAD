@@ -282,7 +282,7 @@ impl<'a> World<'a> {
             }
             let on = pad.on_layer(layer_id) || (pad.kind == PadKind::Npth && board.stackup.is_copper(layer_id));
             if on {
-                w.add_pad(&pad);
+                w.add_pad(&pad.for_layer(layer_id));
             }
         }
         let loops = outline_loops(doc, 1000);

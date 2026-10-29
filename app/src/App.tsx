@@ -20,7 +20,7 @@ import { useEditor } from "./core/store";
 import { readPreference } from "./core/preferences";
 import { useTheme } from "./core/theme";
 import {SurfaceWindowContext} from "./shell/SurfaceWindow";
-import {installDocking,focusPanelWindow} from "./shell/docking";
+import {installDocking,focusPanelWindow,documentPanel} from "./shell/docking";
 import { X,ExternalLink,PanelTop } from "lucide-react";
 import { DocumentPanel, SymbolEditorPanel } from "./editor/DocumentPanel";
 import { LibraryView } from "./library/LibraryView";
@@ -45,8 +45,7 @@ import { StatusBar } from "./shell/StatusBar";
 
 const LAYOUT_KEY = "pcbplannercad.layout.v2";
 const TOOL_PANELS = ["projects", "components", "properties", "messages"] as const;
-const isDocPanel = (id: string) =>
-  id === "home" || id.startsWith("doc:") || id.startsWith("sym:") || id.startsWith("lib:") || id.startsWith("view3d:") || id === "gerbers";
+const isDocPanel = documentPanel;
 
 const st = () => useEditor.getState();
 
@@ -198,6 +197,7 @@ function restoreLayout(api: DockviewApi): boolean {
     // Documents aren't reopened across restarts; drop their tabs.
     for (const p of [...api.panels]) if (isDocPanel(p.id) && p.id !== "home") p.api.close();
     if (!TOOL_PANELS.every((id) => api.getPanel(id))) return false;
+    if (api.groups.some(g=>g.panels.some(p=>isDocPanel(p.id))&&g.panels.some(p=>!isDocPanel(p.id))))return false;
     if (!api.getPanel("home")) addDocPanel(api, { id: "home", component: "home", title: "Home", tabComponent: "doc" });
     api.getPanel("messages")?.api.group.api.setConstraints({ minimumHeight: MESSAGES_MIN_HEIGHT });
     return true;

@@ -529,8 +529,9 @@ pub fn write_ipc2581(doc: &Document, project_name: &str) -> Result<String, Outpu
     // ----- copper, mask, paste from pads -----
     for p in &pads {
         let pin = (!p.number.is_empty()).then(|| (p.designator.clone(), p.number.clone()));
-        let prim = ctx.dicts.pad_prim(p.shape, p.width, p.height, p.corner_ratio, 0);
         for &l in &p.copper {
+            let land=p.for_layer(l);
+            let prim = ctx.dicts.pad_prim(land.shape, land.width, land.height, land.corner_ratio, 0);
             let li = layers.index(l);
             feats.push(li, &p.net, Feat::Pad { pos: p.pos, rot: p.rotation, prim: prim.clone(), pin: pin.clone(), via: false });
         }
@@ -542,7 +543,8 @@ pub fn write_ipc2581(doc: &Document, project_name: &str) -> Result<String, Outpu
         let mask_e = rules.mask_expansion(&obj);
         for &bottom in &sides {
             let mask = layers.index(if bottom { layer::BOTTOM_MASK } else { layer::TOP_MASK });
-            let mp = ctx.dicts.pad_prim(p.shape, p.width, p.height, p.corner_ratio, mask_e);
+            let land=p.for_layer(if bottom {bottom_cu}else{top_cu});
+            let mp = ctx.dicts.pad_prim(land.shape, land.width, land.height, land.corner_ratio, mask_e);
             feats.push(mask, "", Feat::Pad { pos: p.pos, rot: p.rotation, prim: mp, pin: None, via: false });
         }
         if p.kind == PadKind::Smd {
@@ -1059,7 +1061,7 @@ mod tests {
             kind,
             layer: if kind == PadKind::Smd { layer::TOP_COPPER } else { layer::MULTI_LAYER },
             drill: if kind == PadKind::Smd { None } else { Some(Drill { width: nm(0.5), height: nm(0.5) }) },
-        })
+         copper_shapes: Default::default(),})
     }
 
     #[test]

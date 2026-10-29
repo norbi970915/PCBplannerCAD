@@ -108,6 +108,13 @@ test('Ctrl+A honors the same selectable object types', () => {
   assert.deepEqual(h.selected(), [1,2]);
 });
 
+async function withPartPlan(h:ReturnType<typeof footprintHarness>,item:Item,action:()=>void){
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');
+ const old=Object.getOwnPropertyDescriptor(globalThis,'window');
+ Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ mockIPC(command=>{assert.equal(command,'pcb_drag_footprints');return {replace:[{id:4,item}],delete:[],add:[],blocked:0,rerouted:0};});
+ try{action();await new Promise(r=>setTimeout(r,0));}finally{clearMocks();if(old)Object.defineProperty(globalThis,'window',old);else Reflect.deleteProperty(globalThis,'window');}
+}
 function footprintHarness() {
  const h=harness();
  const pad=(x:number):Item=>({kind:'pad',number:String(x),pos:p(x,0),width:6e5,height:1e6,rotation:0,shape:'rect',padKind:'smd',layer:0,drill:null,cornerRatio:0});
@@ -123,10 +130,11 @@ test('clicking between footprint pads selects its body above a filled pour',()=>
  const h=footprintHarness();h.click(20,20);assert.deepEqual(h.selected(),[4]);
 });
 
-test('M picks up a footprint under the cursor and click commits its move',()=>{
+test('M picks up a footprint under the cursor and click commits its move',async()=>{
  const h=footprintHarness();h.move(20,20);assert.equal(h.key('m'),true);
- h.move(23,22);h.click(23,22);
- assert.deepEqual(h.commands,[{op:'move',ids:[4],dx:3e6,dy:2e6}]);
+ const item={...h.items.get(4)!,pos:p(23,22)} as Item;
+ await withPartPlan(h,item,()=>{h.move(23,22);h.click(23,22);});
+ assert.deepEqual(h.commands,[{op:'route',replace:[{id:4,item}],delete:[],add:[]}]);
 });
 
 test('a locked footprint ignores M and R and stays where it is',()=>{
@@ -136,11 +144,12 @@ test('a locked footprint ignores M and R and stays where it is',()=>{
  assert.match(useEditor.getState().hint,/Locked/);
 });
 
-test('pickUp attaches footprints to the cursor by their centre; click drops them, Esc leaves them',()=>{
+test('pickUp attaches footprints to the cursor by their centre; click drops them, Esc leaves them',async()=>{
  const h=footprintHarness();h.move(30,30);h.tool.pickUp!(h.env,[4]);
  assert.deepEqual(h.selected(),[4]);
- h.move(25,22);h.click(25,22);
- assert.deepEqual(h.commands,[{op:'move',ids:[4],dx:5e6,dy:2e6}]);
+ const item={...h.items.get(4)!,pos:p(25,22)} as Item;
+ await withPartPlan(h,item,()=>{h.move(25,22);h.click(25,22);});
+ assert.deepEqual(h.commands,[{op:'route',replace:[{id:4,item}],delete:[],add:[]}]);
  const g=footprintHarness();g.move(30,30);g.tool.pickUp!(g.env,[4]);
  assert.equal(g.tool.cancel(g.env),true);assert.deepEqual(g.commands,[]);
 });
@@ -160,10 +169,11 @@ test('Esc cancels an M move and its temporary R rotation together',()=>{
  const preview=h.tool.preview!(h.env)[0];assert.equal(preview.kind,'footprint');if(preview.kind==='footprint')assert.equal(preview.rotation,90);
  h.tool.cancel(h.env);assert.deepEqual(h.commands,[]);assert.equal(h.env.doc().items.get(4)!.kind,'footprint');
 });
-test('M move plus R rotation commits one undoable replacement',()=>{
- const h=footprintHarness();h.move(20,20);h.key('m');h.key('r');h.move(23,22);h.click(23,22);
- assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'replaceMany');
- if(command.op==='replaceMany'){const fp=command.items[0].item;assert.equal(fp.kind,'footprint');if(fp.kind==='footprint'){assert.equal(fp.rotation,90);assert.deepEqual(fp.pos,p(23,22));}}
+test('M move plus R rotation commits one undoable replacement',async()=>{
+ const h=footprintHarness();h.move(20,20);h.key('m');h.key('r');h.move(23,22);
+ await withPartPlan(h,{...h.items.get(4)!,pos:p(23,22),rotation:90} as Item,()=>h.click(23,22));
+ assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'route');
+ if(command.op==='route'){const fp=command.replace![0].item;assert.equal(fp.kind,'footprint');if(fp.kind==='footprint'){assert.equal(fp.rotation,90);assert.deepEqual(fp.pos,p(23,22));}}
 });
 test('Ctrl toggles a box selection and Ctrl+Shift subtracts from it',()=>{
  const h=harness();useSelectFilter.getState().only('vias');h.click(3,3);h.click(6,6,true);h.box(0,0,5,5,true);assert.deepEqual(h.selected(),[2]);h.box(5,5,7,7,true,true);assert.deepEqual(h.selected(),[]);
@@ -224,7 +234,7 @@ test('Shift+S cycles all → dimmed → active only → all, and only-mode hides
   cycleLayerMode('test'); assert.equal(mode(), 'all'); assert.equal(selectable('pcb', bottom), true);
 });
 
-test('while moving, right click rotates 90° and middle click flips; both commit as one replacement', () => {
+test('while moving, right click rotates 90° and middle click flips; both commit as one replacement', async () => {
   const h = footprintHarness(); h.move(20,20); h.key('m'); h.move(23,22);
   assert.equal(h.tool.auxPress!(h.env, 2, false), true);
   assert.equal(h.tool.auxPress!(h.env, 1, false), true);
@@ -232,9 +242,9 @@ test('while moving, right click rotates 90° and middle click flips; both commit
   assert.equal(preview.kind, 'footprint');
   if (preview.kind === 'footprint') { assert.equal(preview.side, 'bottom'); assert.equal(preview.rotation, 270); }
   assert.match(h.tool.hint(h.env), /rotated 90° · flipped/);
-  h.click(23,22);
-  assert.equal(h.commands.length, 1); const cmd = h.commands[0]; assert.equal(cmd.op, 'replaceMany');
-  if (cmd.op === 'replaceMany') { const fp = cmd.items[0].item; if (fp.kind === 'footprint') { assert.equal(fp.side, 'bottom'); assert.equal(fp.rotation, 270); assert.deepEqual(fp.pos, p(23,22)); } }
+  await withPartPlan(h,{...h.items.get(4)!,pos:p(23,22),side:'bottom',rotation:270} as Item,()=>h.click(23,22));
+  assert.equal(h.commands.length, 1); const cmd = h.commands[0]; assert.equal(cmd.op, 'route');
+  if (cmd.op === 'route') { const fp = cmd.replace![0].item; if (fp.kind === 'footprint') { assert.equal(fp.side, 'bottom'); assert.equal(fp.rotation, 270); assert.deepEqual(fp.pos, p(23,22)); } }
 });
 
 test('Esc discards a flip and rotation made with the mouse buttons', () => {
@@ -256,13 +266,16 @@ test('Esc clears a net highlight before it clears the selection', () => {
   assert.equal(h.tool.cancel(h.env), false, 'the next Esc falls through to deselect');
 });
 
-test('dragging a routed track commits neighbours and the move as one routing step', () => {
+test('dragging a routed track commits neighbours and the move as one routing step', async () => {
+  const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+  mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_track_edit_plan');return{replace:args!.replace,add:args!.add,delete:[],blocked:0,rerouted:0};});
   const h = harness();
   h.items.set(10, { kind: 'track', a: p(20, 20), b: p(22, 22), width: 200000, layer: 0, net: 'S' });
   h.items.set(11, { kind: 'track', a: p(22, 22), b: p(26, 22), width: 200000, layer: 0, net: 'S' });
   useEditor.getState().patchDoc('test', { items: new Map(h.items) }); h.scene.update(h.items, h.env.ctx());
   h.move(24, 22); h.tool.down!(h.env, { sx: 240, sy: 220, ctrl: false, shift: false, alt: false } as never);
   h.move(24, 23); h.tool.up!(h.env, { sx: 240, sy: 230, ctrl: false, shift: false, alt: false } as never);
+  await new Promise(resolve=>setImmediate(resolve));clearMocks();
   assert.equal(h.commands.length, 1); const cmd = h.commands[0]; assert.equal(cmd.op, 'route');
   if (cmd.op === 'route') {
     assert.deepEqual(cmd.delete, []);
@@ -301,15 +314,16 @@ test('moving a routed part previews its track following and commits the backend 
   } finally { clearMocks(); Reflect.deleteProperty(globalThis, 'window'); }
 });
 
-test('Tab cycles the move mode; disconnect falls back to a plain move', () => {
+test('Tab cycles the move mode; disconnect still validates placement', async () => {
   useEditor.getState().setPlacement({ moveMode: 'preserveAngles', moveViolators: 'shove' } as never);
   const h = routedPart(); h.move(20, 20); h.key('m'); h.move(23, 22);
   h.tool.key!(h.env, 'Tab', { shiftKey: true } as KeyboardEvent); assert.equal(useEditor.getState().placement.moveViolators, 'walkaround');
   h.tool.key!(h.env, 'Tab', { shiftKey: false } as KeyboardEvent); assert.equal(useEditor.getState().placement.moveMode, 'free');
   h.tool.key!(h.env, 'Tab', { shiftKey: false } as KeyboardEvent); assert.equal(useEditor.getState().placement.moveMode, 'disconnect');
   assert(!h.tool.preview!(h.env).some((i) => i.kind === 'track'), 'disconnect leaves the track behind');
-  h.click(23, 22);
-  assert.deepEqual(h.commands, [{ op: 'move', ids: [4], dx: p(3, 0).x, dy: p(0, 2).y }]);
+  const item={...h.items.get(4)!,pos:p(23,22)} as Item;
+  await withPartPlan(h,item,()=>h.click(23,22));
+  assert.deepEqual(h.commands,[{op:'route',replace:[{id:4,item}],delete:[],add:[]}]);
   useEditor.getState().setPlacement({ moveMode: 'preserveAngles', moveViolators: 'shove' } as never);
 });
 
@@ -389,7 +403,7 @@ test('a late move plan cannot clear or commit over a newer via preview',async()=
  const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
  let settle!:(value:unknown)=>void;mockIPC(()=>new Promise(resolve=>settle=resolve));
  try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);
-  h.move(3,3);h.key('m');h.move(6,5);const preview=h.tool.preview!(h.env);const excluded=[...h.tool.excluded!()];
+  h.tool.cancel(h.env);h.move(3,3);h.key('m');h.move(6,5);const preview=h.tool.preview!(h.env);const excluded=[...h.tool.excluded!()];
   settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));
   assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),preview);assert.deepEqual([...h.tool.excluded!()],excluded);
  }finally{clearMocks();}
@@ -430,5 +444,35 @@ test('changed footprint geometry invalidates a connected plan even with the same
  try{const h=routedVia();h.move(3,3);h.key('m');h.move(5,4);h.click(5,4);
   useEditor.getState().patchDoc('test',{footprints:{...h.env.doc().footprints}});
   settle({replace:[{id:1,item:via(5,4)}],add:[],delete:[],rerouted:0,blocked:0});await new Promise(r=>setTimeout(r,0));assert.deepEqual(h.commands,[]);assert.deepEqual(h.tool.preview!(h.env),[]);
+ }finally{clearMocks();}
+});
+
+for(const outcome of ['coalesce','cancel','changed'] as const)test('native track preview '+outcome+' does not apply obsolete copper',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ const jobs:{args:any;resolve:(r:unknown)=>void}[]=[];mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_track_edit_plan');return new Promise(resolve=>jobs.push({args,resolve}));});
+ try{
+  const h=harness();h.move(4,4);h.tool.down!(h.env,{sx:40,sy:40,ctrl:false,shift:false,alt:false}as never);h.move(4,5);assert.equal(jobs.length,1);
+  const reply=(job:typeof jobs[number])=>job.resolve({replace:job.args.replace,add:[],delete:[99],blocked:0,rerouted:1});
+  if(outcome==='cancel'){h.tool.cancel(h.env);reply(jobs[0]);await new Promise(r=>setImmediate(r));assert.equal(h.commands.length,0);assert.equal(h.tool.excluded!().size,0);return;}
+  if(outcome==='changed'){useEditor.getState().patchDoc('test',{items:new Map(h.env.doc().items)});reply(jobs[0]);await new Promise(r=>setImmediate(r));h.tool.up!(h.env,{sx:40,sy:50}as never);await new Promise(r=>setImmediate(r));assert.equal(h.commands.length,0);assert.equal(jobs.length,1);return;}
+  h.move(4,6);h.move(4,7);assert.equal(jobs.length,1);reply(jobs[0]);await new Promise(r=>setImmediate(r));assert.equal(jobs.length,2);assert(!h.tool.excluded!().has(99));
+  assert.equal(jobs[1].args.replace[0].item.a.y,p(0,7).y);reply(jobs[1]);await new Promise(r=>setImmediate(r));assert(h.tool.excluded!().has(99));assert.equal(h.commands.length,0);h.tool.cancel(h.env);
+ }finally{clearMocks();}
+});
+
+test('pending component placement remains visible, cannot submit twice, and Escape ignores the late plan',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');
+ Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let settle!:(value:unknown)=>void,requests=0;
+ mockIPC(()=>{requests++;return new Promise(resolve=>settle=resolve);});
+ try{
+  const h=footprintHarness();h.move(20,20);h.key('m');h.move(23,22);h.click(23,22);
+  const preview=h.tool.preview!(h.env);assert(preview.some(i=>i.kind==='footprint'&&i.pos.x===23e6));
+  assert(h.tool.excluded!().has(4));
+  h.move(30,30);h.key('r');h.tool.auxPress!(h.env,2,false);h.click(30,30);
+  assert.equal(requests,1);assert.deepEqual(h.tool.preview!(h.env),preview);
+  h.tool.cancel(h.env);assert.deepEqual(h.tool.preview!(h.env),[]);assert.equal(h.tool.excluded!().size,0);
+  settle({replace:[{id:4,item:{...h.items.get(4)!,pos:p(23,22)}}],add:[],delete:[],blocked:0,rerouted:0});
+  await new Promise(r=>setTimeout(r,0));assert.deepEqual(h.commands,[]);
  }finally{clearMocks();}
 });

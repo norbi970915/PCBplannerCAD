@@ -1,3 +1,4 @@
+import { rotateWithConnections } from "../editor/connectedRotation";
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api, type DesignSource, type LibrarySource } from "./api";
 import { bus } from "./bus";
@@ -59,6 +60,7 @@ export async function undo(docId = st().activeDocId, preserveRouting = false) {
   const doc = docId ? st().docs[docId] : undefined;
   if (!doc?.info.canUndo || !docId) return;
   if (!preserveRouting && ["route","diffPair"].includes(doc.tool)) st().patchDoc(docId,{tool:"select"});
+  if (!preserveRouting) bus.emit("cancelTransient", {docId});
   const u = await api.undo(docId);
   st().applyUpdate(u);
   if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
@@ -69,6 +71,7 @@ export async function redo(docId = st().activeDocId) {
   const doc = docId ? st().docs[docId] : undefined;
   if (!doc?.info.canRedo || !docId) return;
   if (["route","diffPair"].includes(doc.tool)) st().patchDoc(docId,{tool:"select"});
+  bus.emit("cancelTransient", {docId});
   const u = await api.redo(docId);
   st().applyUpdate(u);
   if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
@@ -229,7 +232,7 @@ function selectionCenter(): Point | null {
 export async function rotateSelection(angle = 90) {
   const doc = activeDoc();
   const center = selectionCenter();
-  if (doc && center) await execute(doc.info.id, { op: "rotate", ids: [...doc.selection], center, angle });
+  if(doc&&center){try{await rotateWithConnections(doc.info.id,[...doc.selection],center,angle,cmd=>execute(doc.info.id,cmd),()=>st().docs[doc.info.id]);}catch(error){report(error);}}
 }
 
 export async function mirrorSelection() {

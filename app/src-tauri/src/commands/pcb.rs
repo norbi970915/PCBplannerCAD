@@ -131,6 +131,18 @@ pub fn pcb_via(state: State<AppState>, id: String, net: String, pos: Point, from
     })
 }
 
+#[tauri::command(async)]
+pub fn pcb_track_edit_plan(state: State<AppState>, id:String, replace:Vec<IdItem>, add:Vec<Item>, mode:router::RouteMode)->Res<pcbplannercad_core::pcb::drag::DragResult>{
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    router::plan_track_edit(&doc,replace,add,mode)
+}
+
+#[tauri::command]
+pub fn pcb_pair_via_clearance(state: State<AppState>, id: String, positive: pcbplannercad_core::pcb::Via, negative: pcbplannercad_core::pcb::Via, source: LayerId) -> Res<Coord> {
+    let ws=lock(&state);
+    router::pair_via_clearance(pcb_doc(&ws,&id)?,&positive,&negative,source)
+}
+
 #[tauri::command]
 pub fn pcb_object_at(state: State<AppState>, id: String, pos: Point, layer: LayerId) -> Res<Option<(ItemId, String)>> {
     let ws = lock(&state);

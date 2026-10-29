@@ -363,7 +363,7 @@ fn read_pad(l: &List, f: &Frame, notes: &mut Notes) -> Vec<Item> {
             (width, height) = (drill.width, drill.height);
         }
         return vec![Item::Pad(Pad {
-            number,
+            number, copper_shapes: Default::default(),
             pos,
             rotation,
             shape,
@@ -396,7 +396,7 @@ fn read_pad(l: &List, f: &Frame, notes: &mut Notes) -> Vec<Item> {
                 notes.info("SMD pads on both copper sides imported on top copper only", &ctx);
             }
             let layer = f.layer(layer);
-            vec![Item::Pad(Pad { number, pos, rotation, shape, width, height, corner_ratio, kind, layer, drill: None })]
+            vec![Item::Pad(Pad { number, copper_shapes: Default::default(), pos, rotation, shape, width, height, corner_ratio, kind, layer, drill: None })]
         }
         None => {
             // Paste/mask-only apertures: keep them as filled shapes on their layer.

@@ -73,7 +73,7 @@ For editor regressions run `pnpm.cmd -C app test:editor`. See [Latest workflow a
 
 Use the import actions in the File menu or Home tab to bring in supported project, schematic, board and library files. Choose an empty destination folder for an imported project. pCAD stores its sheets, board and embedded libraries together. Group/vector bus members and project bus aliases are retained across schematic sheets. Explicit board/BOM exclusions are preserved. Independent board graphics remain on the board during schematic updates; removals and connectivity changes require explicit selection in the review dialog.
 
-The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project. Native documents carrying bus aliases or independent-footprint retention use version 2; rebuild pCAD on both computers before opening them. Earlier files remain readable, and older executables refuse these newer documents to protect their metadata.
+The Components panel can import installed symbol and footprint libraries. Save imported libraries as `.arlib` files to keep them with your project. Native documents carrying bus aliases or independent-footprint retention use version 2; documents/libraries with layer-specific pad lands use version 3. Rebuild pCAD on both computers before opening these files. Earlier files remain readable, and older executables refuse these newer documents to protect their metadata.
 
 ## Keyboard shortcuts
 
@@ -102,7 +102,7 @@ Try it on [examples/polygon-playground.arpcb](examples/polygon-playground.arpcb)
 
 | Action | Keys |
 |---|---|
-| Interactive route / differential pair / via | `X` at a pad or track, or `P T` / `P I` / `P V` (routing: `V` or `*` via + layer, `/` or `Space` corner, `Shift+R` mode) |
+| Interactive route / differential pair / via | `X` at a pad or track, or `P T` / `P I` / `P V` (routing: `Space` via layer picker, `V` or `*` quick via, `Shift+Space` corner, `/` posture, `0` class width, `Shift+R` mode) |
 | Polygon pour / keep-out / board outline / component | `P G` / `P K` / `P O` / `P C` |
 | Move / rotate footprint | `M` / `R` (`Shift+R` reverses rotation; click places, `Esc` cancels a move and its preview rotation) |
 | Flip footprint to the other side | `F` or `L` |
@@ -114,7 +114,9 @@ Board selection filters are in the right **View** tab and stay available with an
 
 **PCB editing:** Tools → Pour Manager edits priorities, clearances and thermal settings with undoable dependent refill. The Properties panel supports bulk track/via editing and explicit copper Lock/Unlock. Align, Distribute and Pack & Move use the current connected-move behavior; Tab changes that behavior during an M move. Blocked connected moves can be placed again or cancelled with Esc. An incomplete multi-part plan applies no changes. Tools → Teardrops can persist automatic updates after routing and connected moves.
 
-**Routing and length tuning:** Route feedback shows whole-net copper length and session pair mismatch. Length tuning previews a selected track chain, tries smaller meanders up to the chosen amplitude, preserves existing fixed copper contacts and rechecks the displayed plan before applying it. Tuned tracks and dependent pour refill share one undo step. Pair continuation preserves the partner endpoint and rejects invalid gaps. Coordinated pair tuning and paired layer transitions remain pending.
+**Routing and length tuning:** Route feedback shows whole-net copper length and session pair mismatch. Length tuning previews a selected track chain, tries smaller meanders up to the chosen amplitude, preserves existing fixed copper contacts and rechecks the displayed plan before applying it. Tuned tracks and dependent pour refill share one undo step. Pair continuation preserves both accepted endpoints and rejects invalid gaps. Space opens the next-layer picker; paired transitions add both vias and their escape necks in one undo step. Fanout uses scoped native clearances, and the final transaction checks copper on every crossed layer before accepting either via. Coordinated pair tuning remains pending.
+
+**Manufacturing:** Fabrication packages separate plated drill data by physical layer span, including blind and buried vias. The layer map and ZIP include each span; through pads and physical drill hits stay unique even when pad land shapes vary by layer.
 
 **Local project hub:** Browse a working folder with nested subfolders and saved-content thumbnails, create complete schematic + board projects, review electronics-library imports and map local STEP/VRML assets. Project revisions save local checkpoints, compare and export readable changes between them and restore them into a fresh copy. See [the local workflow guide](docs/LOCAL-PROJECT-WORKFLOW-2026-10-29.md) for supported formats and current limits.
 

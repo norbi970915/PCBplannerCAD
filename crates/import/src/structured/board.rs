@@ -69,7 +69,8 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
     }
     let copper = settings.stackup.copper_layers();
 
-    let mut net_names: Vec<String> = net_table.values().filter(|n| !n.is_empty()).cloned().collect();
+    let source_nets = source_net_names(&root);
+    let mut net_names: Vec<String> = source_nets.values().cloned().collect();
     let mut graphics = Vec::new();
     let mut placed = Vec::new();
     let mut copper_items = Vec::new();
@@ -136,7 +137,7 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
     net_names.sort();
     net_names.dedup();
     if let Some(pro) = pro {
-        apply_project_rules(&mut settings, pro, &net_names);
+        apply_project_rules(&mut settings, pro, &source_nets);
     } else {
         apply_board_net_classes(&root, &mut settings);
     }
@@ -160,6 +161,26 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
     let mut report = ImportReport::default();
     notes.flush(&mut report, &format!("board {stem}.kicad_pcb"));
     Ok(BoardImport { file_name, document: doc, libraries: libs.into_values().collect(), report })
+}
+
+/// Retain source paths for rule matching before normalizing names for connectivity.
+/// Inline named nets and zone names also occur in files without a root net table.
+fn source_net_names(root: &List) -> BTreeMap<String,String> {
+    let mut names=BTreeMap::new();
+    let mut pending=vec![root];
+    while let Some(node)=pending.pop() {
+        let name=match node.head() {
+            "net_name"=>node.atom(1),
+            "net"=>node.atom(2).or_else(||match node.items.get(1) {Some(Sexpr::Atom(atom)) if atom.quoted=>Some(atom.text.as_ref()),_=>None}),
+            _=>None,
+        };
+        if let Some(name)=name {
+            let net=board_net(name);
+            if !net.is_empty(){names.insert(unescape(name),net);}
+        }
+        pending.extend(node.lists());
+    }
+    names
 }
 
 /// Matching complete suffix pairs carry the source format's implicit pair convention.
@@ -591,7 +612,8 @@ fn glob(pattern: &str, text: &str) -> bool {
 }
 
 /// Design rules and net classes from the `.kicad_pro` (structured format 6–10 layouts).
-fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, net_names: &[String]) {
+fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, source_nets: &BTreeMap<String,String>) {
+    let normalize=|name:&str|source_nets.get(name).cloned().unwrap_or_else(||board_net(name));
     let rules = pro.path(&["board", "design_settings", "rules"]);
     let r = |k: &str| rules.and_then(|j| j.get(k)).and_then(Json::num).filter(|v| *v >= 0.0).map(mm);
     let ns = pro.get("net_settings");
@@ -614,7 +636,7 @@ fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, net_names: &[St
             diff_pair_gap: v("diff_pair_gap", d.diff_pair_gap),
         };
         // structured format 6/7: explicit member lists.
-        class.nets.extend(c.get("nets").map(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).map(String::from));
+        class.nets.extend(c.get("nets").map(Json::arr).unwrap_or(&[]).iter().filter_map(Json::str).map(normalize));
         classes.push(class);
     }
     if let Some(i) = classes.iter().position(|c| c.name == "Default") {
@@ -631,10 +653,10 @@ fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, net_names: &[St
     };
     for (net, class) in ns.and_then(|n| n.get("netclass_assignments")).map(Json::obj).unwrap_or(&[]) {
         match class {
-            Json::Str(c) => assign(net, c, &mut classes),
+            Json::Str(c) => assign(&normalize(net), c, &mut classes),
             Json::Arr(cs) => {
                 if let Some(c) = cs.first().and_then(Json::str) {
-                    assign(net, c, &mut classes);
+                    assign(&normalize(net), c, &mut classes);
                 }
             }
             _ => {}
@@ -642,10 +664,11 @@ fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, net_names: &[St
     }
     for p in ns.and_then(|n| n.get("netclass_patterns")).map(Json::arr).unwrap_or(&[]) {
         let (Some(class), Some(pattern)) = (p.get("netclass").and_then(Json::str), p.get("pattern").and_then(Json::str)) else { continue };
-        for net in net_names {
-            // Patterns match the full name or the name without its sheet path.
+        for (source,net) in source_nets {
+            // Match the original sheet-qualified name; store the connectivity name.
+            // Preserve compatibility with existing patterns using normalized/short names.
             let short = net.rsplit('/').next().unwrap_or(net);
-            if glob(pattern, net) || glob(pattern, short) {
+            if glob(pattern, source) || glob(pattern, net) || glob(pattern, short) {
                 assign(net, class, &mut classes);
             }
         }
@@ -716,7 +739,7 @@ fn apply_board_net_classes(root: &List, settings: &mut BoardSettings) {
         let v = |k: &str, fallback: Coord| c.child_num(k).map(mm).unwrap_or(fallback);
         classes.push(NetClass {
             name: name.to_string(),
-            nets: if name == "Default" { Vec::new() } else { c.children("add_net").filter_map(|n| n.atom(1)).map(String::from).collect() },
+            nets: if name == "Default" { Vec::new() } else { c.children("add_net").filter_map(|n| n.atom(1)).map(board_net).collect() },
             track_width: v("trace_width", d.track_width),
             clearance: v("clearance", d.clearance),
             via_diameter: v("via_dia", d.via_diameter),
@@ -762,8 +785,65 @@ mod high_speed_import_tests {
     #[test]
     fn explicit_zero_width_minimum_is_not_replaced_by_default() {
         let pro=json::parse(r#"{"board":{"design_settings":{"rules":{"min_track_width":0}}}}"#).unwrap();
-        let mut b=BoardSettings::default();apply_project_rules(&mut b,&pro,&[]);
+        let mut b=BoardSettings::default();apply_project_rules(&mut b,&pro,&BTreeMap::new());
         let min=b.rules.iter().find_map(|r|if let RuleKind::Width{min,..}=r.kind{Some(min)}else{None}).unwrap();
         assert_eq!(min,0);
+    }
+}
+
+#[cfg(test)]
+mod source_class_path_tests {
+    use super::*;
+    const BOARD:&str=r#"(kicad_pcb (version 20240108)
+        (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+        (net 1 "/LINK_P") (net 2 "/LINK_N") (net 3 "LINK_GLOBAL")
+        (segment (start 0 0) (end 8 0) (width 0.14) (layer "F.Cu") (net 1))
+        (segment (start 0.12178 0.294) (end 7.87822 0.294) (width 0.14) (layer "F.Cu") (net 2)))"#;
+    const CLASSES:&str=r#"{"net_settings":{"classes":[
+        {"name":"Default","clearance":0.13,"diff_pair_gap":0.25},
+        {"name":"Fast","track_width":0.19,"diff_pair_width":0.14,"diff_pair_gap":0.154}],
+        "netclass_patterns":[{"netclass":"Fast","pattern":"/LINK*"}]}}"#;
+
+    #[test]
+    fn root_path_patterns_keep_the_source_class_and_route_spacing() {
+        let imported=convert(BOARD,"pair",Some(&json::parse(CLASSES).unwrap())).unwrap();
+        let board=pcbplannercad_core::pcb::geometry::board_settings(&imported.document).unwrap().1;
+        let class=board.net_classes.iter().find(|c|c.name=="Fast").unwrap();
+        assert_eq!(class.nets,vec!["LINK_N","LINK_P"]);assert!(!class.nets.iter().any(|n|n=="LINK_GLOBAL"));
+        assert_eq!(class.diff_pair_gap,mm(0.154));assert_eq!(class.diff_pair_width,mm(0.14));
+        let p=board.diff_pairs.iter().find(|p|p.positive=="LINK_P").unwrap();
+        let req=pcbplannercad_core::pcb::router::RouteRequest{net:p.positive.clone(),layer:layer::TOP_COPPER,start:pcbplannercad_core::units::Point::new(0,0),end:pcbplannercad_core::units::Point::new(mm(8.),0),width:class.diff_pair_width,mode:pcbplannercad_core::pcb::router::RouteMode::Walkaround,corner:pcbplannercad_core::pcb::router::CornerStyle::Diagonal45,ignore:vec![],posture_flip:false};
+        let (positive,negative)=pcbplannercad_core::pcb::router::route_diff_pair(&imported.document,&req,&p.negative,class.diff_pair_gap);
+        assert!(positive.reached&&negative.reached,"{}",positive.message);
+        assert_eq!(negative.tracks.first().unwrap().a.x,mm(0.12178));
+        let text=pcbplannercad_core::io::document_to_string(&imported.document).unwrap();
+        let reopened=pcbplannercad_core::io::document_from_str(DocKind::Pcb,&text).unwrap();
+        assert_eq!(pcbplannercad_core::pcb::geometry::board_settings(&reopened).unwrap().1.net_classes,board.net_classes);
+    }
+
+    #[test]
+    fn explicit_assignments_and_legacy_members_store_normalized_names() {
+        for assignment in [r#""netclass_assignments":{"/LINK_P":"Fast","/LINK_N":["Fast"]}"#,r#""netclass_patterns":[{"pattern":"/LINK*","netclass":"Fast"}]"#] {
+            let pro=json::parse(&format!(r#"{{"net_settings":{{"classes":[{{"name":"Default"}},{{"name":"Fast","nets":["/LINK_P"]}}],{assignment}}}}}"#)).unwrap();
+            let imported=convert(BOARD,"explicit",Some(&pro)).unwrap();
+            let board=pcbplannercad_core::pcb::geometry::board_settings(&imported.document).unwrap().1;
+            let nets=&board.net_classes[1].nets;
+            assert!(nets.iter().any(|n|n=="LINK_P")&&nets.iter().any(|n|n=="LINK_N"));assert!(nets.iter().all(|n|!n.starts_with('/')));
+        }
+    }
+
+    #[test]
+    fn inline_named_nets_keep_paths_and_escaped_name_characters_separate() {
+        let root=parse(r#"(kicad_pcb
+            (segment (net "/BUS{slash}P")) (segment (net "/Child/DATA"))
+            (zone (net_name "GLOBAL")) (pad "1" (net 3 "/LOCAL"))
+            (segment (net "unconnected-(U1-Pad1)")))"#).unwrap();
+        let names=source_net_names(&root);
+        assert_eq!(names.get("/BUS/P").map(String::as_str),Some("BUS/P"));
+        assert_eq!(names.get("/Child/DATA").map(String::as_str),Some("/Child/DATA"));
+        assert_eq!(names.get("/LOCAL").map(String::as_str),Some("LOCAL"));assert_eq!(names.len(),4);
+        let pro=json::parse(r#"{"net_settings":{"classes":[{"name":"Default"},{"name":"Fast"}],"netclass_assignments":{"/BUS/P":"Fast"}}}"#).unwrap();
+        let mut board=BoardSettings::default();apply_project_rules(&mut board,&pro,&names);
+        assert_eq!(board.net_classes[1].nets,vec!["BUS/P"]);
     }
 }

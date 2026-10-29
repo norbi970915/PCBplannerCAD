@@ -22,9 +22,9 @@ export function rotatePoint(p: Point, c: Point, deg: number): Point {
   return { x: c.x + dx * Math.cos(a) - dy * Math.sin(a), y: c.y + dx * Math.sin(a) + dy * Math.cos(a) };
 }
 
-/** Polyline approximating an arc; ~5° per segment, at least 2 segments. */
+/** Polyline approximating an arc; ~2° per segment, at least 2 segments. */
 export function arcPoints(c: Point, r: number, start: number, sweep: number): Point[] {
-  const n = Math.max(2, Math.ceil(Math.abs(sweep) / 5));
+  const n = Math.max(2, Math.ceil(Math.abs(sweep) / 2));
   const pts: Point[] = [];
   for (let i = 0; i <= n; i++) pts.push(polar(c, r, start + (sweep * i) / n));
   return pts;

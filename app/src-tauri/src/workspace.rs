@@ -544,6 +544,33 @@ impl Workspace {
     use super::*;
     struct Temp(PathBuf);impl Drop for Temp{fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
     fn temp()->Temp{let p=std::env::temp_dir().join(format!("pcad-save-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));std::fs::create_dir(&p).unwrap();Temp(p)}
+    #[test]
+    fn library_entry_sync_and_workspace_save_preserve_per_layer_lands() {
+        use pcbplannercad_core::{Item, Command, ItemId, Footprint};
+        let t = temp();
+        let pad: Item = serde_json::from_str(r#"{"kind":"pad","number":"1","pos":{"x":0,"y":0},"rotation":0,"shape":"rect","width":2000000,"height":2000000,"cornerRatio":0,"padKind":"tht","layer":15,"drill":{"width":800000,"height":800000},"copperShapes":{"33":{"shape":"circle","width":1200000,"height":1200000,"cornerRatio":0}}}"#).unwrap();
+        let mut footprint = Footprint::new("P");
+        footprint.items.push(pad.clone());
+        let mut ws = Workspace::default();
+        let lib = ws.add_lib(Library { name: "L".into(), footprints: vec![footprint], ..Default::default() }, None, true);
+        let doc = ws.add_doc(DocKind::Footprint, Origin::Footprint { lib: lib.clone(), name: "P".into() }, Document::from_item_list(DocKind::Footprint, [pad.clone()]));
+        let mut renamed = pad;
+        if let Item::Pad(p) = &mut renamed { p.number = "7".into(); }
+        ws.doc_mut(&doc).unwrap().session.execute(Command::Replace { id: ItemId(0), item: renamed.clone() }).unwrap();
+        ws.sync_entry(&doc).unwrap();
+        let path = t.0.join("L.arlib");
+        ws.save_lib(&lib, Some(path.clone())).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"], 3);
+        let reopened = io::library_from_str(&text).unwrap();
+        assert_eq!(reopened.footprints[0].items, vec![renamed]);
+        assert!(!ws.lib(&lib).unwrap().dirty);
+        ws.doc_mut(&doc).unwrap().session.undo().unwrap();
+        ws.sync_entry(&doc).unwrap();
+        let Item::Pad(before) = &ws.lib(&lib).unwrap().lib.footprints[0].items[0] else { panic!("pad") };
+        assert_eq!(before.number, "1");
+        assert_eq!(before.copper_shapes.len(), 1);
+    }
     #[test]fn failed_document_save_preserves_origin_dirty_state_and_history(){let t=temp();let mut ws=Workspace::default();let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));ws.doc_mut(&id).unwrap().session.mark_dirty();assert!(ws.save_doc_file(&id,&t.0).is_err());let d=ws.doc(&id).unwrap();assert_eq!(d.origin,Origin::File(None));assert!(d.session.is_dirty());assert!(!d.session.can_undo());let path=t.0.join("Board.arpcb");ws.save_doc_file(&id,&path).unwrap();assert!(!ws.doc(&id).unwrap().session.is_dirty());assert!(io::document_from_str(DocKind::Pcb,&std::fs::read_to_string(path).unwrap()).is_ok());}
     #[test]fn failed_library_and_project_changes_keep_live_metadata(){let t=temp();let mut ws=Workspace::default();let id=ws.add_lib(Library{name:"Parts".into(),..Default::default()},None,true);assert!(ws.save_lib(&id,Some(t.0.clone())).is_err());assert!(ws.lib(&id).unwrap().dirty);assert!(ws.lib(&id).unwrap().path.is_none());ws.project=Some(OpenProject{revision:None,path:t.0.clone(),project:Project{name:"Original".into(),..Default::default()}});assert!(ws.edit_project(|p|{p.name="Changed".into();p.libraries.push("lost.arlib".into());}).is_err());assert_eq!(ws.project().unwrap().project.name,"Original");assert!(ws.project().unwrap().project.libraries.is_empty());}
     #[test]fn save_as_cannot_replace_another_live_document(){let t=temp();let path=t.0.join("Other.arpcb");std::fs::write(&path,b"original").unwrap();let mut ws=Workspace::default();ws.add_doc(DocKind::Pcb,Origin::File(Some(path.clone())),Document::new(DocKind::Pcb));let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));assert!(ws.save_doc_file(&id,&path).unwrap_err().contains("another document"));assert_eq!(std::fs::read(&path).unwrap(),b"original");}

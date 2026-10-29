@@ -20,7 +20,7 @@ Use a saved copy of a real project and the newly built executable. These are pen
 - [ ] Route out of small pads on different nets, both board sides and near obstacles. Confirm pad-center starts, visible previews, snapping and clearance behaviour.
 - [ ] Change width/mode/corners without moving the cursor; use 0 and Shift+Space; inspect blocked-route feedback.
 - [ ] Insert vias to top, bottom and inner targets; test Shift+V, blocked endpoints, Backspace, Esc and Undo/Redo.
-- [ ] Route differential pairs through unequal bends. Paired via fanout is not supported; verify the explanatory message.
+- [ ] Route differential pairs through unequal bends, escape paired pads, and change layers with paired via fanout. Inspect both necks/annuli and verify atomic rejection, cancellation and one-step Undo/Redo.
 - [ ] Change custom grids in mm and mil, step with G/Shift+G, toggle snapping and restart to verify remembered steps.
 - [ ] Create rectangular and circular arrays with and without retained nets/rotation; inspect designators, dimensions and pours, then Undo/Redo and save/reopen.
 - [ ] Edit/refill pours and use locking/bulk properties. Confirm teardrops and online DRC update after connected edits.
@@ -288,3 +288,35 @@ The 15:57 linked-view executable predates this source batch. Rebuild only after 
 - [ ] Check large-board Save/hash timing and UI responsiveness, read-only destinations and late I/O failures. Save All is not a multi-file transaction and does not lock out every concurrent writer.
 
 Background evidence: 230 editor tests, 21 native workspace/app tests, 7 targeted storage tests and 23 headless menu/docking workflows passed. Browser IPC is mocked; physical filesystem cases run separately on disposable files. Whole-project copying, automatic external reload and legacy project creation remain separate work.
+
+## Focused home acceptance — 2026-10-29
+
+These specific cases passed; they do not close the broader multi-case sections above. Evidence and limits: [native acceptance and fixes](HOME-ACCEPTANCE-2026-10-29.md).
+
+- [x] Native external-board Save conflict preserves external bytes and live edits.
+- [x] Native Save Copy preserves working path/project link and Undo/Redo.
+- [x] Linked schematic double-click selects the matching footprint.
+- [x] Native detached board shares selection/Undo and returns on window close.
+- [x] Automatic/manual recovery survives orderly restart and restores an exact linked copy.
+- [x] Idle R keeps attached copper at the rotated pad center; one-step Undo/Redo is exact.
+- [x] Pad-center routing shows the expected copper total and below/in/above target feedback.
+- [x] Space via picker opens with the correct layer choices and cancels without edits.
+- [x] Native 20-to-22 mm tuning previews/applies and one Undo restores exact saved data.
+- [x] Legacy project creation rejects companion collisions and cleans up only its own unchanged file on failure (native filesystem regressions).
+- [ ] Complete remaining physical-monitor/DPI, forced-crash, pair-routing and graphical manufacturing acceptance.
+
+
+## Extended dense-board CLI and headless acceptance — 2026-10-29
+
+These checks used disposable imported boards and do not close native pointer/monitor acceptance above. Details and known limits are in the current handoff.
+
+- [x] Eight-layer source copper/footprint positions preserve net, layer, span, drill and width, within 1 nm coordinate quantization.
+- [x] Correct inner pad lands and single-segment schematic names survive native/library save and pad renumber/copy/Undo.
+- [x] Dense via arrays reject real conflicts on crossed inner layers without partial edits/history.
+- [x] Refill is idempotent; accepted connected move/rotation probes have exact Undo/Redo.
+- [x] Twelve of sixteen real filled-board length-tuning probes pass target tolerance, native DRC, Undo/Redo and reopen; four reject insufficient room.
+- [x] Eight copper CAM layers, 770 physical drill hits and package ZIP reopen with no parser warnings; partial-span drill partition regressions pass.
+- [x] Thirty headless WebGL checks cover layer-dependent pad pixels, nine deferred pour jobs and incremental track uploads.
+- [x] Actual schematic ECO has no topology changes and preserves layer geometry through apply/Undo/Redo/reopen.
+- [ ] Native mouse/keyboard acceptance of the final dense-board pair and via changes; Windows automation currently reports access denied.
+- [ ] Review the original dense design findings with circuit intent; passing import parity does not close source ERC/DRC.

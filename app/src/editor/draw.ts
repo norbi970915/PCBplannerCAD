@@ -61,6 +61,9 @@ export interface DrawContext {
   symbol?: LibSymbol | null;
   /** PCB: footprint geometry for placed footprints. */
   footprints?: Record<string, Footprint>;
+  copperLayer?: number;
+  /** GPU capsule primitives give round copper analytic edges; vector output keeps polygons. */
+  smoothCopper?: boolean;
   /** PCB: false draws pours as outlines only. */
   pourFills?: boolean;
   view?: ViewSettings;
@@ -456,13 +459,13 @@ export function sheetEntryPoint(s: ItemOf<"sheet">, e: ItemOf<"sheet">["entries"
 
 // ---------- pads ----------
 
-function drawPad(out: Out, p: ItemOf<"pad">, view?: ViewSettings, netName = "") {
+function drawPad(out: Out, p: ItemOf<"pad">, view?: ViewSettings, netName = "", smooth = true) {
   if (view?.pads === false || !layerVisible(view, p.layer)) return;
   const role = `L${p.layer}`;
   const c = p.pos;
   switch (p.shape) {
     case "circle":
-      out.fill(circlePoints(c, p.width / 2, 32), role);
+      if(smooth)out.seg(c,c,p.width,role);else out.fill(circlePoints(c,p.width/2,96),role);
       break;
     case "oval": {
       const long = Math.max(p.width, p.height);
@@ -482,7 +485,7 @@ function drawPad(out: Out, p: ItemOf<"pad">, view?: ViewSettings, netName = "") 
   }
   if (p.drill) {
     const { width, height } = p.drill;
-    if (width === height) out.fill(circlePoints(c, width / 2, 24), "hole");
+    if (width === height) {if(smooth)out.seg(c,c,width,"hole");else out.fill(circlePoints(c,width/2,96),"hole");}
     else {
       const along = (width >= height ? 0 : 90) + p.rotation;
       const half = (Math.max(width, height) - Math.min(width, height)) / 2;
@@ -498,10 +501,10 @@ function drawPad(out: Out, p: ItemOf<"pad">, view?: ViewSettings, netName = "") 
     const ht = p.shape === "circle" ? p.width : p.height;
     const across = Math.abs(w * Math.cos(r)) + Math.abs(ht * Math.sin(r));
     const tall = Math.abs(w * Math.sin(r)) + Math.abs(ht * Math.cos(r));
-    const h = Math.min(mm(1.2), tall * 0.55, (across * 0.8) / Math.max(1, p.number.length * 0.85));
+    const h = Math.min(mm(0.3), tall * 0.55, (across * 0.8) / Math.max(1, p.number.length * 0.85));
     if (showNumber && h > 0) out.text(p.number, showNet ? { x: c.x, y: c.y + tall * 0.2 } : c, showNet ? h * 0.65 : h, 0, "center", "middle", "padNum");
     if (showNet) {
-      const nh = Math.min(mm(0.8), tall * (showNumber ? 0.3 : 0.5), across * 0.8 / Math.max(1, netName.length * 0.85));
+      const nh = Math.min(mm(0.25), tall * (showNumber ? 0.3 : 0.5), across * 0.8 / Math.max(1, netName.length * 0.85));
       out.text(netName, showNumber ? { x: c.x, y: c.y - tall * 0.2 } : c, nh, 0, "center", "middle", "padNum");
     }
   }
@@ -534,9 +537,11 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
     case "pin":
       drawPin(out, item, ctx.symbol, true);
       break;
-    case "pad":
-      drawPad(out, item, ctx.view);
+    case "pad": {
+      const land = ctx.copperLayer === undefined ? undefined : item.copperShapes?.[ctx.copperLayer];
+      drawPad(out, land ? { ...item, ...land } : item, ctx.view, "", ctx.smoothCopper !== false);
       break;
+    }
     case "wire":
       out.seg(item.a, item.b, SCH.wire, "wire");
       break;
@@ -577,8 +582,8 @@ export function drawItem(item: Item, ctx: DrawContext): Prims {
       out.path(arcPoints(item.center, item.radius, item.startAngle, item.sweep), item.width, `L${item.layer}`);
       break;
     case "via":
-      out.fill(circlePoints(item.pos, item.diameter / 2, 24), "via");
-      out.fill(circlePoints(item.pos, item.drill / 2, 16), "hole");
+      if(ctx.smoothCopper!==false){out.seg(item.pos,item.pos,item.diameter,"via");out.seg(item.pos,item.pos,item.drill,"hole");}
+      else {out.fill(circlePoints(item.pos,item.diameter/2,96),"via");out.fill(circlePoints(item.pos,item.drill/2,96),"hole");}
       break;
     case "zone":
       drawZone(out, item, ctx.pourFills !== false, ctx.getFillTriangles);
@@ -611,11 +616,14 @@ function drawFootprint(out: Out, fp: ItemOf<"footprint">, ctx: DrawContext) {
     if (ctx.view?.references !== false) out.text(fp.designator, fp.pos, mm(1), 0, "center", "middle", "error");
     return;
   }
-  for (const it of geom.items) {
+  for (const original of geom.items) {
+    const localLayer=ctx.copperLayer===undefined ? undefined : pl.mirror ? flipLayer(ctx.copperLayer) : ctx.copperLayer;
+    const land=original.kind==="pad" && localLayer!==undefined ? original.copperShapes?.[localLayer] : undefined;
+    const it=land && original.kind==="pad" ? {...original,...land} : original;
     let w = placeItem(it, pl);
     if (pl.mirror) w = withLayer(w, flipLayer);
     if ("layer" in w && !layerVisible(ctx.view, w.layer)) continue;
-    if (w.kind === "pad") drawPad(out, w, ctx.view, fp.padNets[w.number] ?? "");
+    if (w.kind === "pad") drawPad(out, w, ctx.view, fp.padNets[w.number] ?? "", ctx.smoothCopper !== false);
     else if (w.kind === "text") {
       const ref = w.text === ".Designator" || w.text === fp.designator;
       const value = w.text === ".Value" || w.text === fp.value;
@@ -653,7 +661,7 @@ function drawZone(out: Out, z: ItemOf<"zone">, fills: boolean, prepare?: DrawCon
       if (prepared === null) { (out.pendingFills ??= []).push(poly); (out.fillPolygons ??= []).push(poly); continue; }
       fillTriangles.set(poly, tris = prepared);
     }
-    if (tris.length) { out.fills.push({ tris, role: `L${z.layer}` }); (out.fillPolygons ??= []).push(poly); }
+    if (tris.length) { out.fills.push({ tris, role: `${z.teardrop ? "L" : "Z"}${z.layer}` }); (out.fillPolygons ??= []).push(poly); }
   }
   if (!z.teardrop) out.path(z.outline, outline, `Z${z.layer}`, true);
 }

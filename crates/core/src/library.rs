@@ -117,6 +117,17 @@ fn unit_scale() -> [f64; 3] {
     [1.0; 3]
 }
 
+/// Optional copper geometry for one physical pad on a particular copper layer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PadCopperShape {
+    pub shape: crate::item::PadShape,
+    pub width: crate::units::Coord,
+    pub height: crate::units::Coord,
+    #[serde(default)]
+    pub corner_ratio: f64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Footprint {
@@ -129,7 +140,20 @@ pub struct Footprint {
     pub model: Option<Model3d>,
 }
 
+pub(crate) fn read_copper_shapes<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<std::collections::BTreeMap<u16,PadCopperShape>,D::Error> {
+    let source=std::collections::BTreeMap::<String,PadCopperShape>::deserialize(deserializer)?;
+    source.into_iter().map(|(layer,shape)|{
+        let layer=layer.parse::<u16>().map_err(serde::de::Error::custom)?;
+        if !(layer==0||layer==1||(33..=62).contains(&layer)) || shape.width<=0 || shape.height<=0 || !shape.corner_ratio.is_finite() || !(0.0..=0.5).contains(&shape.corner_ratio) {
+            return Err(serde::de::Error::custom("invalid pad copper layer or land geometry"));
+        }
+        Ok((layer,shape))
+    }).collect()
+}
+
 impl Footprint {
+    pub fn has_layer_shapes(&self)->bool {self.items.iter().any(|item|matches!(item,Item::Pad(p)if !p.copper_shapes.is_empty()))}
+
     pub fn new(name: impl Into<String>) -> Self {
         Footprint { name: name.into(), description: String::new(), items: Vec::new(), model: None }
     }

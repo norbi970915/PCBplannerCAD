@@ -119,6 +119,7 @@ export interface PadItem {
   padKind: PadKind;
   layer: LayerId;
   drill: Drill | null;
+  copperShapes?: Record<number,{shape:PadShape; width:number; height:number; cornerRatio:number}>;
 }
 
 export interface WireItem {
@@ -417,6 +418,7 @@ export interface PcbDragPlan {
   rerouted: number;
   blocked: number;
   failure?: "locked" | "unroutable";
+  message?: string;
 }
 
 // ---------- Library ----------

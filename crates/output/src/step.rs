@@ -375,7 +375,7 @@ mod tests {
             kind,
             layer: if kind == PadKind::Smd { layer::TOP_COPPER } else { layer::MULTI_LAYER },
             drill: drill.map(|(w, h)| Drill { width: mm(w), height: mm(h) }),
-        })
+         copper_shapes: Default::default(),})
     }
 
     fn placed(designator: &str, key: &str, x: f64, y: f64, rot: f64, side: Side) -> Item {

@@ -134,12 +134,20 @@ fn float_points(av: V, u: V, n: V, len: f64, ta: f64, tb: f64, d: f64) -> Option
 /// Shoves tracks out of the way of `path` (net `probe.net`). On success the
 /// world overlay holds the edits; returns (original id, replacement chain).
 pub(super) fn shove(world: &mut World, probe: &Probe, path: &[Point]) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
-    let mut pushers: Vec<Pusher> = path.windows(2).map(|w| Pusher { a: V::of(w[0]), b: V::of(w[1]), hw: probe.hw, net: probe.net }).collect();
+    let pushers: Vec<Pusher> = path.windows(2).map(|w| Pusher { a: V::of(w[0]), b: V::of(w[1]), hw: probe.hw, net: probe.net }).collect();
+    shove_many(world, &pushers)
+}
+
+/// Plan all selected conductors together so pushed tracks clear the entire drag.
+pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
+    let mut pushers = roots.to_vec();
     let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
     let mut queued: FxSet<u32> = FxSet::default();
     let blocked = |world: &World, h: Hit| format!("blocked by a {}", world.hit_kind(h).name());
     for p in &pushers {
-        for h in world.seg_collisions(p.a, p.b, probe) {
+        let excluded = [p.net];
+        let probe = Probe { hw:p.hw, net:p.net, excl:&excluded };
+        for h in world.seg_collisions(p.a, p.b, &probe) {
             match h {
                 Hit::Ob(i) if world.obstacles[i as usize].kind == ObKind::Track => {
                     if queued.insert(i) {
@@ -156,7 +164,7 @@ pub(super) fn shove(world: &mut World, probe: &Probe, path: &[Point]) -> Result<
             return Err("shove depth limit reached".into());
         }
         let ob = world.obstacles[i as usize].clone();
-        let track = ob.track.clone().ok_or("not a track")?;
+        let track = ob.track.clone().ok_or("locked track cannot be pushed")?;
         let reqs: Vec<(V, V, f64)> = pushers.iter().filter(|p| p.net != ob.net || p.net == super::world::NO_NET).map(|p| (p.a, p.b, ob.r + p.hw + world.clr(ob.key, p.net))).collect();
         let pts = match detour(track.a, track.b, &reqs) {
             Some(Detour::NotNeeded) => continue,
@@ -190,8 +198,10 @@ pub(super) fn shove(world: &mut World, probe: &Probe, path: &[Point]) -> Result<
         }
     }
     // The route itself must now be clean against the edited world.
-    for w in path.windows(2) {
-        if !world.seg_clear(V::of(w[0]), V::of(w[1]), probe) {
+    for p in roots {
+        let excluded = [p.net];
+        let probe = Probe { hw:p.hw, net:p.net, excl:&excluded };
+        if !world.seg_clear(p.a, p.b, &probe) {
             return Err("shoved tracks still collide".into());
         }
     }

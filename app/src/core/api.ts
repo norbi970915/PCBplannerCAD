@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AirWire,
+  IdItem,
   CleanupOptions,
   CleanupResult,
   TeardropOptions,
@@ -164,6 +165,7 @@ export const api = {
   /** Several footprints, each by its own offset, with tracks kept connected (Pack & Move), as a `route` command plan. */
   pcbDragEach: (id: string, req: { moves: { id: ItemId; delta: Point }[]; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
     invoke<PcbDragPlan>("pcb_drag_each", { id, req }),
+  pcbTrackEditPlan: (id:string,replace:IdItem[],add:Item[],mode:RouteMode)=>invoke<PcbDragPlan>("pcb_track_edit_plan",{id,replace,add,mode}),
   pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
   pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number, negStart: Point | null = null): Promise<[RouteResult, RouteResult]> => {
     const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap, negStart });
@@ -178,6 +180,7 @@ export const api = {
   pcbVia: async (id: string, net: string, pos: Point, from: number | null = null, to: number | null = null): Promise<ViaItem> => ({
     ...await invoke<Omit<ViaItem, "kind">>("pcb_via", { id, net, pos, from, to }), kind: "via",
   }),
+  pcbPairViaClearance: (id:string,positive:ViaItem,negative:ViaItem,source:number)=>invoke<number>("pcb_pair_via_clearance",{id,positive,negative,source}),
   pcbObjectAt: (id: string, pos: Point, layer: number) => invoke<[ItemId, string] | null>("pcb_object_at", { id, pos, layer }),
   pcbNetItems: (id: string, net: string) => invoke<ItemId[]>("pcb_net_items", { id, net }),
   pcbNets: (id: string) => invoke<string[]>("pcb_nets", { id }),

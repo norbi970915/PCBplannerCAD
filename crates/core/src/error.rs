@@ -10,6 +10,8 @@ pub enum CoreError {
     InvalidGeometry(&'static str),
     #[error("Via blocked: {0}")]
     ViaBlocked(String),
+    #[error("Placement blocked: {0}")]
+    PlacementBlocked(String),
     #[error("unsupported file: {0}")]
     UnsupportedFile(String),
     #[error("malformed file: {0}")]

@@ -129,7 +129,7 @@ fn pads_serialize_with_distinct_tag_and_kind() {
         kind: PadKind::Tht,
         layer: MULTI_LAYER,
         drill: Some(pcbplannercad_core::item::Drill { width: 800_000, height: 800_000 }),
-    });
+     copper_shapes: Default::default(),});
     let json = serde_json::to_value(&pad).unwrap();
     assert_eq!(json["kind"], "pad");
     assert_eq!(json["padKind"], "tht");

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::OutputError;
 use crate::assembly::{BomFormat, PnpFormat, bom_csv, pick_and_place_csv};
-use crate::excellon::write_drill;
+use crate::excellon::drill_files;
 use crate::gerber::{GerberOptions, VERSION, creation_date, file_function, layer_file_name, sanitize_file_stem, standard_layers, write_layer};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -44,8 +44,9 @@ pub fn write_package(doc: &Document, out_dir: &Path, opts: &FabOptions) -> Resul
         let (function, _) = file_function(board, f)?;
         files.push((layer_file_name(project, &ext), write_layer(doc, f, &opts.gerber)?, format!("{} (Gerber X2, {function})", f.label(board))));
     }
-    files.push((format!("{stem}-PTH.drl"), write_drill(doc, true)?, "Plated holes: vias and through-hole pads (Excellon 2, metric)".into()));
-    files.push((format!("{stem}-NPTH.drl"), write_drill(doc, false)?, "Non-plated holes (Excellon 2, metric)".into()));
+    for (suffix,contents,description) in drill_files(doc)? {
+        files.push((format!("{stem}-{suffix}"),contents,description));
+    }
     if let Some(fmt) = opts.pnp {
         files.push((format!("{stem}_pnp.csv"), pick_and_place_csv(doc, fmt, None), format!("Pick and place, both sides ({fmt:?} format)")));
     }

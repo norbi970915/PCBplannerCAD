@@ -31,7 +31,7 @@ fn pad(number: &str, x: f64, y: f64, w: f64, h: f64) -> Item {
         kind: PadKind::Smd,
         layer: TOP,
         drill: None,
-    })
+     copper_shapes: Default::default(),})
 }
 
 fn placed(designator: &str, at: Point, nets: &[(&str, &str)]) -> Item {
@@ -659,4 +659,143 @@ fn tuning_refills_dependent_pours_and_recovers_in_one_history_step() {
     session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),original);assert!(!session.can_undo());
     session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
     let reopened=crate::io::document_from_str(DocKind::Pcb,&after).unwrap();assert_eq!(crate::io::document_to_string(&reopened).unwrap(),after);
+}
+
+#[test]
+fn pair_escape_uses_real_pad_centers_and_respects_adjacent_ground() {
+    for rotation in [0.0,90.0] {
+        let mut part=placed("U1",pt(5.,5.),&[("1","D_P"),("2","D_N"),("3","GND")]);
+        if let Item::Footprint(fp)=&mut part {fp.rotation=rotation;}
+        let mut doc=board(vec![part],0.3,0.3);
+        let mut footprint=Footprint::new("P");
+        footprint.items=vec![pad("1",0.,0.,0.3,0.3),pad("2",0.,1.0,0.3,0.3),pad("3",0.,-0.8,0.3,0.3)];
+        doc.put_cached_footprint("L/P",footprint);
+        let pads=crate::pcb::geometry::all_pads(&doc,world::board_of(&doc));
+        let positive=pads.iter().find(|p|p.net=="D_P").unwrap().pos;
+        let negative=pads.iter().find(|p|p.net=="D_N").unwrap().pos;
+        let end=if rotation==0.0 {pt(15.,5.)}else{pt(5.,15.)};
+        let mut request=req("D_P",positive,end,RouteMode::Walkaround);request.width=mm(0.2);
+        let (p,n)=route_diff_pair(&doc,&request,"D_N",mm(0.2));
+        assert!(p.reached&&n.reached,"rotation {rotation}: {}",p.message);
+        assert_connected(&p.tracks,positive,Some(end));assert_connected(&n.tracks,negative,None);
+        let mut session=crate::Session::with_document(doc);
+        let diff=session.execute(crate::Command::Add{items:p.tracks.into_iter().chain(n.tracks).map(Item::Track).collect()}).unwrap();
+        assert!(crate::pcb::drc::run_near(session.document(),&diff.upserted.iter().map(|i|i.id).collect::<Vec<_>>()).iter().all(|v|!matches!(v.code,"short"|"clearance")),"pair neck must clear opposite pads and ground");
+    }
+}
+
+#[test]
+fn pair_escape_does_not_guess_partner_on_another_component() {
+    let doc=board(vec![placed("U1",pt(0.,0.),&[("1","D_P")]),placed("U2",pt(0.,10.),&[("1","D_N")])],0.3,0.3);
+    let request=req("D_P",pt(0.,0.),pt(10.,0.),RouteMode::Walkaround);
+    let (_,n)=route_diff_pair(&doc,&request,"D_N",mm(0.2));
+    assert!(n.tracks.first().is_none_or(|t|t.a!=pt(0.,10.)),"unrelated component must not become the source pad");
+}
+
+#[test]
+fn pair_continues_from_widened_vias_on_the_destination_layer() {
+    let mut doc=board(vec![],0.3,0.3);
+    let p=pt(12.65001,10.200005);let n=pt(12.65001,9.349995);
+    let pv=via_for(&doc,"D_P",p);let nv=via_for(&doc,"D_N",n);
+    let mut setup=crate::Session::with_document(doc);
+    setup.execute(crate::Command::Add{items:vec![Item::Via(pv),Item::Via(nv)]}).unwrap();doc=setup.document().clone();
+    let mut request=req("D_P",p,pt(20.,10.200005),RouteMode::Walkaround);request.layer=layer::BOTTOM_COPPER;request.width=mm(0.2);
+    let (positive,negative)=route_diff_pair_from(&doc,&request,"D_N",mm(0.25),Some(n));
+    assert!(positive.reached&&negative.reached,"{}",positive.message);
+    assert_connected(&positive.tracks,p,Some(request.end));assert_connected(&negative.tracks,n,None);
+    assert!(positive.tracks.iter().chain(&negative.tracks).all(|t|t.layer==layer::BOTTOM_COPPER));
+    let diff=setup.execute(crate::Command::Add{items:positive.tracks.into_iter().chain(negative.tracks).map(Item::Track).collect()}).unwrap();
+    assert!(crate::pcb::drc::run_near(setup.document(),&diff.upserted.iter().map(|i|i.id).collect::<Vec<_>>()).iter().all(|v|!matches!(v.code,"short"|"clearance")));
+}
+
+#[test]
+fn pair_resume_uses_existing_partner_endpoint_instead_of_a_virtual_offset() {
+    let doc=board(vec![track(pt(0.,0.),pt(5.,0.),"D_P"),track(pt(0.,1.),pt(5.,1.),"D_N")],0.3,0.3);
+    let mut request=req("D_P",pt(5.,0.),pt(15.,0.),RouteMode::Walkaround);request.width=mm(0.2);
+    let (p,n)=route_diff_pair(&doc,&request,"D_N",mm(0.25));
+    assert!(p.reached&&n.reached,"{}",p.message);
+    assert_connected(&p.tracks,request.start,Some(request.end));assert_connected(&n.tracks,pt(5.,1.),None);
+}
+
+#[test]
+fn dense_pair_resumes_on_its_own_copper_and_trims_both_virtual_corner_ends() {
+    for rotation in [0.0_f64,45.0,90.0,180.0] {
+        let point=|x:f64,y:f64|{let r=rotation.to_radians();pt(x*r.cos()-y*r.sin(),x*r.sin()+y*r.cos())};
+        let items=[((0.,0.),(10.,0.),"D_P"),((-2.,-2.7),(0.2,-0.5),"D_N"),((0.2,-0.5),(9.8,-0.5),"D_N"),((9.8,-0.5),(12.,-2.7),"D_N")].into_iter().map(|(a,b,net)|{
+            let mut item=track(point(a.0,a.1),point(b.0,b.1),net);if let Item::Track(t)=&mut item{t.width=mm(0.2);}item
+        }).collect();
+        let doc=board(items,0.3,0.3);let before=crate::io::document_to_string(&doc).unwrap();
+        let mut request=req("D_P",point(0.,0.),point(10.,0.),RouteMode::Walkaround);request.width=mm(0.2);
+        let (p,n)=route_diff_pair(&doc,&request,"D_N",mm(0.3));
+        assert!(p.reached&&n.reached,"rotation {rotation}: {}",p.message);
+        assert_connected(&p.tracks,request.start,Some(request.end));assert_connected(&n.tracks,point(0.2,-0.5),Some(point(9.8,-0.5)));
+        assert!(p.moved.is_empty()&&n.moved.is_empty());assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+        let mut session=crate::Session::with_document(doc);
+        let delta=session.execute(crate::Command::Add{items:p.tracks.into_iter().chain(n.tracks).map(Item::Track).collect()}).unwrap();
+        assert!(crate::pcb::drc::run_near(session.document(),&delta.upserted.iter().map(|i|i.id).collect::<Vec<_>>()).iter().all(|v|!matches!(v.code,"short"|"clearance")));
+        session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+    }
+}
+
+#[test]
+fn own_copper_exclusion_still_checks_foreign_pads_and_the_other_pair_net() {
+    let doc=board(vec![track(pt(0.,0.),pt(10.,0.),"D_P"),track(pt(0.,-0.2),pt(10.,-0.2),"D_N"),placed("U1",pt(0.,0.),&[("1","GND")])],1.,1.);
+    let mut request=req("D_P",pt(0.,0.),pt(10.,0.),RouteMode::Walkaround);request.width=mm(0.2);
+    let (p,n)=route_diff_pair_from(&doc,&request,"D_N",mm(0.3),Some(pt(0.,-0.5)));
+    assert!(!p.reached&&!n.reached);assert!(p.tracks.is_empty()&&n.tracks.is_empty());
+}
+
+#[test]
+fn dense_pair_spacing_mismatch_reports_dimensions_instead_of_backtracking() {
+    let doc=board(vec![track(pt(0.,0.),pt(8.,0.),"D_P"),track(pt(0.,-0.3),pt(8.,-0.3),"D_N")],0.3,0.3);
+    let mut request=req("D_P",pt(0.,0.),pt(8.,0.),RouteMode::Walkaround);request.width=mm(0.2);
+    let (p,n)=route_diff_pair(&doc,&request,"D_N",mm(0.3));
+    assert!(!p.reached&&!n.reached);assert!(p.tracks.is_empty()&&n.tracks.is_empty());assert!(p.message.contains("0.3000 mm apart; 0.5000 mm required"),"{}",p.message);
+}
+
+#[test]
+fn tight_pad_pitch_can_fan_out_to_pair_gap_without_relaxing_electrical_clearance() {
+    let mut doc=board(vec![placed("J1",pt(5.,5.),&[("1","P"),("2","N")])],0.2,0.2);
+    let mut geometry=Footprint::new("P");geometry.items=vec![pad("1",0.,0.,0.2,0.2),pad("2",0.,0.4,0.2,0.2)];doc.put_cached_footprint("L/P",geometry);
+    let mut request=req("P",pt(5.,5.),pt(10.,5.),RouteMode::Walkaround);request.width=mm(0.178);
+    let (p,n)=route_diff_pair(&doc,&request,"N",mm(0.25));
+    assert!(p.reached&&n.reached,"{}",p.message);assert_connected(&p.tracks,request.start,Some(request.end));assert_connected(&n.tracks,pt(5.,5.4),None);
+    assert!((n.tracks.last().unwrap().b.y-p.tracks.last().unwrap().b.y).abs()>=mm(0.428)-4);
+    let mut session=crate::Session::with_document(doc);let delta=session.execute(crate::Command::Add{items:p.tracks.into_iter().chain(n.tracks).map(Item::Track).collect()}).unwrap();
+    assert!(crate::pcb::drc::run_near(session.document(),&delta.upserted.iter().map(|i|i.id).collect::<Vec<_>>()).iter().all(|v|!matches!(v.code,"short"|"clearance")));
+}
+
+#[test]
+fn connected_track_edit_pushes_multiple_tracks_in_one_undo_step() {
+    let doc=board(vec![track(pt(5.,-2.),pt(15.,-2.),"A"),track(pt(0.,0.4),pt(20.,0.4),"B"),track(pt(0.,0.85),pt(20.,0.85),"C")],1.,1.);
+    let (id,item)=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).unwrap();let Item::Track(mut next)=item.clone() else{unreachable!()};next.a.y=0;next.b.y=0;
+    let before=crate::io::document_to_string(&doc).unwrap();
+    let result=plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next.clone())}],vec![],RouteMode::Shove).unwrap();
+    assert_eq!(result.rerouted,2);assert_eq!(result.delete.len(),2);assert_eq!(result.replace[0].id,id);
+    assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+    let mut session=crate::Session::with_document(doc);session.execute(crate::Command::Route{delete:result.delete,replace:result.replace,add:result.add}).unwrap();
+    assert!(!super::super::drc::run(session.document()).violations.iter().any(|v|v.severity==super::super::drc::Severity::Error));
+    let after=crate::io::document_to_string(session.document()).unwrap();session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+    assert_eq!(crate::io::document_to_string(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()).unwrap(),after);
+}
+
+#[test]
+fn connected_track_edit_rejects_locked_obstacles_and_avoid_collisions_without_edits() {
+    for locked in [false,true] {
+        let mut other=track(pt(0.,0.4),pt(20.,0.4),"B");if let Item::Track(t)=&mut other{t.locked=locked;}
+        let doc=board(vec![track(pt(5.,-2.),pt(15.,-2.),"A"),other],1.,1.);let before=crate::io::document_to_string(&doc).unwrap();
+        let (id,item)=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).unwrap();let Item::Track(mut next)=item.clone() else{unreachable!()};next.a.y=0;next.b.y=0;
+        assert!(plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next.clone())}],vec![],if locked{RouteMode::Shove}else{RouteMode::Walkaround}).is_err());
+        next.net="CHANGED".into();assert!(plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next)}],vec![],RouteMode::Ignore).is_err());
+        assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+    }
+}
+
+#[test]
+fn connected_track_edit_requires_a_fixed_pad_join() {
+    let doc=board(vec![placed("J1",pt(5.,0.),&[("1","A")]),track(pt(5.,0.),pt(12.,0.),"A")],0.5,0.5);
+    let (id,item)=doc.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap();let Item::Track(mut next)=item.clone() else{unreachable!()};next.a.y=mm(2.);next.b.y=mm(2.);
+    assert!(plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next.clone())}],vec![],RouteMode::Shove).unwrap_err().contains("detach"));
+    let join=Item::Track(Track{a:pt(5.,0.),b:next.a,..next.clone()});
+    let result=plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next)}],vec![join],RouteMode::Shove).unwrap();assert!(result.delete.is_empty());assert_eq!(result.add.len(),1);
 }

@@ -291,7 +291,8 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        for pad in &self.pads {
+        for physical in &self.pads {
+            let selected=physical.for_layer(layer);let pad=&selected;
             let (px, py) = fr.f(pad.pos);
             let reach = pad.width.max(pad.height) as f64;
             if pad.kind == PadKind::Npth || pad.copper.is_empty() {

@@ -15,6 +15,7 @@ export interface BusEvents {
   view: { action: "fit" | "zoomIn" | "zoomOut" | "fitSelection" };
   /** Attach items of a document to its canvas cursor as a floating move. */
   pickUp: { docId: string; ids: number[] };
+  cancelTransient: {docId:string};
   canvasTimings: { docId: string };
   togglePanelWindow: {id:string};
   resetLayout: Record<string, never>;

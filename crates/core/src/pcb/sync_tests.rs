@@ -23,7 +23,7 @@ fn geom(name: &str, pads: &[&str]) -> Footprint {
             kind: PadKind::Smd,
             layer: layer::TOP_COPPER,
             drill: None,
-        }));
+         copper_shapes: Default::default(),}));
     }
     let w = mm(2.0) * pads.len().saturating_sub(1) as Coord;
     f.items.push(Item::Rect(Rect {
