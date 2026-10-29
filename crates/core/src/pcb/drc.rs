@@ -67,6 +67,7 @@ pub fn run(doc: &Document) -> DrcReport {
     let mut d = Drc::new(doc, &board, None);
     d.rule_errors();
     d.missing_footprints();
+    d.length_rules();
     let idx = Index::new(conn::copper_objects(doc, &board));
     let mut uf = Uf::new(idx.objs.len());
     conn::join_same_pads(&idx.objs, &mut uf);
@@ -197,6 +198,18 @@ impl<'a> Drc<'a> {
         for e in self.rules.errors().to_vec() {
             let rule = e.split(':').next().unwrap_or("").to_string();
             self.push(Severity::Warning, "rule-error", rule, format!("Rule scope does not parse: {e}"), board_id.into_iter().collect(), origin, None);
+        }
+    }
+
+    fn length_rules(&mut self) {
+        for (net, m) in super::length::measure(self.doc) {
+            let Some(((min, max), source)) = self.rules.length_rule(&Obj::new(ObjKind::Track, &net, None)) else { continue; };
+            let actual = m.total.round() as Coord;
+            if min < 0 || max < min || actual < min || actual > max {
+                self.push(Severity::Error, "length", source.to_string(),
+                    format!("Net {net}: routed copper {} outside {}–{} (tracks and arcs; vias excluded)", mmc(actual), mmc(min), mmc(max)),
+                    m.items, m.pos, None);
+            }
         }
     }
 

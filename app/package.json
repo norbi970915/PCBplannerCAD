@@ -12,7 +12,7 @@
     "benchmark:navigation": "node --import ./tests/register.mjs --experimental-transform-types scripts/benchmark-navigation.mjs",
     "test:polygons": "node --import ./tests/register.mjs --experimental-strip-types --test tests/polygon.test.ts",
     "tauri": "tauri",
-    "test:editor": "node --import ./tests/register.mjs --experimental-transform-types --test tests/polygon.test.ts tests/navigation.test.ts tests/pourTriangles.test.ts tests/routing.test.ts tests/selection.test.ts tests/connectedMoves.test.ts tests/trackDrag.test.ts tests/editing.test.ts tests/publicPresentation.test.ts tests/boardTools.test.ts tests/boardTools2.test.ts tests/onlineDrc.test.ts"
+    "test:editor": "node --import ./tests/register.mjs --experimental-transform-types --test tests/polygon.test.ts tests/navigation.test.ts tests/pourTriangles.test.ts tests/routing.test.ts tests/selection.test.ts tests/connectedMoves.test.ts tests/trackDrag.test.ts tests/editing.test.ts tests/publicPresentation.test.ts tests/boardTools.test.ts tests/boardTools2.test.ts tests/onlineDrc.test.ts tests/routeLengths.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "4.3.3",

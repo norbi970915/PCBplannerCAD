@@ -94,6 +94,19 @@ pub fn pcb_route_pair(state: State<AppState>, id: String, req: router::RouteRequ
     Ok(router::route_diff_pair(pcb_doc(&ws, &id)?, &req, &neg_net, gap))
 }
 
+#[tauri::command]
+pub fn pcb_length_constraint(state: State<AppState>, id: String, net: String) -> Res<Option<pcbplannercad_core::pcb::length::LengthConstraint>> {
+    let ws = lock(&state);
+    Ok(pcbplannercad_core::pcb::length::constraint(pcb_doc(&ws, &id)?, &net))
+}
+
+/// Read-only plan: applying recomputes against the latest board.
+#[tauri::command(async)]
+pub fn pcb_tune_preview(state: State<AppState>, id: String, req: router::TuneRequest) -> Res<Vec<Item>> {
+    let doc = pcb_doc(&lock(&state), &id)?.clone();
+    Ok(router::tune_length(&doc, &req)?.into_iter().map(Item::Track).collect())
+}
+
 /// Replaces a track chain with a length-tuned meander chain.
 #[tauri::command]
 pub fn pcb_tune(state: State<AppState>, id: String, req: router::TuneRequest) -> Res<DocUpdate> {

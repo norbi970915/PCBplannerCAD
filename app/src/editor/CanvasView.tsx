@@ -40,6 +40,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
   const symbolRef = useRef(symbol);
   const rebuildRef = useRef<() => void>(() => {});
   const [box, setBox] = useState<ScreenRect | null>(null);
+  const [routingMetrics,setRoutingMetrics]=useState<import("./routeLengths").RoutingMetrics|null>(null);
+  const routingSignature=useRef("");
   const [drawingPours, setDrawingPours] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const kind = useEditor((s) => s.docs[docId]?.info.kind);
@@ -198,6 +200,9 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const updateHint = () => {
       if (isActive()) {
+        const metrics=tool.routingMetrics?.(env)??null;
+        const signature=JSON.stringify(metrics);
+        if(signature!==routingSignature.current){routingSignature.current=signature;setRoutingMetrics(metrics);}
         const hint = tool.hint(env);
         if (st().hint !== hint) st().setHint(hint);
       }
@@ -641,7 +646,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         {box && <div className={`select-box ${box.touching ? "touching" : "inside"}`} style={{ left: box.x, top: box.y, width: box.w, height: box.h }} />}
         <ActiveBar docId={docId} />
         <PolygonEditBar docId={docId} />
-        <RoutingBar docId={docId} />
+        <RoutingBar docId={docId} metrics={routingMetrics} />
         {viaPicker&&<ViaLayerPicker request={viaPicker} onChoose={finishViaChoice}/>}
         {error && <div className="canvas-error">{error}</div>}
       </div>

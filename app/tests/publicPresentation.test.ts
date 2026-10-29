@@ -39,7 +39,7 @@ function hasProhibitedName(text:string):boolean {
 
 function withoutWireMarkers(file:string,text:string):string {
   // Exact external extensions and root tags remain required for existing files.
-  text=text.replace(new RegExp('\\b'+structuredPrefix+'_(?:symbol_lib|pcb|pro|sch|sym|mod|wks)\\b','g'),'wire_format');
+  text=text.replace(new RegExp('\\b'+structuredPrefix+'_(?:symbol_lib|pcb|pro|sch|sym|mod|wks|dru)\\b','g'),'wire_format');
   if(file.startsWith('crates/import/src/xml/')){
     text=text.replace(new RegExp('(<\\/?)'+xmlRoot+'(?=[\\s/>])','g'),'$1wire_root')
       .replace(new RegExp('"'+xmlRoot+'"','g'),'"wire_root"')
@@ -67,5 +67,6 @@ test('naming checks reject prose and internal identifier variants without blocki
   assert(hasProhibitedName(name));assert(hasProhibitedName(name+'Paths'));assert(hasProhibitedName('import_'+name+'_project'));
   assert(!hasProhibitedName('pCAD copper pads and format parsing; confusion accuracy'));
   assert(!hasProhibitedName(withoutWireMarkers('crates/import/src/structured/board.rs','"'+name+'_pcb"')));
+  assert(!hasProhibitedName(withoutWireMarkers('crates/import/src/structured/board.rs','"'+name+'_dru"')));
   assert(hasProhibitedName(withoutWireMarkers('app/src/App.tsx','"'+xmlRoot+'"')));
 });

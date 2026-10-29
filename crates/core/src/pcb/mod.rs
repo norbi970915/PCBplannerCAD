@@ -21,6 +21,7 @@ pub mod items;
 pub mod panel;
 pub mod polygon;
 pub mod query;
+pub mod length;
 pub mod router;
 pub mod stitch;
 pub mod teardrop;

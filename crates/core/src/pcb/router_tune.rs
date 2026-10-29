@@ -83,6 +83,7 @@ fn order_chain(doc: &Document, ids: &[ItemId]) -> Result<Vec<Track>, String> {
     let mut tracks = Vec::new();
     for id in ids {
         match doc.get(*id) {
+            Some(Item::Track(t)) if t.locked => return Err(format!("track {} is locked; unlock it before tuning", id.0)),
             Some(Item::Track(t)) => tracks.push(t.clone()),
             Some(_) => return Err(format!("item {} is not a track", id.0)),
             None => return Err(format!("item {} does not exist", id.0)),
@@ -122,6 +123,7 @@ fn order_chain(doc: &Document, ids: &[ItemId]) -> Result<Vec<Track>, String> {
 }
 
 pub(super) fn tune(doc: &Document, req: &TuneRequest) -> Result<Vec<Track>, String> {
+    if req.target_length <= 0 { return Err("target length must be positive".into()); }
     if req.amplitude <= 0 || req.spacing <= 0 {
         return Err("amplitude and spacing must be positive".into());
     }

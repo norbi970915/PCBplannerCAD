@@ -61,6 +61,7 @@ export interface Tool {
   /** Esc / right-click. Return true if an operation in progress was cancelled. */
   cancel(env: ToolEnv, source?: "key" | "mouse"): boolean;
   preview?(env: ToolEnv): Item[];
+  routingMetrics?(env: ToolEnv): import("../routeLengths").RoutingMetrics|null;
   /** Screen-space marks drawn on top (handles, rubber bands); widths in world units. */
   overlay?(env: ToolEnv): DrawLine[];
   /** Translucent editing regions, independent of the board's fill visibility. */

@@ -141,3 +141,5 @@ test('global Undo leaves routing while tool-owned undo can preserve the routing 
     useEditor.getState().patchDoc('test-drc',{tool:'route'});await undo('test-drc',true);assert.equal(useEditor.getState().docs['test-drc'].tool,'route');
   });
 });
+
+test('online updates discard stale whole-net length markers until batch DRC',()=>{assert.deepEqual(mergeViolations([v('length',[1]),v('short',[2,3])],new Set(),[v('length',[4])]).map(x=>x.code),['short']);});

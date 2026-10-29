@@ -1,3 +1,6 @@
+import { LengthMeter } from "../editor/RouteLengthGauge";
+import { copperLength } from "../editor/routeLengths";
+import type { TrackItem } from "../core/types";
 import { GridDialog } from "../shell/GridDialog";
 import { DrcBrowser } from "./DrcBrowser";
 import { ArrayDialog, SelectSimilarDialog } from "./SelectionToolsDialogs";
@@ -712,7 +715,7 @@ function ImpedanceDialog({ docId }: { docId: string | null }) {
 function TuneDialog({ docId }: { docId: string }) {
   const doc = useEditor((s) => s.docs[docId]);
   const units = useEditor((s) => s.units);
-  const tracks = useMemo(() => [...(doc?.selection ?? [])].filter((id) => doc?.items.get(id)?.kind === "track"), [doc]);
+  const tracks = useMemo(() => [...(doc?.selection ?? [])].filter((id) => doc?.items.get(id)?.kind === "track"), [doc?.selection,doc?.items]);
   const current = useMemo(() => {
     let sum = 0;
     for (const id of tracks) {
@@ -726,14 +729,30 @@ function TuneDialog({ docId }: { docId: string }) {
   const [spacing, setSpacing] = useState(mm(0.5));
   const [style, setStyle] = useState<"accordion" | "trombone">("accordion");
 
+  const [plan,setPlan]=useState<{key:string;tracks:TrackItem[];error:string}|null>(null);
+  const [applying,setApplying]=useState(false);
+  const request={tracks,targetLength:target,amplitude,spacing,style};
+  const previewKey=JSON.stringify(request);
+  useEffect(()=>{let active=true;setPlan(null);
+    const timer=setTimeout(()=>{void api.pcbTunePreview(docId,JSON.parse(previewKey)).then(tracks=>{if(active)setPlan({key:previewKey,tracks,error:''});}).catch(error=>{if(active)setPlan({key:previewKey,tracks:[],error:String(error)});});},200);
+    return()=>{active=false;clearTimeout(timer);};
+  },[docId,previewKey,doc?.items]);
+  const previewReady=plan?.key===previewKey&&!plan.error;
+  const previewLength=plan?.tracks.reduce((sum,t)=>sum+copperLength(t),0)??current;
+  const original=tracks.flatMap(id=>{const t=doc?.items.get(id);return t?.kind==='track'?[t]:[];});
+  const allPoints=[...original,...(plan?.tracks??[])].flatMap(t=>[t.a,t.b]);
+  const xs=allPoints.map(p=>p.x),ys=allPoints.map(p=>p.y);
+  const xmin=xs.length?Math.min(...xs):0,xmax=xs.length?Math.max(...xs):1,ymin=ys.length?Math.min(...ys):0,ymax=ys.length?Math.max(...ys):1;
+  const padding=Math.max(xmax-xmin,ymax-ymin)*0.06+10000;
   const run = async () => {
+    setApplying(true);
     try {
-      useEditor.getState().applyUpdate(await api.pcbTune(docId, { tracks, targetLength: target, amplitude, spacing, style }));
+      useEditor.getState().applyUpdate(await api.pcbTune(docId, request));
       scheduleAnalysis(docId, 0);
       close();
     } catch (e) {
       report(e);
-    }
+    } finally {setApplying(false);}
   };
   return (
     <Dialog
@@ -744,16 +763,22 @@ function TuneDialog({ docId }: { docId: string }) {
           <Button variant="outline" onClick={close}>
             Cancel
           </Button>
-          <Button disabled={!tracks.length} onClick={() => void run()}>
-            Tune
+          <Button disabled={!tracks.length||!previewReady||applying} onClick={() => void run()}>
+            {applying?"Applying…":"Apply tuning"}
           </Button>
         </>
       }
     >
       <div className="grid gap-3">
         <p className="text-muted-foreground">
-          {tracks.length} tracks selected · current length <span className="font-mono text-ink">{toMm(current).toFixed(3)} mm</span>
+          {tracks.length} tracks selected · current chain length <span className="font-mono text-ink">{toMm(current).toFixed(3)} mm</span>
         </p>
+        <LengthMeter label="Selected chain preview" length={previewLength} bounds={{min:Math.max(0,Math.ceil(target*0.995)),max:Math.floor(target*1.005)}} pending={!previewReady}/>
+        {plan?.error?<p className="text-err-line" role="alert">{plan.error}</p>:<p className="text-muted-foreground">{previewReady?'Preview ready · original in gray, planned copper in green.':'Calculating clearance-checked preview…'}</p>}
+        <svg role="img" aria-label="Length tuning preview" className="h-40 w-full rounded border border-line bg-card" viewBox={[xmin-padding,-ymax-padding,xmax-xmin+2*padding,ymax-ymin+2*padding].join(' ')}>
+          {original.map((t,i)=><line key={'o'+i} x1={t.a.x} y1={-t.a.y} x2={t.b.x} y2={-t.b.y} stroke="#89929e" strokeWidth={t.width}/>)}
+          {previewReady&&plan.tracks.map((t,i)=><line key={i} x1={t.a.x} y1={-t.a.y} x2={t.b.x} y2={-t.b.y} stroke="#38b66b" strokeWidth={t.width}/>)}
+        </svg>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Target length">
             <LengthInput value={target} units={units} onCommit={setTarget} />

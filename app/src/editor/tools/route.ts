@@ -15,6 +15,8 @@ import { place } from "../draw";
 import { ringHandles, ringLines } from "./polygon";
 import type { Tool, ToolEnv } from "./types";
 
+import { prospectiveLength } from "../routeLengths";
+
 const MODES: RouteMode[] = ["walkaround", "shove", "ignore"];
 
 export function boardSettings(env: ToolEnv): BoardItem | undefined {
@@ -127,9 +129,11 @@ export function routeTool(pair = false): Tool {
     if (inflight) { pending = to; return; }
     lastPreview = { session, items: document.items, footprints: document.footprints, key };
     inflight = true;
+    env.redraw();
     const my = ++seq;
     const done = () => {
       inflight = false;
+      env.redraw();
       if (pending) {
         const p = pending;
         pending = null;
@@ -140,6 +144,7 @@ export function routeTool(pair = false): Tool {
     previewSettled = run
       .then((r) => {
         if (my !== seq || s !== session) return;
+        if(env.doc().items !== document.items || env.doc().footprints !== document.footprints){lastPreview=null;pending=env.cursor();return;}
         const hadMoved = session.moved.length > 0;
         session.preview = r.tracks;
         session.moved = r.moved;
@@ -152,6 +157,7 @@ export function routeTool(pair = false): Tool {
         if (s !== session || my !== seq) return;
         lastPreview = null;
         session.preview = [];
+        session.moved = [];
         session.message = String(error);
         session.reached = false;
         report(error);
@@ -408,6 +414,11 @@ export function routeTool(pair = false): Tool {
       if (!s && !starting) return false;
       finish();
       return true;
+    },
+    routingMetrics(env) {
+      if(!s)return null;
+      const nets=pair?[s.net,negativeOf(env,s.net)]:[s.net];
+      return {nets:nets.map(net=>({net,length:prospectiveLength(env.doc().items,net,s!.preview,s!.moved)})),pending:inflight||pending!==null,blocked:s.blockedAt!==null||(!s.reached&&!!s.message)};
     },
     preview: () => (s ? [...s.moved.map((m) => m.item), ...s.preview] : []),
     excluded: () => new Set(s?.moved.map((m) => m.id) ?? []),

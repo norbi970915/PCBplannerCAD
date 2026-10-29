@@ -84,9 +84,9 @@ See [the morning handoff](HANDOFF-2026-10-28.md) for changes, verification and t
 
 ## pCAD connected-via and navigation follow-up — pending home UI checks
 
-- [ ] Pull the latest source and rebuild before launching `target/release/pCAD.exe`; use saved disposable design copies.
-- [ ] Drag a via attached to straight tracks on top/inner/bottom layers; confirm every attached endpoint follows and its far fixed connection remains intact.
-- [ ] Repeat using M/click placement; cancel with Esc and confirm the saved board is unchanged.
+- [x] Pull the latest source and rebuild before launching `target/release/pCAD.exe`; use saved disposable design copies.
+- [x] Drag a via attached to straight tracks on top/inner/bottom layers; confirm every attached endpoint follows and its far fixed connection remains intact.
+- [x] Repeat using M/click placement; cancel with Esc and confirm the saved board is unchanged.
 - [ ] Test a via in a straight segment interior and a via on a fixed pad; verify both original connections remain joined.
 - [ ] Check curved-track endpoints and interior via contacts, including clockwise/wrapped sweeps: the curve stays and a joining route reaches the moved via. Repeat with a locked curve, and with two selected endpoint vias.
 - [ ] Verify blind/buried spans and reversed layer endpoints; same-net copper outside the span and other nets stay fixed.
@@ -124,3 +124,17 @@ Background checks for this batch: 174 editor tests, 24 headless WebGL checks, a 
 - [ ] Hold/release the pointer across a fast rejected floating placement; verify there is no duplicate plan or commit.
 - [ ] Change rules/move settings, selections, footprint geometry or the active document while planning; stale results must not overwrite current work.
 - [ ] Run full DRC after testing Free/Ignore and direct component edits; clean-route rejection does not replace whole-board review.
+
+## Focused native pass — 2026-10-28
+
+See [the native results](NATIVE-WORKFLOW-RESULTS-2026-10-28.md) for the build, fixtures, saved-data evidence and limits. Broader unchecked cases above remain open.
+
+- [x] Via drag on Top/Inner 1/Bottom, fixed endpoints, exact one-step Undo/Redo, unlocked foreign-via Push, and M/Esc cancellation.
+- [x] Locked attached straight track rejects a connected via move; retry state and Esc preserve source items.
+- [x] Consecutive free-angle polygon cuts starting on the newest edge; dependent refill and exact outline/fill Undo/Redo.
+- [x] Concave Slice preserves total outline area and net/layer; outward Reshape extends the boundary and refills.
+- [x] Connected Align Top at distinct offsets preserves fixed vias and pad connections, including a zero-length join; exact Undo/Redo and native close/reopen/resave.
+- [x] Native dense-board preparation status, later zoom/layer dimming, fill visibility off/on and unchanged saved data.
+- [x] Prepared holed-pour copper selection, exclusion of the hole and crossing-box selection from the hole into copper.
+- [ ] Repeat native timing with sufficient active samples; the first recording is insufficient for a performance conclusion.
+- [ ] Complete pending-job cancellation/refill/Undo races and independently inspect printed copper and holes.

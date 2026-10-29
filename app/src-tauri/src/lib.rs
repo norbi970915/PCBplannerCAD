@@ -81,6 +81,8 @@ pub fn run() {
             pcb::pcb_route,
             pcb::pcb_route_pair,
             pcb::pcb_tune,
+            pcb::pcb_tune_preview,
+            pcb::pcb_length_constraint,
             pcb::pcb_net_length,
             pcb::pcb_via,
             pcb::pcb_drag_footprints,

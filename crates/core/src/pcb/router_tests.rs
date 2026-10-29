@@ -528,3 +528,14 @@ fn drc_accepts_defined_microvias_but_flags_undefined_small_vias() {
     assert!(!flagged.contains(&ids[0]), "the defined microvia is an approved style");
     assert!(flagged.contains(&ids[1]), "a small through via still violates the via-style rule");
 }
+
+#[test]
+fn tuning_rejects_locked_tracks_without_mutating_board() {
+    let mut locked=track(pt(0.0,0.0),pt(20.0,0.0),"A");
+    if let Item::Track(t)=&mut locked {t.locked=true;}
+    let doc=board(vec![locked],1.0,1.0);
+    let before=crate::io::document_to_string(&doc).unwrap();
+    let id=doc.items().find(|(_,i)|matches!(i,Item::Track(_))).unwrap().0;
+    let err=tune_length(&doc,&TuneRequest{tracks:vec![id],target_length:mm(24.0),amplitude:mm(1.0),spacing:mm(0.6),style:TuneStyle::Accordion}).unwrap_err();
+    assert!(err.contains("locked")); assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+}

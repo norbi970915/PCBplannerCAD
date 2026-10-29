@@ -828,7 +828,11 @@ impl<'a> RuleSet<'a> {
 
     /// (min, max) routed length, when a length rule applies.
     pub fn length(&self, o: &Obj) -> Option<(Coord, Coord)> {
-        self.lookup(&self.length, o).map(|(v, _)| *v)
+        self.length_rule(o).map(|(v, _)| v)
+    }
+
+    pub fn length_rule(&self, o: &Obj) -> Option<((Coord, Coord), RuleSource<'a>)> {
+        self.lookup(&self.length, o).map(|(v, source)| (*v, source))
     }
 
     pub fn silk_clearance(&self) -> Coord {

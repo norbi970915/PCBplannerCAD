@@ -39,6 +39,8 @@ import type {
   CornerStyle,
 } from "./types";
 
+import type { LengthConstraint } from '../editor/routeLengths';
+export type TuneRequest = { tracks: ItemId[]; targetLength: number; amplitude: number; spacing: number; style?: "trombone" | "accordion" };
 export type EntryKind = "symbol" | "footprint" | "component";
 export type LibrarySource = "structuredSymbols" | "structuredFootprints" | "xmlLibrary";
 export type DesignSource = "structuredProject" | "structuredSchematic" | "xmlSchematic";
@@ -154,8 +156,10 @@ export const api = {
     const [positive, negative] = await invoke<[RouteResponse, RouteResponse]>("pcb_route_pair", { id, req, negNet, gap });
     return [routeItems(positive), routeItems(negative)];
   },
-  pcbTune: (id: string, req: { tracks: ItemId[]; targetLength: number; amplitude: number; spacing: number; style?: "trombone" | "accordion" }) =>
+  pcbTune: (id: string, req: TuneRequest) =>
     invoke<Update>("pcb_tune", { id, req }),
+  pcbTunePreview: (id:string,req:TuneRequest)=>invoke<TrackItem[]>("pcb_tune_preview",{id,req}),
+  pcbLengthConstraint: (id:string,net:string)=>invoke<LengthConstraint|null>("pcb_length_constraint",{id,net}),
   pcbNetLength: (id: string, net: string) => invoke<number>("pcb_net_length", { id, net }),
   /** A via for `net`; with `from`/`to` the board's matching via type (blind, buried, micro) is used, else a through via. */
   pcbVia: async (id: string, net: string, pos: Point, from: number | null = null, to: number | null = null): Promise<ViaItem> => ({

@@ -4,7 +4,7 @@
 import type { DrcViolation, Item, ItemId } from "../core/types";
 
 /** Batch-only checks; online DRC leaves them to the ratsnest and T D. */
-export const ONLINE_SKIP = new Set(["unrouted"]);
+export const ONLINE_SKIP = new Set(["unrouted", "length"]);
 
 export interface Touched {
   /** Present objects to re-check (pours whose only change is a refill are left out). */

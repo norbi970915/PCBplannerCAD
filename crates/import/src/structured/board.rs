@@ -5,12 +5,12 @@
 //! (see [`Frame::placed`]) and cached in the document; the placed instance
 //! carries position, rotation, side and pad nets.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use pcbplannercad_core::item::{DESIGNATOR_TOKEN, Item, VALUE_TOKEN};
 use pcbplannercad_core::layer;
-use pcbplannercad_core::pcb::board::{NetClass, RuleKind, StackKind, StackLayer, Stackup};
+use pcbplannercad_core::pcb::board::{DiffPair, NetClass, RuleKind, StackKind, StackLayer, Stackup};
 use pcbplannercad_core::pcb::{ArcTrack, BoardSettings, PlacedFootprint, Side, Track, Via, Zone, ZoneConnect, ZonePolygon};
 use pcbplannercad_core::pcb::fill;
 use pcbplannercad_core::units::{Coord, mm};
@@ -31,7 +31,9 @@ pub fn import_board(path: &Path) -> Result<BoardImport, ImportError> {
     let text = std::fs::read_to_string(path)?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "board".into());
     let pro = std::fs::read_to_string(path.with_extension("kicad_pro")).ok().and_then(|t| json::parse(&t));
-    convert(&text, &stem, pro.as_ref())
+    let mut imported=convert(&text, &stem, pro.as_ref())?;
+    if path.with_extension("kicad_dru").is_file(){imported.report.warn("board rules", "External custom rule file was not translated; recreate length, skew and scoped constraints before validation.");}
+    Ok(imported)
 }
 
 /// Parses `.kicad_pcb` text (without project-file rules).
@@ -139,6 +141,8 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
         apply_board_net_classes(&root, &mut settings);
     }
 
+    settings.diff_pairs = infer_pairs(&net_names);
+    if !settings.diff_pairs.is_empty(){notes.info("differential pairs inferred from matching net suffixes; verify polarity and constraints", "");}
     let mut items = vec![Item::Board(settings)];
     items.extend(graphics);
     items.extend(placed);
@@ -156,6 +160,25 @@ fn convert(text: &str, stem: &str, pro: Option<&Json>) -> Result<BoardImport, Im
     let mut report = ImportReport::default();
     notes.flush(&mut report, &format!("board {stem}.kicad_pcb"));
     Ok(BoardImport { file_name, document: doc, libraries: libs.into_values().collect(), report })
+}
+
+/// Matching complete suffix pairs carry the source format's implicit pair convention.
+fn infer_pairs(nets:&[String])->Vec<DiffPair> {
+    let available:HashSet<_>=nets.iter().map(String::as_str).collect();
+    let mut paired=HashSet::new();
+    let mut out=vec![];
+    for net in nets {
+        for (positive,negative) in [("_DP","_DN"),("_P","_N"),("+","-")] {
+            if let Some(base)=net.strip_suffix(positive) {
+                let other=format!("{base}{negative}");
+                if available.contains(other.as_str())&&!paired.contains(net) {
+                    paired.insert(net.clone());paired.insert(other.clone());
+                    out.push(DiffPair{name:base.to_string(),positive:net.clone(),negative:other});
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Net name of a node: `(net_name "x")` (zones, structured format 6–8), `(net n "x")`,
@@ -627,7 +650,7 @@ fn apply_project_rules(settings: &mut BoardSettings, pro: &Json, net_names: &[St
                 }
             }
             RuleKind::Width { min, preferred, .. } => {
-                if let Some(v) = r("min_track_width").filter(|v| *v > 0) {
+                if let Some(v) = r("min_track_width") {
                     *min = v;
                 }
                 if let Some(c) = &dc {
@@ -710,5 +733,24 @@ mod tests {
         assert!(glob("USB_D?", "USB_DP"));
         assert!(glob("*", ""));
         assert!(!glob("A*B", "AxxC"));
+    }
+}
+
+#[cfg(test)]
+mod high_speed_import_tests {
+    use super::*;
+    #[test]
+    fn pairs_require_both_members_and_keep_polarity() {
+        let nets:Vec<String>=["A_P","A_N","ORPHAN_P","USB_DP","USB_DN","D+","D-","POWER"].iter().map(|n|n.to_string()).collect();
+        let pairs=infer_pairs(&nets);assert_eq!(pairs.len(),3);
+        assert_eq!((&pairs[0].positive,&pairs[0].negative),(&"A_P".to_string(),&"A_N".to_string()));
+        assert!(!pairs.iter().any(|p|p.positive.contains("ORPHAN")));
+    }
+    #[test]
+    fn explicit_zero_width_minimum_is_not_replaced_by_default() {
+        let pro=json::parse(r#"{"board":{"design_settings":{"rules":{"min_track_width":0}}}}"#).unwrap();
+        let mut b=BoardSettings::default();apply_project_rules(&mut b,&pro,&[]);
+        let min=b.rules.iter().find_map(|r|if let RuleKind::Width{min,..}=r.kind{Some(min)}else{None}).unwrap();
+        assert_eq!(min,0);
     }
 }

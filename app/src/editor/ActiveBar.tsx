@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { RouteLengthGauge } from "./RouteLengthGauge";
 import { bus } from "../core/bus";
 import { filterActive, useSelectFilter } from "../core/selectFilter";
 import { useEditor } from "../core/store";
@@ -67,7 +68,7 @@ export function PolygonEditBar({ docId }: { docId: string }) {
 }
 
 /** A visible way out of routing, so pad clicks are not mistaken for selection. */
-export function RoutingBar({ docId }: { docId: string }) {
+export function RoutingBar({ docId, metrics }: { docId: string;metrics:import("./routeLengths").RoutingMetrics|null }) {
   const tool = useEditor(s => s.docs[docId]?.tool);
   const hint = useEditor(s => s.hint);
   const placement = useEditor(s => s.placement);
@@ -104,6 +105,7 @@ export function RoutingBar({ docId }: { docId: string }) {
           </select>
         </label>
       </div>
+      <RouteLengthGauge docId={docId} metrics={metrics} />
       <div className="max-w-[720px] pt-1 text-[11px] text-muted-foreground" aria-live="polite">{hint}</div>
     </div>
     <button className="shrink-0 rounded bg-sel px-2 py-1 text-accent-ink hover:bg-hover" onClick={() => activateTool("select", docId)}>Select / move <span className="font-mono">Esc</span></button>

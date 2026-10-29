@@ -330,3 +330,30 @@ fn drc_perf_10k_objects() {
 fn n_rows() -> usize {
     40
 }
+
+#[test]
+fn length_rules_check_whole_net_and_inclusive_limits() {
+    let mut d=doc(clean_items()); // A and B are each 14 mm.
+    with_rule(&mut d,Rule{name:"A length".into(),enabled:true,kind:RuleKind::Length{scope:"InNet('A')".into(),min:mm(14.0),max:mm(14.0)}});
+    assert_eq!(count(&run(&d),"length"),0);
+    with_rule(&mut d,Rule{name:"A too short".into(),enabled:true,kind:RuleKind::Length{scope:"InNet('A')".into(),min:mm(15.0),max:mm(16.0)}});
+    let r=run(&d);let v=r.violations.iter().find(|v|v.code=="length").unwrap();
+    assert_eq!(v.rule,"A too short"); assert!(v.message.contains("14.000"));
+    assert!(v.items.len()>=3);
+    with_rule(&mut d,Rule{name:"Disabled".into(),enabled:false,kind:RuleKind::Length{scope:"All".into(),min:0,max:mm(1.0)}});
+    assert_eq!(run(&d).violations.iter().filter(|v|v.code=="length").count(),1);
+    with_rule(&mut d,Rule{name:"First priority".into(),enabled:true,kind:RuleKind::Length{scope:"InNet('A')".into(),min:0,max:mm(13.0)}});
+    assert_eq!(run(&d).violations.iter().find(|v|v.code=="length").unwrap().rule,"First priority");
+    let ids:Vec<_>=d.items().map(|(id,_)|id).collect();
+    assert!(!run_near(&d,&ids).iter().any(|v|v.code=="length"));
+}
+
+#[test]
+fn length_rules_count_arcs_and_zero_length_pad_nets() {
+    let mut d=doc(vec![outline(0.0,-5.0,20.0,5.0),fp("R1","L/R",5.0,0.0,&[("1","A"),("2","B")]),
+        Item::ArcTrack(crate::pcb::items::ArcTrack{locked:false,center:Point::new(mm(10.0),0),radius:mm(1.0),start_angle:0.0,sweep:180.0,width:mm(0.25),layer:TOP_COPPER,net:"A".into()})]);
+    with_rule(&mut d,Rule{name:"Both nets".into(),enabled:true,kind:RuleKind::Length{scope:"All".into(),min:mm(3.0),max:mm(3.2)}});
+    let r=run(&d); let errors:Vec<_>=r.violations.iter().filter(|v|v.code=="length").collect();
+    assert_eq!(errors.len(),1); assert!(errors[0].message.contains("Net B:"));assert!(errors[0].message.contains("0.000"));
+    assert_eq!(super::super::length::constraint(&d,"A").unwrap().rule,"Both nets");
+}
