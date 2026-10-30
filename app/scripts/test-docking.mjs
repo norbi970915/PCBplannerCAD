@@ -46,7 +46,7 @@ try{
  assert.equal(await child.evaluate(()=>!!window.opener),true);
  assert.deepEqual(await page.locator('.dv-tab').filter({hasText:'Board'}).count(),0);
  checks.push('board tab detaches into a same-origin shared-opener window with a live WebGL canvas');
- await child.getByRole('complementary',{name:'Document properties and view'}).waitFor();
+ await child.getByRole('complementary',{name:'Document properties, view and DRC'}).waitFor();
  assert.equal(await page.getByRole('tablist',{name:'Panel mode'}).count(),1);
  await child.getByRole('tab',{name:'view',exact:true}).click();
  await child.getByRole('button',{name:'Selection filter',exact:true}).waitFor();
@@ -54,6 +54,16 @@ try{
  assert.equal(await child.getByRole('button',{name:'Undo',exact:true}).isEnabled(),true);
  assert.equal(await child.getByRole('button',{name:'Redo',exact:true}).isDisabled(),true);
  checks.push('detached document duplicates Properties and View and exposes its shared Undo/Redo state');
+ await child.getByRole('tab',{name:'view',exact:true}).click();
+ await page.evaluate(()=>window.dockTest.runDrc());
+ await child.getByText('Detached board finding',{exact:true}).waitFor();
+ await child.getByText('Full check complete',{exact:true}).waitFor();
+ assert.equal(await child.getByText('Check failed',{exact:true}).count(),0);
+ assert.equal(await child.getByRole('tab',{name:'DRC',exact:true}).getAttribute('aria-selected'),'true');
+ await child.getByText('Detached board finding',{exact:true}).click();
+ assert.deepEqual((await page.evaluate(()=>window.dockTest.state())).selection,[1]);
+ checks.push('manual DRC targets the detached board sidebar and its findings select the shared board item');
+ await child.getByRole('tab',{name:'properties',exact:true}).click();
  await child.getByRole('button',{name:'Undo',exact:true}).click();
  await child.getByRole('button',{name:'Redo',exact:true}).waitFor({state:'visible'});
  assert.equal(await child.getByRole('button',{name:'Redo',exact:true}).isEnabled(),true);
@@ -148,7 +158,7 @@ try{
  kept=await page.evaluate(()=>window.dockTest.state());assert.equal(kept.messages.filter(m=>m.startsWith('Saved a separate copy')).length,successes);assert.equal(kept.items,original.items);assert(kept.dirty);
  checks.push('rejected copy destinations report failure and preserve the live unsaved design');
  await page.evaluate(()=>window.dockTest.picks.push('A:/Design/Board.arpcb'));await page.keyboard.press('Control+s');
- await page.waitForFunction(()=>window.dockTest.state().messages.some(m=>m.includes('File changed outside pCAD')));
+ await page.waitForFunction(()=>window.dockTest.state().messages.some(m=>m.includes('File changed outside PCBPlanner Studio')));
  kept=await page.evaluate(()=>window.dockTest.state());for(const key of ['items','path','linked','dirty','undo'])assert.equal(kept[key],original[key]);
  checks.push('ordinary Save conflict is visible in the app and never clears dirty state or rebinds its board');
  assert.deepEqual(errors,[]);

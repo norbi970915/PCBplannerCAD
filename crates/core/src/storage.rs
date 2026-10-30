@@ -61,7 +61,7 @@ pub fn verify_revision(path: &Path, expected: Option<FileRevision>) -> io::Resul
     let message = if expected.is_none() {
         "File already exists; choose a new filename. Existing files are preserved."
     } else {
-        "File changed or was removed outside pCAD. Your edits are still open; use File > Save Copy with a new filename to keep both versions."
+        "File changed or was removed outside PCBPlanner Studio. Your edits are still open; use File > Save Copy with a new filename to keep both versions."
     };
     Err(io::Error::new(io::ErrorKind::AlreadyExists, message))
 }

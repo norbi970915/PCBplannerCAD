@@ -112,10 +112,10 @@ fn write_span(doc: &Document, plated: bool, span: (usize,usize)) -> Result<Strin
     let date = creation_date();
     let mut s = String::new();
     s.push_str("M48\n");
-    let _ = writeln!(s, "; DRILL file {{pCAD {VERSION}}} date {date}");
+    let _ = writeln!(s, "; DRILL file {{PCBPlanner Studio {VERSION}}} date {date}");
     s.push_str("; FORMAT={-:-/ absolute / metric / decimal}\n");
     let _ = writeln!(s, "; #@! TF.CreationDate,{date}");
-    let _ = writeln!(s, "; #@! TF.GenerationSoftware,pCAD,pCAD,{VERSION}");
+    let _ = writeln!(s, "; #@! TF.GenerationSoftware,PCBPlanner Studio,PCBPlanner Studio,{VERSION}");
     if plated {
         let kind = if span == full { "PTH" } else if span.0 == 1 || span.1 == layers { "Blind" } else { "Buried" };
         let _ = writeln!(s, "; #@! TF.FileFunction,Plated,{},{},{kind}",span.0,span.1);

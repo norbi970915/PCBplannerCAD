@@ -442,7 +442,7 @@ pub fn glob(pattern: &str, s: &str) -> bool {
     pi == p.len()
 }
 
-/// pCAD's built-in layer names (mirrors the UI table): (id, name, short id).
+/// PCBPlanner Studio's built-in layer names (mirrors the UI table): (id, name, short id).
 const LAYER_NAMES: &[(LayerId, &str, &str)] = &[
     (layer::TOP_COPPER, "Top Layer", "T.Cu"),
     (layer::BOTTOM_COPPER, "Bottom Layer", "B.Cu"),

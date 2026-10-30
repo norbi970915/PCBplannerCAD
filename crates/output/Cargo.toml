@@ -2,7 +2,7 @@
 name = "pcbplannercad-output"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Manufacturing and document outputs: Gerber X2, Excellon, pick-and-place, BOM, PDF, IPC-2581, STEP"
 
 [dependencies]

@@ -28,7 +28,7 @@ export function increment(s: string): string {
 const isSch = (env: ToolEnv) => env.doc().info.kind === "schematic" || env.doc().info.kind === "symbol";
 
 function rotateKey(env: ToolEnv, key: string): boolean {
-  if (key === " ") {
+  if (key.toLowerCase() === "r") {
     env.setPlacement({ rotation: norm(env.placement().rotation + 90) });
     return true;
   }
@@ -49,7 +49,7 @@ function oneClick(
 ): Tool {
   return {
     id,
-    hint: () => `${hint} · Space rotate · Esc to finish`,
+    hint: () => `${hint} · R rotate · right-drag pan · Esc to finish`,
     preview: (env) => build(env, env.cursor()) ?? [],
     down(env) {
       const items = build(env, env.cursor());

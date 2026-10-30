@@ -380,7 +380,7 @@ impl Workspace {
         let order = std::iter::once(preferred.to_string()).chain(self.libs.keys().cloned());
         for id in order {
             let Some(l) = self.libs.get(&id) else { continue };
-            if lib_name.is_some_and(|n| n != l.lib.name) {
+            if lib_name.is_some_and(|n| n != l.lib.name && !(id == BUILTIN_LIB && n == "pCAD Basic")) {
                 continue;
             }
             if let Some(fp) = l.lib.footprint(name) {
@@ -574,6 +574,16 @@ impl Workspace {
     #[test]fn failed_document_save_preserves_origin_dirty_state_and_history(){let t=temp();let mut ws=Workspace::default();let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));ws.doc_mut(&id).unwrap().session.mark_dirty();assert!(ws.save_doc_file(&id,&t.0).is_err());let d=ws.doc(&id).unwrap();assert_eq!(d.origin,Origin::File(None));assert!(d.session.is_dirty());assert!(!d.session.can_undo());let path=t.0.join("Board.arpcb");ws.save_doc_file(&id,&path).unwrap();assert!(!ws.doc(&id).unwrap().session.is_dirty());assert!(io::document_from_str(DocKind::Pcb,&std::fs::read_to_string(path).unwrap()).is_ok());}
     #[test]fn failed_library_and_project_changes_keep_live_metadata(){let t=temp();let mut ws=Workspace::default();let id=ws.add_lib(Library{name:"Parts".into(),..Default::default()},None,true);assert!(ws.save_lib(&id,Some(t.0.clone())).is_err());assert!(ws.lib(&id).unwrap().dirty);assert!(ws.lib(&id).unwrap().path.is_none());ws.project=Some(OpenProject{revision:None,path:t.0.clone(),project:Project{name:"Original".into(),..Default::default()}});assert!(ws.edit_project(|p|{p.name="Changed".into();p.libraries.push("lost.arlib".into());}).is_err());assert_eq!(ws.project().unwrap().project.name,"Original");assert!(ws.project().unwrap().project.libraries.is_empty());}
     #[test]fn save_as_cannot_replace_another_live_document(){let t=temp();let path=t.0.join("Other.arpcb");std::fs::write(&path,b"original").unwrap();let mut ws=Workspace::default();ws.add_doc(DocKind::Pcb,Origin::File(Some(path.clone())),Document::new(DocKind::Pcb));let id=ws.add_doc(DocKind::Pcb,Origin::File(None),Document::new(DocKind::Pcb));assert!(ws.save_doc_file(&id,&path).unwrap_err().contains("another document"));assert_eq!(std::fs::read(&path).unwrap(),b"original");}
+    #[test]
+    fn previous_starter_library_references_resolve_after_brand_change() {
+        let mut ws=Workspace::default();
+        let library=pcbplannercad_core::libgen::starter::starter_library();let footprint=library.footprints[0].name.clone();
+        ws.libs.insert(BUILTIN_LIB.into(),OpenLib {revision:None,path:None,lib:library,dirty:false,readonly:true});
+        assert_eq!(ws.find_footprint(BUILTIN_LIB,&format!("pCAD Basic:{footprint}")).unwrap().0,BUILTIN_LIB);
+        assert_eq!(ws.find_footprint(BUILTIN_LIB,&format!("PCBPlanner Basic:{footprint}")).unwrap().0,BUILTIN_LIB);
+        assert!(ws.find_footprint(BUILTIN_LIB,&format!("Unrelated:{footprint}")).is_none());
+    }
+
 }
 
 #[cfg(test)]

@@ -244,6 +244,9 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardSettings {
+    /// Reviewed exceptions; raw native DRC and routing checks still report/enforce geometry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drc_approvals: Vec<DrcApproval>,
     /// Automatic teardrop generation settings, persisted with the board.
     #[serde(default)]
     pub auto_teardrops: Option<super::teardrop::TeardropOptions>,
@@ -312,6 +315,7 @@ fn default_classes() -> Vec<NetClass> {
 impl Default for BoardSettings {
     fn default() -> Self {
         BoardSettings {
+            drc_approvals: vec![],
             auto_teardrops: None,
             stackup: Stackup::default(),
             rules: default_rules(),
@@ -325,7 +329,34 @@ impl Default for BoardSettings {
     }
 }
 
+/// Owned snapshot of a reviewed finding, saved with its exact review context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DrcApprovalFinding {
+    pub severity: String,
+    pub code: String,
+    pub rule: String,
+    pub message: String,
+    pub items: Vec<crate::document::ItemId>,
+    pub pos: Point,
+    pub layer: Option<LayerId>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DrcApproval {
+    pub finding: DrcApprovalFinding,
+    pub context: String,
+}
 impl BoardSettings {
+    /// Merge an approval into the latest settings; preserve independent settings and reviews.
+    pub fn set_drc_approval(&mut self, approval: DrcApproval, approve: bool) {
+        if approve {
+            self.drc_approvals.retain(|old| old.finding != approval.finding);
+            self.drc_approvals.push(approval);
+        } else {
+            self.drc_approvals.retain(|old| old != &approval);
+        }
+    }
     /// Net class a net belongs to (falls back to the first class, "Default").
     pub fn class_of(&self, net: &str) -> Option<&NetClass> {
         self.net_classes.iter().find(|c| c.nets.iter().any(|n| n == net)).or_else(|| self.net_classes.first())

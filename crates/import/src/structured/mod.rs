@@ -3,7 +3,7 @@
 //! folders), schematics (`.kicad_sch`, with hierarchy), boards (`.kicad_pcb`) and
 //! projects (`.kicad_pro`).
 //!
-//! Coordinate conventions: symbol libraries are Y-up like the pCAD world
+//! Coordinate conventions: symbol libraries are Y-up like the PCBPlanner Studio world
 //! and are read as-is; footprints and schematics are Y-down and get Y negated.
 //! Source angles are counter-clockwise on screen, so negating Y keeps them
 //! unchanged in our Y-up world.

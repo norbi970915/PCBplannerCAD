@@ -1,3 +1,4 @@
+import {cachedRoutingDefaults,loadRoutingDefaults} from "../routingDefaults";
 // Interactive routing: the backend router computes each preview on mouse move;
 // clicks commit segments. "*" drops a via and switches copper layer, Space
 // opens the via layer picker; / flips the posture, Shift+R cycles walkaround → shove → ignore.
@@ -53,7 +54,8 @@ export function routeViaLayer(copper:readonly number[],from:number,preferred:num
 
 function trackWidth(env: ToolEnv, net: string, pair = false): number {
   const netClass=classOf(boardSettings(env),net);
-  const preferred=pair ? netClass?.diffPairWidth : netClass?.trackWidth;
+  const resolved=cachedRoutingDefaults(boardSettings(env),net,env.doc().activeLayer);
+  const preferred=resolved?(pair?resolved.pairWidth:resolved.width):(pair ? netClass?.diffPairWidth : netClass?.trackWidth);
   return env.placement().trackWidth ?? (preferred && preferred>0 ? preferred : netClass?.trackWidth) ?? Math.round(0.25 * NM_PER_MM);
 }
 
@@ -96,8 +98,31 @@ export function routingAnchor(env: ToolEnv, point: Point, hit: [number, string] 
   return point;
 }
 
+/** Actual copper width at a routing start, independent of rule-preferred widths. */
+export function routingStartWidth(env:ToolEnv,point:Point,hit:[number,string]|null,layer:number):number|null {
+ if(!hit)return null;
+ const item=env.doc().items.get(hit[0]);
+ const usable=(width:number)=>Number.isSafeInteger(width)&&width>0;
+ if((item?.kind==='track'||item?.kind==='arcTrack')&&item.layer===layer&&usable(item.width))return item.width;
+ if(!item||!['via','footprint','pad'].includes(item.kind))return null;
+ let reach=item.kind==='via'?item.diameter/2:item.kind==='pad'?Math.max(item.width,item.height)/2:0;
+ if(item.kind==='footprint'){
+  const geom=env.doc().footprints[item.footprint];
+  for(const pad of geom?.items??[]){if(pad.kind!=='pad'||item.padNets[pad.number]!==hit[1])continue;const pos=place(pad.pos,{pos:item.pos,rotation:item.rotation,mirror:item.side==='bottom'});if(Math.hypot(pos.x-point.x,pos.y-point.y)<2)reach=Math.max(reach,Math.max(pad.width,pad.height)/2);}
+ }
+ const widths=new Set<number>();
+ for(const track of env.doc().items.values()){
+  if(track.kind!=='track'||track.layer!==layer||track.net!==hit[1]||!usable(track.width))continue;
+  const dx=track.b.x-track.a.x,dy=track.b.y-track.a.y;
+  const u=Math.max(0,Math.min(1,((point.x-track.a.x)*dx+(point.y-track.a.y)*dy)/(dx*dx+dy*dy||1)));
+  if(Math.hypot(point.x-track.a.x-u*dx,point.y-track.a.y-u*dy)<=reach+track.width/2+1)widths.add(track.width);
+ }
+ return widths.size===1?[...widths][0]:null;
+}
+
 export function routeTool(pair = false): Tool {
   let s: Session | null = null;
+  let adoptedWidth:{previous:number|null;value:number}|null=null;
   let flip = false;
   let seq = 0;
   let inflight = false;
@@ -110,6 +135,8 @@ export function routeTool(pair = false): Tool {
   const history: { from:Point; negativeFrom?:Point; layer:number; items:unknown }[] = [];
   let lastPreview: { session: Session; items: unknown; footprints: unknown; epoch: number; key: string } | null = null;
 
+  let defaultsRequest:{board:BoardItem;session:Session;layer:number}|null=null;
+  let defaultsFailure:{board:BoardItem;session:Session;layer:number;message:string}|null=null;
   let directionAxis:number|null=null,directionOrigin="";
   const routeCursor=(env:ToolEnv,to:Point)=>{
     if(!s||useEditor.getState().placement.cornerStyle==="any")return to;
@@ -120,6 +147,14 @@ export function routeTool(pair = false): Tool {
 
   const requestPreview = (env: ToolEnv, to: Point) => {
     if (!s) return;
+    const board=boardSettings(env);
+    if(board&&!cachedRoutingDefaults(board,s.net,s.layer)){
+      const session=s;
+      if(defaultsFailure?.board===board&&defaultsFailure.session===session&&defaultsFailure.layer===session.layer){session.message=defaultsFailure.message;return;}
+      if(defaultsRequest?.board===board&&defaultsRequest.session===session&&defaultsRequest.layer===session.layer)return;
+      const request={board,session,layer:session.layer};defaultsRequest=request;session.preview=[];session.message="Loading routing rules…";
+      void loadRoutingDefaults(board,session.net,session.layer).then(()=>{if(s===session){session.message="";requestPreview(env,env.cursor());}}).catch(error=>{if(s===session){defaultsFailure={...request,message:String(error)};session.message=String(error);report(error);env.redraw();}}).finally(()=>{if(defaultsRequest===request)defaultsRequest=null;});return;
+    }
     to=routeCursor(env,to);
     const session = s;
     const req = {
@@ -281,7 +316,9 @@ export function routeTool(pair = false): Tool {
       .sort((a, b) => Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y));
 
   const finish = () => {
-    s = null;
+    if(adoptedWidth&&useEditor.getState().placement.trackWidth===adoptedWidth.value)useEditor.getState().setPlacement({trackWidth:adoptedWidth.previous});
+    adoptedWidth=null;
+    s = null;defaultsRequest=null;defaultsFailure=null;
     closeLayerPicker?.();closeLayerPicker=null;
     viaSession = null;
     history.length = 0;
@@ -300,7 +337,7 @@ export function routeTool(pair = false): Tool {
     id: pair ? "diffPair" : "route",
     hint: (env) =>
       s
-        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"}${s.net ? ` · ${otherEnds(s, s.from).length} other ends (cyan rings)` : ""} · width ${(trackWidth(env, s.net, pair) / NM_PER_MM).toFixed(2)} mm (W / Shift+W) · click to commit · Backspace removes last step · Space chooses via layer · V quick via · / flip corner · ${useEditor.getState().drcEnforce ? `Shift+R mode (${useEditor.getState().placement.routeMode})` : "design rules OFF: ignoring violators (Ctrl+Shift+D)"} · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
+        ? `Routing ${s.net || "(no net)"} on ${s.layer === L.bottomCopper ? "bottom" : s.layer === L.topCopper ? "top" : "inner"}${s.net ? ` · ${otherEnds(s, s.from).length} other ends (cyan rings)` : ""} · width ${(trackWidth(env, s.net, pair) / NM_PER_MM).toFixed(3)} mm (W / Shift+W) · click to commit · Backspace removes last step · Space chooses via layer · V quick via · / flip corner · ${useEditor.getState().drcEnforce ? `Shift+R mode (${useEditor.getState().placement.routeMode})` : "design rules OFF: ignoring violators (Ctrl+Shift+D)"} · Esc to select${s.message ? ` · ${s.reached ? "" : "Blocked: "}${s.message}` : ""}`
         : `Click a pad or track to start ${pair ? "a differential pair" : "routing"}`,
     reset: finish,
     down(env) {
@@ -342,6 +379,8 @@ export function routeTool(pair = false): Tool {
             const net = hit?.[1] ?? useEditor.getState().placement.net;
             if (pair && (!net || negativeOf(env,net)===net)) { toast.warning("Choose a configured differential pair or a net with paired naming before routing a pair."); return; }
             const from = routingAnchor(env, p, hit);
+            const inherited=routingStartWidth(env,from,hit,routeLayer);
+            if(inherited!==null){adoptedWidth={previous:env.placement().trackWidth,value:inherited};env.setPlacement({trackWidth:inherited});}
             s = { net, layer: routeLayer, from, preview: [], moved: [], reached: true, targets: netTargets(env, net), message: "", blockedAt: null };
             startAnchor = from;
             showNet(env, net);
@@ -505,7 +544,7 @@ function negativeOf(env: ToolEnv, net: string): string {
 }
 
 function diffGap(env: ToolEnv, net: string): number {
-  return classOf(boardSettings(env), net)?.diffPairGap || Math.round(0.2 * NM_PER_MM);
+  return cachedRoutingDefaults(boardSettings(env),net,env.doc().activeLayer)?.pairGap ?? (classOf(boardSettings(env), net)?.diffPairGap || Math.round(0.2 * NM_PER_MM));
 }
 
 // ---------- polygon-point tools (zones, keep-outs, board outline) ----------
@@ -583,7 +622,7 @@ export function polygonTool(id: "zone" | "keepout" | "outline"): Tool {
     id,
     hint: () =>
       pts.length
-        ? `Click to add corners of the ${label} · click the first corner, double-click or right-click to close · Shift: 45° · Backspace removes a corner`
+        ? `Click to add corners of the ${label} · click the first corner, double-click to close · right-drag pans · Shift: 45° · Backspace removes a corner`
         : `Click to start the ${label}`,
     reset() {
       pts = [];
@@ -651,7 +690,7 @@ export function footprintTool(): Tool {
   };
   return {
     id: "footprint",
-    hint: () => "Click to place the footprint · Space rotate · L flips to the other side · Esc to finish",
+    hint: () => "Click to place the footprint · R rotate · right-drag pan · L flips to the other side · Esc to finish",
     preview: (env) => {
       const it = build(env, env.cursor());
       return it ? [it] : [];
@@ -665,7 +704,7 @@ export function footprintTool(): Tool {
       });
     },
     key(env, key) {
-      if (key === " ") {
+      if (key.toLowerCase() === "r") {
         env.setPlacement({ rotation: (env.placement().rotation + 90) % 360 });
         return true;
       }

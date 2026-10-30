@@ -187,7 +187,11 @@ pub fn prepare(req: &Request) -> Res<Prepared> {
         "f3d"|"f3z"|"flbr"|"fsch"|"fbrd"=>return Err("This archive format is not supported directly. Export an XML electronics library (.lbr), schematic/board (.sch/.brd), or STEP model (.step/.stp) first.".into()),
         _=>return Err("Unsupported input. Choose a structured project/schematic/board, XML electronics design/library, symbol library, footprint folder or native .arlib. Attach STEP/VRML models after analyzing a library.".into())
     }
+    let mut source_notices=crate::notices::collect(path);
+    for model in &req.models { for notice in crate::notices::collect(Path::new(&model.path)) { if !source_notices.contains(&notice) { source_notices.push(notice); } } }
     let mut files = vec![];
+    if !source_notices.is_empty() { files.push((PathBuf::from("SOURCE-NOTICES.txt"), source_notices.join("\n\n").into_bytes())); }
+    report.info("Source licensing", "Imports do not grant redistribution rights. Review source licenses and embedded notices; adjacent notice files are retained when found.");
     let mut summary = Summary {
         name: project_name.clone(),
         kind: if library.is_some() {
@@ -210,6 +214,7 @@ pub fn prepare(req: &Request) -> Res<Prepared> {
     let mut project_file = None;
     let mut library_file = None;
     if let Some(mut lib) = library {
+        for notice in &source_notices { if !lib.notices.contains(notice) { lib.notices.push(notice.clone()); } }
         let mut linked = BTreeSet::new();
         for link in &req.models {
             if !linked.insert(link.footprint.clone()) {
@@ -302,7 +307,7 @@ pub fn prepare(req: &Request) -> Res<Prepared> {
         summary.symbols = lib.symbols.len();
         summary.footprints = lib.footprints.iter().map(|f| f.name.clone()).collect();
         summary.components = lib.components.len();
-        summary.models = files.len();
+        summary.models = files.iter().filter(|(path,_)| path.starts_with("models")).count();
         if lib.symbols.is_empty() && lib.footprints.is_empty() && lib.components.is_empty() {
             return Err("The file contains no supported library entries".into());
         }
@@ -411,7 +416,8 @@ pub fn prepare(req: &Request) -> Res<Prepared> {
             }
         }
         let library_paths = library_files(&libs, &files);
-        for (lib, rel) in libs.into_iter().zip(library_paths) {
+        for (mut lib, rel) in libs.into_iter().zip(library_paths) {
+            for notice in &source_notices { if !lib.notices.contains(notice) { lib.notices.push(notice.clone()); } }
             summary.symbols += lib.symbols.len();
             summary.components += lib.components.len();
             summary
@@ -501,6 +507,7 @@ mod tests {
         });
         fs::write(&source, io::library_to_string(&l)).unwrap();
         let original = fs::read(&source).unwrap();
+        fs::write(dir.join("LICENSE.txt"),"Original author; test redistribution license").unwrap();
         let model = dir.join("case.step");
         fs::write(&model, b"ISO-10303-21;\nEND-ISO-10303-21;").unwrap();
         let req = Request {
@@ -523,6 +530,8 @@ mod tests {
             "models/assets/CASE.step"
         );
         assert_eq!(fs::read(&source).unwrap(), original);
+        assert!(lib.notices.iter().any(|n|n.contains("Original author; test redistribution license")));
+        assert!(fs::read_to_string(dest.join("SOURCE-NOTICES.txt")).unwrap().contains("Original author; test redistribution license"));
         assert!(p.publish(&dest).is_err());
         let mut bad = req.clone();
         bad.models[0].footprint = "missing".into();

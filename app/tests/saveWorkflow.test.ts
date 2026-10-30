@@ -84,7 +84,7 @@ test('Save Copy cancellation, native failure and a reloaded source cannot report
  }
 });
 test('external-save conflict preserves frontend geometry, identity and dirty state',async()=>{
- await ipc(cmd=>{assert.equal(cmd,'doc_save');throw Error('File changed outside pCAD. Use File > Save Copy.');},async()=>{
+ await ipc(cmd=>{assert.equal(cmd,'doc_save');throw Error('File changed outside PCBPlanner Studio. Use File > Save Copy.');},async()=>{
   useEditor.getState().loadDoc(snapshot(info('board',{kind:'pcb',path:'A:/Design/Board.arpcb'})));
   const before=useEditor.getState().docs.board;assert.equal(await saveDoc('board'),false);assert.equal(useEditor.getState().docs.board,before);
   assert(useEditor.getState().messages.some(m=>m.text.includes('Save Copy')));assert(!useEditor.getState().messages.some(m=>m.text.startsWith('Saved ')));
@@ -92,7 +92,7 @@ test('external-save conflict preserves frontend geometry, identity and dirty sta
 });
 test('Save All conflict refreshes native state without false completion or automatic overwrite',async()=>{
  const document=info('board',{kind:'pcb',path:'A:/Design/Board.arpcb'});
- await ipc(cmd=>{if(cmd==='project_save_all')throw Error('File changed outside pCAD');if(cmd==='doc_list')return [document];if(cmd==='lib_list')return [];throw Error(cmd);},async()=>{
+ await ipc(cmd=>{if(cmd==='project_save_all')throw Error('File changed outside PCBPlanner Studio');if(cmd==='doc_list')return [document];if(cmd==='lib_list')return [];throw Error(cmd);},async()=>{
   useEditor.getState().loadDoc(snapshot(document));const before=useEditor.getState().docs.board.items;
   assert.equal(await saveAll(),false);assert(useEditor.getState().docs.board.info.dirty);assert.equal(useEditor.getState().docs.board.items,before);
   assert(!useEditor.getState().messages.some(m=>m.text==='Saved all documents.'));
@@ -101,7 +101,7 @@ test('Save All conflict refreshes native state without false completion or autom
 test('Save Copy for a library-entry document requests a native library copy',async()=>{
  const {saveCopy}=await import('../src/core/actions.ts');
  await ipc((cmd,args)=>{
-  if(cmd==='plugin:dialog|save'){assert.deepEqual((args?.options as {filters:unknown}).filters,[{name:'pCAD Library',extensions:['arlib']}]);return 'A:/Parts-copy.arlib';}
+  if(cmd==='plugin:dialog|save'){assert.deepEqual((args?.options as {filters:unknown}).filters,[{name:'PCBPlanner Studio Library',extensions:['arlib']}]);return 'A:/Parts-copy.arlib';}
   if(cmd==='doc_save_copy'){assert.deepEqual(args,{id:'symbol',path:'A:/Parts-copy.arlib'});return;}
   throw Error(cmd);
  },async()=>{

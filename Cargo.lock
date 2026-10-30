@@ -2232,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "pcbplannercad"
-version = "0.6.0"
+version = "0.6.6"
 dependencies = [
  "pcbplannercad-core",
  "pcbplannercad-import",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "pcbplannercad-core"
-version = "0.6.0"
+version = "0.6.6"
 dependencies = [
  "i_overlay",
  "rstar",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "pcbplannercad-import"
-version = "0.6.0"
+version = "0.6.6"
 dependencies = [
  "pcbplannercad-core",
  "roxmltree",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "pcbplannercad-output"
-version = "0.6.0"
+version = "0.6.6"
 dependencies = [
  "earcut",
  "pcbplannercad-core",

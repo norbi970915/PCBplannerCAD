@@ -1,4 +1,6 @@
 mod commands;
+mod identity;
+mod legal;
 mod workspace;
 mod local;
 mod recovery;
@@ -20,9 +22,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {app.manage(recovery::RecoveryState::new(app.path().app_local_data_dir()?.join("recovery")));docking::create_main(app)?;Ok(())})
+        .setup(|app| { let migration=identity::migrate(app.handle()); app.manage(identity::MigrationStatus(migration)); app.manage(recovery::RecoveryState::new(app.path().app_local_data_dir()?.join("recovery")));docking::create_main(app)?;Ok(())})
         .manage(AppState { workspace: Mutex::new(ws) })
         .invoke_handler(tauri::generate_handler![
+            legal::legal_info,
+            legal::open_legal_folder,
             docking::dock_close_window,
             docking::dock_focus_window,
             recovery::recovery_capture,
@@ -41,6 +45,7 @@ pub fn run() {
             docs::doc_cache_component,
             docs::doc_put_cache,
             libs::lib_list,
+            libs::lib_set_notices,
             libs::lib_get,
             libs::lib_new,
             libs::lib_open,
@@ -97,12 +102,16 @@ pub fn run() {
             imports::list_library_files,
             project::project_new_pcb,
             pcb::pcb_analysis,
+            pcb::pcb_routing_defaults,
+            pcb::pcb_validate_setup,
             pcb::pcb_drc,
+            pcb::pcb_drc_approval,
             pcb::pcb_drc_near,
             pcb::pcb_repour,
             pcb::pcb_route,
             pcb::pcb_route_pair,
             pcb::pcb_track_edit_plan,
+            pcb::pcb_drag_tracks,
             pcb::pcb_tune,
             pcb::pcb_tune_preview,
             pcb::pcb_length_constraint,
@@ -136,5 +145,5 @@ pub fn run() {
             outputs::resolve_model_path,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running pCAD");
+        .expect("error while running PCBPlanner Studio");
 }

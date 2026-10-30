@@ -323,6 +323,7 @@ pub fn lib_copy_components(state: State<AppState>, from: String, to: String, com
     let mut ws = lock(&state);
     let src = ws.lib(&from)?.lib.clone();
     let mut add = Library::default();
+    add.notices = src.notices.clone();
     for name in &components {
         let c = src.component(name).ok_or_else(|| format!("{name} not found"))?;
         if let Some(s) = src.symbol(&c.symbol) {
@@ -416,14 +417,14 @@ pub fn wizard_default_name(spec: wizard::FootprintSpec) -> Res<String> {
 }
 
 #[tauri::command]
-pub fn wizard_preview(spec: wizard::FootprintSpec) -> Res<Footprint> {
-    wizard::generate(&spec).map_err(|e| e.to_string())
+pub fn wizard_preview(spec: wizard::FootprintSpec, goals: Option<wizard::LandGoals>) -> Res<Footprint> {
+    wizard::generate_with_goals(&spec, goals.unwrap_or_default()).map_err(|e| e.to_string())
 }
 
 /// Generates a footprint into a library; returns the stored name.
 #[tauri::command]
-pub fn wizard_generate(state: State<AppState>, id: String, spec: wizard::FootprintSpec, name: Option<String>) -> Res<String> {
-    let mut fp = wizard::generate(&spec).map_err(|e| e.to_string())?;
+pub fn wizard_generate(state: State<AppState>, id: String, spec: wizard::FootprintSpec, name: Option<String>, goals: Option<wizard::LandGoals>) -> Res<String> {
+    let mut fp = wizard::generate_with_goals(&spec, goals.unwrap_or_default()).map_err(|e| e.to_string())?;
     let mut ws = lock(&state);
     let l = ws.lib_writable(&id)?;
     let base = name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| wizard::default_name(&spec));
@@ -452,4 +453,10 @@ pub fn ensure_builtin(ws: &mut Workspace) {
         BUILTIN_LIB.to_string(),
         OpenLib { revision:None, path: None, lib: pcbplannercad_core::libgen::starter::starter_library(), dirty: false, readonly: true },
     );
+}
+
+#[tauri::command]
+pub fn lib_set_notices(state: State<AppState>, id: String, notices: Vec<String>) -> Res<()> {
+    if notices.iter().map(|s|s.len()).sum::<usize>()>2_000_000{return Err("Library notices exceed the supported size".into())}
+    let mut ws=lock(&state);let lib=ws.lib_writable(&id)?;lib.lib.notices=notices;lib.dirty=true;Ok(())
 }

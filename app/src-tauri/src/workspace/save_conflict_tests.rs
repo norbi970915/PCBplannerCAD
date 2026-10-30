@@ -57,7 +57,7 @@ fn changed_document_is_preserved_with_dirty_and_undo_state_and_save_as_keeps_bot
     assert!(ws
         .save_doc_file(&id, &path)
         .unwrap_err()
-        .contains("outside pCAD"));
+        .contains("outside PCBPlanner Studio"));
     assert_eq!(std::fs::read(&path).unwrap(), b"new external contents");
     let d = ws.doc(&id).unwrap();
     assert!(d.session.is_dirty());
@@ -264,7 +264,7 @@ fn save_all_preflights_documents_libraries_and_project_before_saving_any_member(
             .iter()
             .map(|p| std::fs::read(p).unwrap())
             .collect();
-        assert!(ws.save_all_files().unwrap_err().contains("outside pCAD"));
+        assert!(ws.save_all_files().unwrap_err().contains("outside PCBPlanner Studio"));
         for (path, expected) in [&a, &b, &lib_path, &project_path].iter().zip(before) {
             assert_eq!(std::fs::read(path).unwrap(), expected);
         }

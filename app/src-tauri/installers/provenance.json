@@ -1,0 +1,13 @@
+{
+  "cliVersion": "2.12.4",
+  "upstreamTag": "tauri-cli-v2.12.4",
+  "upstream": {
+    "nsis": "d00089d3b1a2c4a30d7b6e098079100cb8f25e980f84d4515aca4597b95e967d",
+    "wix": "e371a01628a06730828f9bd24111feacb8bec53c250ccec4b46df756fe0a0198"
+  },
+  "files": {
+    "setup.nsi": "8afb607814048ad6b72442f15ce298e246e41c1bdd8cc1247a88bcf7ad79d342",
+    "setup.wxs": "2693f30042a432f8a0f81bf964cecd6922de9b1992fd79fdc9a0c855eaeba7e9",
+    "shortcut-icons.nsh": "4432551427c8f5e649f72f336f279e683eb7efcee959a0f1945a278abedacdfb"
+  }
+}

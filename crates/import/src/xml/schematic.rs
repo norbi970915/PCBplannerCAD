@@ -1,4 +1,4 @@
-//! XML `.sch` → one pCAD schematic document per `<sheet>`.
+//! XML `.sch` → one PCBPlanner Studio schematic document per `<sheet>`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -59,7 +59,7 @@ fn pin_key(n: Node<'_, '_>) -> PinKey {
 }
 
 /// Moves `p` onto the nearest point of `wires` (labels in XML may sit
-/// beside their segment; pCAD labels connect at their position).
+/// beside their segment; PCBPlanner Studio labels connect at their position).
 fn snap_to_wires(p: Point, wires: &[(Point, Point)]) -> (Point, bool) {
     if wires.is_empty() || wires.iter().any(|(a, b)| on_segment(p, *a, *b)) {
         return (p, false);

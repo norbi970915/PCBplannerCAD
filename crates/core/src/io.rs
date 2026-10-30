@@ -19,8 +19,8 @@ use crate::error::CoreError;
 use crate::library::{CachedPart, Library};
 use crate::project::Project;
 
-/// Maximum supported version. Version 3 requires layer-specific copper lands.
-pub const VERSION: u32 = 3;
+/// Maximum supported version. Version 5 preserves board DRC approvals.
+pub const VERSION: u32 = 5;
 
 pub const PCB_FORMAT: &str = "pcbplannercad.pcb";
 pub const SCH_FORMAT: &str = "pcbplannercad.sch";
@@ -82,7 +82,7 @@ pub fn document_to_string(doc: &Document) -> Result<String, CoreError> {
     let format = format_for(doc.kind()).ok_or_else(|| CoreError::UnsupportedFile("library entries are saved with their library".into()))?;
     let items = doc.items().map(|(id, item)| IdItem { id, item: item.clone() }).collect();
     // Older executables would silently discard these fields when saving. Make them refuse the document instead.
-    let version = if doc.footprint_cache().values().any(|f|f.has_layer_shapes()) || doc.items().any(|(_,item)|matches!(item,Item::Pad(p)if !p.copper_shapes.is_empty())){3} else if !doc.bus_aliases().is_empty() || doc.items().any(|(_,item)| matches!(item,Item::Footprint(f) if f.board_only)) {2} else {1};
+    let version = if doc.items().any(|(_,item)|matches!(item,Item::Board(board)if !board.drc_approvals.is_empty())){5} else if doc.footprint_cache().values().any(|f|f.has_layer_shapes()) || doc.items().any(|(_,item)|matches!(item,Item::Pad(p)if !p.copper_shapes.is_empty())){3} else if !doc.bus_aliases().is_empty() || doc.items().any(|(_,item)| matches!(item,Item::Footprint(f) if f.board_only)) {2} else {1};
     Ok(write_at_version(format, DocBody { items, bus_aliases: doc.bus_aliases().clone(), parts: doc.cache().clone(), footprints: doc.footprint_cache().clone() }, version))
 }
 
@@ -112,7 +112,7 @@ pub fn kind_for_extension(ext: &str) -> Option<DocKind> {
 }
 
 pub fn library_to_string(lib: &Library) -> String {
-    write_at_version(LIB_FORMAT, lib, if lib.footprints.iter().any(|f|f.has_layer_shapes()){3}else{1})
+    write_at_version(LIB_FORMAT, lib, if !lib.notices.is_empty(){4}else if lib.footprints.iter().any(|f|f.has_layer_shapes()){3}else{1})
 }
 
 pub fn library_from_str(s: &str) -> Result<Library, CoreError> {
@@ -210,5 +210,44 @@ mod tests {
         assert_eq!(project_to_string(&project_from_str(&legacy).unwrap()), current);
         // Accepting the old brand must not let files cross document kinds.
         assert!(document_from_str(DocKind::Schematic, r#"{"format":"allroute.pcb","version":1,"items":[]}"#).is_err());
+    }
+    #[test] fn library_notices_require_v4_round_trip_and_survive_merge() {
+        let mut lib=Library { name:"Parts".into(), notices:vec!["Original author; full license text".into()], ..Default::default() };
+        let text=library_to_string(&lib);assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"],4);assert_eq!(library_from_str(&text).unwrap(),lib);
+        lib.merge(Library {notices:vec!["Original author; full license text".into(),"Second source notice".into()],..Default::default()});assert_eq!(lib.notices.len(),2);
+        let legacy=library_from_str(r#"{"format":"pcbplannercad.lib","version":1,"name":"Legacy"}"#).unwrap();assert!(legacy.notices.is_empty());assert_eq!(serde_json::from_str::<serde_json::Value>(&library_to_string(&legacy)).unwrap()["version"],1);
+    }
+
+}
+
+#[cfg(test)]
+mod drc_approval_io_tests {
+    use super::*;
+    use crate::{Command,Session};
+    use crate::pcb::board::{BoardSettings,DrcApproval,DrcApprovalFinding};
+    use crate::units::Point;
+    fn approval(code:&str)->DrcApproval {
+        DrcApproval {finding:DrcApprovalFinding {severity:"error".into(),code:code.into(),rule:"Clearance".into(),message:"Review fixture".into(),items:vec![],pos:Point::default(),layer:None},context:"Exact reviewed context".into()}
+    }
+    #[test]
+    fn drc_approvals_round_trip_and_require_format_five_then_undo_cleanly() {
+        let mut session=Session::new(DocKind::Pcb);
+        let id=session.execute(Command::Add {items:vec![Item::Board(BoardSettings::default())]}).unwrap().upserted[0].id;
+        let original=document_to_string(session.document()).unwrap();assert_eq!(serde_json::from_str::<serde_json::Value>(&original).unwrap()["version"],1);
+        let mut board=BoardSettings::default();board.set_drc_approval(approval("clearance"),true);
+        session.execute(Command::Replace {id,item:Item::Board(board.clone())}).unwrap();
+        let saved=document_to_string(session.document()).unwrap();assert_eq!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["version"],5);
+        let reopened=document_from_str(DocKind::Pcb,&saved).unwrap();assert_eq!(reopened.get(id),Some(&Item::Board(board)));
+        session.undo().unwrap();assert_eq!(document_to_string(session.document()).unwrap(),original);
+        session.redo().unwrap();assert_eq!(document_to_string(session.document()).unwrap(),saved);
+    }
+    #[test]
+    fn merging_approvals_preserves_other_reviews_rules_and_newer_context() {
+        let mut board=BoardSettings::default();board.origin=Point::new(14,25);let rules=board.rules.clone();
+        let (first,second)=(approval("clearance"),approval("silk-over-pad"));
+        board.set_drc_approval(first.clone(),true);board.set_drc_approval(second.clone(),true);board.set_drc_approval(first.clone(),true);assert_eq!(board.drc_approvals.len(),2);
+        let mut newer=first.clone();newer.context="New reviewed context".into();board.set_drc_approval(newer.clone(),true);
+        board.set_drc_approval(first,false);assert!(board.drc_approvals.contains(&newer));
+        board.set_drc_approval(second,false);assert_eq!(board.drc_approvals,vec![newer]);assert_eq!(board.rules,rules);assert_eq!(board.origin,Point::new(14,25));
     }
 }

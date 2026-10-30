@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type WizardFamily, type WizardParam, type WizardSpec } from "../core/api";
+import { api, type WizardFamily, type WizardParam, type WizardSpec, type WizardGoals } from "../core/api";
 import { report } from "../core/actions";
 import type { Footprint } from "../core/types";
 import { PreviewCanvas } from "../editor/PreviewCanvas";
@@ -9,8 +9,11 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Dialog, useModal } from "../shell/modal";
 
-/** IPC-7351-style footprint generator with live preview. */
+/** Editable footprint geometry with explicit user-selected land goals. */
 export function FootprintWizard({ libId, onDone }: { libId: string; onDone: (name: string) => void }) {
+  const [pending, setPending] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [goals, setGoals] = useState<WizardGoals>({ toe: 0.10, heel: 0, side: 0 });
   const [families, setFamilies] = useState<WizardFamily[]>([]);
   const [familyId, setFamilyId] = useState("chip");
   const [spec, setSpec] = useState<WizardSpec | null>(null);
@@ -35,21 +38,25 @@ export function FootprintWizard({ libId, onDone }: { libId: string; onDone: (nam
 
   useEffect(() => {
     if (!spec) return;
+    let cancelled = false;
+    setPending(true); setPreview(null);
     const t = window.setTimeout(() => {
       api
-        .wizardPreview(spec)
+        .wizardPreview(spec, goals)
         .then((fp) => {
-          setPreview(fp);
+          if (cancelled) return;
+          setPending(false); setPreview(fp);
           setError(null);
         })
         .catch((e) => {
-          setPreview(null);
+          if (cancelled) return;
+          setPending(false); setPreview(null);
           setError(String(e));
         });
-      if (!nameEdited) api.wizardDefaultName(spec).then(setName).catch(() => {});
+      if (!nameEdited) api.wizardDefaultName(spec).then(value => { if (!cancelled) setName(value); }).catch(() => {});
     }, 120);
-    return () => window.clearTimeout(t);
-  }, [spec, nameEdited]);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [spec, nameEdited, goals]);
 
   const pickFamily = (id: string) => {
     setFamilyId(id);
@@ -61,14 +68,15 @@ export function FootprintWizard({ libId, onDone }: { libId: string; onDone: (nam
   const setParam = (key: string, value: unknown) => spec && setSpec({ ...spec, [key]: value });
 
   const generate = async () => {
-    if (!spec) return;
+    if (!spec || pending || busy || !preview) return;
+    setBusy(true);
     try {
-      const n = await api.wizardGenerate(libId, spec, name.trim() || null);
+      const n = await api.wizardGenerate(libId, spec, name.trim() || null, goals);
       useModal.getState().close();
       onDone(n);
     } catch (e) {
       report(e);
-    }
+    } finally { setBusy(false); }
   };
 
   const pads = preview?.items.filter((i) => i.kind === "pad").length ?? 0;
@@ -76,14 +84,15 @@ export function FootprintWizard({ libId, onDone }: { libId: string; onDone: (nam
   return (
     <Dialog
       title="Footprint wizard"
-      description="IPC-7351B nominal land patterns with silkscreen, courtyard and assembly outlines."
+      description="Editable footprint estimates. Verify the component drawing and fabrication process; no standards compliance is claimed."
       wide
+      busy={busy}
       footer={
         <>
-          <Button variant="outline" onClick={() => useModal.getState().close()}>
+          <Button variant="outline" disabled={busy} onClick={() => useModal.getState().close()}>
             Cancel
           </Button>
-          <Button disabled={!preview} onClick={() => void generate()}>
+          <Button disabled={!preview || pending || busy} onClick={() => void generate()}>
             Add to Library
           </Button>
         </>
@@ -103,6 +112,7 @@ export function FootprintWizard({ libId, onDone }: { libId: string; onDone: (nam
           </label>
           {family && <p className="pb-1 text-[11px] text-muted-foreground">{family.description}</p>}
           {family?.params.map((p) => <ParamInput key={`${familyId}-${p.key}`} p={p} value={spec?.[p.key]} onChange={(v) => setParam(p.key, v)} />)}
+          <fieldset className="my-2 grid gap-1 rounded border border-line p-2"><legend className="px-1 text-xs">Land extension goals (mm)</legend><p className="text-[11px] text-muted-foreground">Uniform PCBPlanner Studio starting choices, not a standards table. Some fixed package templates use explicit geometry instead.</p>{(["toe", "heel", "side"] as const).map(key => <label key={key} className="grid grid-cols-[1fr_100px] items-center gap-2 text-xs"><span>{key[0].toUpperCase() + key.slice(1)}</span><Input aria-label={key + " extension (mm)"} type="number" min={key === "toe" ? 0 : -0.5} max={2} step="0.05" value={Number.isFinite(goals[key]) ? goals[key] : ""} onChange={event => setGoals(previous => ({ ...previous, [key]: event.currentTarget.valueAsNumber }))} /></label>)}</fieldset>
           <label className="grid grid-cols-[140px_minmax(0,1fr)] items-center gap-2 py-0.5">
             <span>Name</span>
             <Input

@@ -25,6 +25,7 @@ import { promptFields, useModal } from "../shell/modal";
 import { ComponentForm } from "./ComponentForm";
 import { FootprintWizard } from "./FootprintWizard";
 import { SymbolWizard } from "./SymbolWizard";
+import { LibraryNotices } from "./LibraryNotices";
 
 type Tab = "component" | "symbol" | "footprint";
 const LIST_LIMIT = 500;
@@ -148,6 +149,7 @@ export function LibraryView({ libId }: { libId: string }) {
           <span className="truncate font-mono text-[11px] text-faint">{info.readonly ? "built-in" : (info.path ?? "not saved yet")}</span>
         </div>
         <div className="flex shrink-0 gap-1.5">
+          <Button variant="outline" onClick={() => useModal.getState().show(<LibraryNotices lib={lib} id={libId} readonly={readonly} changed={changed} />)}>Notices…</Button>
           {!readonly && (
             <Button variant="outline" onClick={() => void saveLibrary(libId)}>
               <Save /> Save

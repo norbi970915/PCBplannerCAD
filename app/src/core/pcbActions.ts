@@ -1,3 +1,4 @@
+import {approvalOnlyChange,reviewDrc} from "../pcb/drcApprovals";
 import {linkedTargets,designator} from "./crossProbe";
 import { toast } from "sonner";
 import { api } from "./api";
@@ -46,20 +47,24 @@ function sameDrcBoard(docId:string,token:NonNullable<ReturnType<typeof beginDrc>
   const doc=st().docs[docId];return !!doc&&doc.items===token.items&&doc.footprints===token.footprints&&doc.epoch===token.epoch;
 }
 export async function runDrc(docId = st().activeDocId) {
-  if (!docId || manualDrc.has(docId)) return;
+  if (!docId || manualDrc.has(docId) || st().docs[docId]?.info.kind !== "pcb") return;
+  st().setActiveDoc(docId);
+  st().patchDoc(docId,{inspectorTab:"drc",drcRunId:(st().docs[docId].drcRunId??0)+1});
+  bus.emit("showPanel",{id:"properties",docId});
   const token=beginDrc(docId);if(!token)return;
   manualDrc.add(docId);let failed=false;
   try {
     const r = await api.pcbDrc(docId);
     if(drcVersions.get(docId)!==token.version)return;
     if(!sameDrcBoard(docId,token)) { if(st().onlineDrc)onlineJob(docId).full=true;st().patchDoc(docId,{drcStatus:'stale'});st().log('info','The board changed during DRC. Run the check again for current results.');return; }
-    st().patchDoc(docId, { drc:r.violations, drcStatus:'current', drcCheckedAt:Date.now(), drcRuleErrors:r.ruleErrors, drcError:null });
+    st().patchDoc(docId, { drc:r.violations, drcScope:'full', drcStatus:'current', drcCheckedAt:Date.now(), drcRuleErrors:r.ruleErrors, drcError:null });
     st().clearMessages("drc");
     for (const e of r.ruleErrors) st().log("warning", 'Rule: '+e, { source:"drc" });
-    for (const v of r.violations) st().log(v.severity, v.message, { source:"drc", target:{ docId,items:v.items,pos:v.pos } });
-    const errors=r.violations.filter(v=>v.severity==='error').length;
-    st().log(errors?'error':'info', 'DRC: '+errors+' errors, '+(r.violations.length-errors)+' warnings · '+r.stats.unrouted+' of '+r.stats.connections+' connections unrouted.', {source:'drc'});
-    bus.emit('showPanel',{id:'messages'});
+    const reviewed=reviewDrc(st().docs[docId]);
+    for (const v of reviewed.open) st().log(v.severity, v.message, { source:"drc", target:{ docId,items:v.items,pos:v.pos } });
+    const errors=reviewed.open.filter(v=>v.severity==='error').length;
+    st().log(errors?'error':'info', 'DRC: '+errors+' errors, '+(reviewed.open.length-errors)+' warnings · '+reviewed.current.size+' approved · '+r.stats.unrouted+' of '+r.stats.connections+' connections unrouted.', {source:'drc'});
+    // The document-specific DRC inspector remains selected; messages retain the log.
   } catch(e) {
     failed=true;
     if(st().onlineDrc)onlineJob(docId).full=true;
@@ -232,7 +237,7 @@ async function runOnline(docId: string) {
       for(const id of touched.drop)j.touched.drop.add(id);
       return;
     }
-    st().patchDoc(docId,{drc:violations,drcStatus:'current',drcCheckedAt:Date.now(),drcRuleErrors:ruleErrors,drcError:null});
+    st().patchDoc(docId,{drc:violations,drcScope:'online',drcStatus:'current',drcCheckedAt:Date.now(),drcRuleErrors:ruleErrors,drcError:null});
   }catch(e){
     failed=true;j.full=true;
     if(st().onlineDrc&&drcVersions.get(docId)===token.version)st().patchDoc(docId,{drcStatus:'error',drcError:String(e)});
@@ -268,6 +273,7 @@ export function installOnlineDrc(): () => void {
       if(d.info.kind!=='pcb')continue;
       const old=prev.docs[id];
       if(old?.items===d.items&&old?.epoch===d.epoch&&old?.footprints===d.footprints)continue;
+      if(old&&old.epoch===d.epoch&&old.footprints===d.footprints&&approvalOnlyChange(old.items,d.items))continue;
       const j=onlineJob(id);
       let rulesChanged=false;
       if(old){for(const[key,item]of d.items)if(item.kind==='board'&&old.items.get(key)!==item){rulesChanged=true;break;}

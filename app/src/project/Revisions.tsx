@@ -49,7 +49,7 @@ export function Revisions(){
   };
   const exportChanges=async()=>{
     if(!shown)return;const text=revisionChangesText(shown),token=begin();if(!token)return;
-    try{const path=await pickExport({defaultPath:'pCAD-changelog.txt',filters:[{name:'Text changelog',extensions:['txt']}]});if(!valid(token)||!path)return;
+    try{const path=await pickExport({defaultPath:'PCBPlanner Studio-changelog.txt',filters:[{name:'Text changelog',extensions:['txt']}]});if(!valid(token)||!path)return;
       await api.writeFileBytes(path,new TextEncoder().encode(text));if(valid(token))setExported(path);
     }catch(e){if(valid(token))setError(String(e));}finally{finish(token);}
   };

@@ -1,0 +1,19 @@
+{
+  "notices": [
+    {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "source": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/master/LICENSE",
+      "publishedGitHead": "b3b1287aad81def2e2ae707274b74531b61ddbaf",
+      "publishedRevisionAvailable": false,
+      "review": "Published package declares MIT and names Anton Korzunov; preserved full upstream notice naming the same author. Exact published git revision was unavailable.",
+      "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84"
+    },
+    {
+      "name": "shadcn/ui",
+      "source": "https://github.com/shadcn-ui/ui/blob/main/LICENSE.md",
+      "copyright": "2023 shadcn",
+      "sha256": "a14c2d6fb5ba9925cba04633226a3b93e6c5566ca6b550dbfaead7ab3fa93b24"
+    }
+  ]
+}

@@ -9,7 +9,6 @@ import { cursorPoint } from "../../core/view";
 import { useEditor, violatorModeOf } from "../../core/store";
 import type { IdItem, Item, ItemId, ItemOf, Point, PcbDragPlan } from "../../core/types";
 import { connectionPoints } from "../draw";
-import { applyTrackDrag, attachedIds, attachedTracks, planTrackDrag, stretchAttached, trackDragIds, type Attached, attachedViaArcs, type ViaArcAttachment, type TrackDragPlan } from "../trackDrag";
 import { rotatePoint } from "../shapes";
 import { constrain45, deleteVertex, editableRing, insertVertex, isValidRing, moveEdge, moveVertex, nearestOnRing, vertexAt, withRing } from "../polyedit";
 import { commitRing, HANDLE_PX, ringHandles } from "./polygon";
@@ -41,7 +40,7 @@ function combineSelection(current: ReadonlySet<ItemId>, ids: Iterable<ItemId>, m
 type State =
   | { kind: "idle" }
   | { kind: "box"; sx: number; sy: number; mode: SelectionMode; shown: boolean }
-  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; placing?:boolean; angle?: number; flipped?: boolean; tracks?: TrackDragPlan | null; copper?: PcbDragPlan; copperKey?: string; copperError?: string; trackItems?:unknown; trackFootprints?:unknown; trackEpoch?:number; attached?: Attached[]; arcs?: ViaArcAttachment[] }
+  | { kind: "drag"; sx: number; sy: number; origin: Point; ids: ItemId[]; delta: Point; moved: boolean; attach: Attach | null; floating?: boolean; placing?:boolean; angle?: number; flipped?: boolean; tracks?: boolean | null; copper?: PcbDragPlan; partPending?: {key:string;promise:Promise<PcbDragPlan>}; copperKey?: string; acceptedKey?:string; copperError?: string; trackItems?:unknown; trackFootprints?:unknown; trackEpoch?:number; }
   /** Dragging one outline vertex (also a freshly inserted one). */
   | { kind: "vertex"; id: ItemId; item: Item; ring: Point[]; index: number; ring2: Point[]; sx: number; sy: number; moved: boolean }
   /** Dragging an outline edge parallel to itself. */
@@ -106,22 +105,50 @@ export function selectTool(): Tool {
   let s: State = { kind: "idle" };
   let excluded: ReadonlySet<ItemId> = new Set();
   let generation = 0;
+  const blockedToast="connected-move-"+Math.random().toString(36).slice(2);
   let ignoreRelease = false;
   type Drag = Extract<State,{kind:"drag"}>;
   let planningTrack=false;let queuedTrack:(()=>void)|null=null;
-  const trackKey=(drag:Drag)=>[drag.delta.x,drag.delta.y,drag.angle??0,drag.flipped??false,violatorModeOf(useEditor.getState())].join("/");
+  const trackKey=(drag:Drag)=>[drag.delta.x,drag.delta.y,drag.angle??0,drag.flipped??false,violatorModeOf(useEditor.getState()),useEditor.getState().placement.cornerStyle].join("/");
+  const trackSettings=(d:Drag)=>[d.angle??0,d.flipped??false,violatorModeOf(useEditor.getState()),useEditor.getState().placement.cornerStyle].join('/');
+  const partSettings=(d:Drag)=>[trackSettings(d),useEditor.getState().placement.moveMode].join('/');
+  const partKey=(drag:Drag)=>{
+    const p=useEditor.getState().placement;
+    return ['parts',drag.delta.x,drag.delta.y,drag.angle??0,drag.flipped??false,p.moveMode,violatorModeOf(useEditor.getState()),p.cornerStyle].join('/');
+  };
+  const requestParts=(env:ToolEnv,drag:Drag)=>{
+    const doc=env.doc(),placement=useEditor.getState().placement;
+    if(doc.info.kind!=='pcb'||placement.moveMode==='disconnect'||!drag.ids.some(id=>['footprint','via'].includes(doc.items.get(id)?.kind??'')))return;
+    if(drag.trackItems!==doc.items||drag.trackFootprints!==doc.footprints||drag.trackEpoch!==doc.epoch){drag.copperError='Board changed during the move; cancel and start again.';return;}
+    const key=partKey(drag);if(drag.copperKey===key)return;
+    if(planningTrack){queuedTrack=()=>{if(s===drag)requestParts(env,drag);};return;}
+    planningTrack=true;drag.copperKey=key;drag.copperError=undefined;
+    if(!drag.copper)excluded=new Set(drag.ids);env.redraw(true);
+    const items=doc.items,footprints=doc.footprints,epoch=doc.epoch,mode=violatorModeOf(useEditor.getState());
+    const settings=partSettings(drag);
+    const valid=()=>s===drag&&env.doc().items===items&&env.doc().footprints===footprints&&env.doc().epoch===epoch&&partSettings(drag)===settings;
+    const current=()=>valid()&&partKey(drag)===key;
+    const previewRequest=api.pcbDragFootprints(env.docId,{ids:drag.ids,delta:drag.delta,angle:drag.angle??0,flipped:drag.flipped??false,center:drag.origin,mode:placement.moveMode,routeMode:mode,corner:placement.cornerStyle});
+    drag.partPending={key,promise:previewRequest};
+    void previewRequest.then(result=>{if(!valid())return;const rejection=moveRejection(result,mode);if(rejection){if(current())drag.copperError=rejection;}else{drag.copper=result;drag.acceptedKey=key;excluded=new Set([...drag.ids,...result.delete,...result.replace.map(r=>r.id)]);}env.redraw(true);})
+      .catch(error=>{if(current()){drag.partPending=undefined;drag.copperError=String(error);env.redraw(true);}})
+      .finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
+  };
   const requestTrack=(env:ToolEnv,drag:Drag)=>{
-    if(drag.angle||drag.flipped)return;const plan=trackPlan(env,drag);if(!plan)return;
+    const plan=trackPlan(env,drag);if(!plan){requestParts(env,drag);return;}if(drag.angle||drag.flipped)return;
     const key=trackKey(drag);if(drag.trackItems!==env.doc().items||drag.trackFootprints!==env.doc().footprints||drag.trackEpoch!==env.doc().epoch){drag.copperError="Board changed during track drag; cancel and start again.";return;}if(drag.copperKey===key)return;
     if(planningTrack){queuedTrack=()=>{if(s===drag)requestTrack(env,drag);};return;}
-    planningTrack=true;drag.copperKey=key;drag.copper=undefined;drag.copperError=undefined;excluded=new Set(trackDragIds(plan));env.redraw(true);
+    planningTrack=true;drag.copperKey=key;drag.copperError=undefined;if(!drag.copper)excluded=new Set();env.redraw(true);
     const doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch;
-    const current=()=>s===drag&&env.doc().items===items&&env.doc().footprints===footprints&&env.doc().epoch===epoch&&trackKey(drag)===key;
-    const geometry=applyTrackDrag(plan,drag.delta);
-    void api.pcbTrackEditPlan(env.docId,geometry.replace,geometry.add,violatorModeOf(useEditor.getState())).then(result=>{
-      if(!current())return;drag.copper=result;
-      excluded=new Set([...trackDragIds(plan),...result.delete,...result.replace.map(r=>r.id)]);env.redraw(true);
-    }).catch(error=>{if(current()){drag.copperError=String(error);excluded=new Set(trackDragIds(plan));useEditor.getState().setHint(String(error));env.redraw(true);}}).finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
+    const settings=trackSettings(drag);
+    const valid=()=>s===drag&&env.doc().items===items&&env.doc().footprints===footprints&&env.doc().epoch===epoch&&trackSettings(drag)===settings;
+    const current=()=>valid()&&trackKey(drag)===key;
+    const previewRequest=api.pcbDragTracks(env.docId,trackRequest(env,drag));
+    drag.partPending={key,promise:previewRequest};
+    void previewRequest.then(result=>{
+      if(!valid())return;drag.copper=result;drag.acceptedKey=key;
+      excluded=new Set([...result.delete,...result.replace.map(r=>r.id)]);env.redraw(true);
+    }).catch(error=>{if(current()){drag.partPending=undefined;drag.copperError=String(error);useEditor.getState().setHint(String(error));env.redraw(true);}}).finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
   };
 
 
@@ -133,33 +160,18 @@ export function selectTool(): Tool {
       s.kind === "drag" && s.moved && env.doc().info.kind === "pcb"
         ? `Moving${s.angle ? ` · rotated ${s.angle}°` : ""}${s.flipped ? " · flipped to the other side" : ""}${s.ids.some((id) => ["footprint", "via"].includes(env.doc().items.get(id)?.kind ?? ""))
             ? ` · ${MOVE_MODE_LABEL[useEditor.getState().placement.moveMode]}${useEditor.getState().placement.moveMode === "preserveAngles" ? `, ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]}${useEditor.getState().drcEnforce ? "" : " (design rules off)"}` : ""} (Tab / Shift+Tab)`
-            : s.ids.every(id=>env.doc().items.get(id)?.kind==="track") ? ` · slide tracks · ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]} (Shift+Tab)` : ""} · R or right-click rotates 90° · middle-click flips components · release / click to place · Esc cancels`
+            : s.ids.every(id=>env.doc().items.get(id)?.kind==="track") ? ` · slide tracks · ${VIOLATOR_LABEL[violatorModeOf(useEditor.getState())]} (Shift+Tab)` : ""}${s.copperError?' · '+s.copperError:s.placing?' · placing':s.partPending&&s.acceptedKey!==s.partPending.key?' · checking route':''} · R rotates 90° · F flips components · right-drag pans · release / click to place · Esc cancels`
         : editedPolygon(env)
         ? "Polygon: drag a corner · drag a mid-point to add a corner · drag an edge to move it · Ctrl+click or Backspace removes a corner · Shift: 45° · E R reshapes"
         : s.kind === "drag" && s.moved && env.doc().info.kind === "schematic"
-        ? "Moving · Space / R rotates · X mirrors · release / click to place · Esc cancels"
+        ? "Moving · R rotates · X mirrors · release / click to place · Esc cancels"
         : "Click to select · Ctrl+click adds/removes · Drag empty space to box-select (→ inside, ← touching)" +
           (env.doc().info.kind === "pcb" ? " · M move · R rotate · X route" :
-            env.doc().info.kind === "footprint" ? " · M move · R rotate · X mirror" : " · Drag selection to move · Space rotates · X mirrors") +
+            env.doc().info.kind === "footprint" ? " · M move · R rotate · X mirror" : " · Drag selection to move · R rotates · X mirrors") +
           " · Esc cancel" +
           (env.doc().info.kind === "pcb" && filterActive(useSelectFilter.getState()) ? " · Selection filter active" : "") +
           (env.doc().info.kind === "pcb" ? (env.doc().marked.size ? " · Net highlighted (Esc clears)" : " · Alt+click or ` highlights a net · I selects its copper") : ""),
-    auxPress(env, button, shift) {
-      if(s.kind==="drag"&&s.placing)return true;
-      // While moving on a board: right click rotates 90° (Shift: −90°) like R; middle click flips
-      // components to the other side like F. Both are committed with the move; Esc discards them.
-      if (s.kind !== "drag" || env.doc().info.kind !== "pcb") return false;
-      if (button === 2) {
-        s.angle = ((s.angle ?? 0) + (shift ? -90 : 90) + 360) % 360;
-      } else {
-        const items = env.doc().items;
-        if (!s.ids.length || !s.ids.every((id) => items.get(id)?.kind === "footprint")) return false;
-        s.flipped = !s.flipped;
-      }
-      s.moved = true;
-      env.redraw();
-      return true;
-    },
+    editing: () => s.kind !== "idle",
     reset() {
       generation++;
       s = { kind: "idle" };
@@ -266,7 +278,8 @@ export function selectTool(): Tool {
         if (s.moved && (!wasMoved || !s.attach)) {
           s.attach = attachedTo(env, s.ids);
           const plan = trackPlan(env, s);
-          excluded = new Set([...s.ids, ...s.attach.follow, ...s.attach.stretch.map((r) => r.id), ...(plan ? trackDragIds(plan) : []), ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
+          excluded = new Set([...s.ids, ...s.attach.follow, ...s.attach.stretch.map((r) => r.id)]);
+          if(env.doc().info.kind==='pcb'&&(plan||useEditor.getState().placement.moveMode!=='disconnect'&&s.ids.some(id=>['footprint','via'].includes(env.doc().items.get(id)?.kind??''))))excluded=new Set(s.copper?[...s.copper.delete,...s.copper.replace.map(r=>r.id)]:plan?[]:s.ids);
           env.redraw(true);
         }
       }
@@ -317,8 +330,8 @@ export function selectTool(): Tool {
         if (!moved) return finish();
         const { x: dx, y: dy } = done.delta;
         const plan = !done.angle && !done.flipped ? trackPlan(env, done) : null;
-        const attached = partTracks(env, done);
-        if (attached.length || (env.doc().info.kind === "pcb" && done.ids.some(id => ["footprint","via"].includes(env.doc().items.get(id)?.kind??"")))) {
+        if (env.doc().info.kind === "pcb" && done.ids.some(id => ["footprint","via"].includes(env.doc().items.get(id)?.kind??""))) {
+          if(done.trackItems!==undefined&&(done.trackItems!==env.doc().items||done.trackFootprints!==env.doc().footprints||done.trackEpoch!==env.doc().epoch)){useEditor.getState().setHint('Board changed during the move; cancel and start again.');finish();return;}
           s={...done,placing:true};
           // Keep the proposed placement visible while native planning completes.
           const pl = useEditor.getState().placement;
@@ -328,14 +341,15 @@ export function selectTool(): Tool {
           const originalFootprints = env.doc().footprints, originalEpoch = env.doc().epoch;
           const token = generation;
           let retrying = false;
-          const retry = () => {
+          const retry = (message?:string) => {
             if (token !== generation || env.doc()?.items !== originalItems || env.doc()?.footprints !== originalFootprints || env.doc()?.epoch !== originalEpoch) return;
-            s = { ...done, floating: true, placing:false, attached: undefined, arcs: undefined, tracks: undefined };
+            s = { ...done, floating: true, placing:false, copper:undefined, copperKey:undefined, copperError:message, partPending:undefined, tracks: undefined };
             retrying = true;
-            excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a => a.whole).map(a => a.id)]);
+            excluded = new Set(s.ids);
             env.redraw(true);
           };
-          void api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode, corner: pl.cornerStyle })
+          const reviewed=done.copper&&done.acceptedKey===partKey(done)?done.copper:null;
+          void (reviewed?Promise.resolve(reviewed):done.partPending?.key===partKey(done)?done.partPending.promise:api.pcbDragFootprints(env.docId, { ids: done.ids, delta: at, angle: done.angle ?? 0, flipped: done.flipped ?? false, center: done.origin, mode: pl.moveMode, routeMode, corner: pl.cornerStyle }))
             .then(async (r) => {
               if (token !== generation) return;
               if (env.doc()?.items !== originalItems || env.doc()?.footprints !== originalFootprints || env.doc()?.epoch !== originalEpoch) { useEditor.getState().setHint("Board changed while planning the move; try again."); return; }
@@ -344,26 +358,27 @@ export function selectTool(): Tool {
                 useEditor.getState().setHint("Move settings changed while planning; choose a position again."); retry(); return;
               }
               const rejection = moveRejection(r, routeMode);
-              if (rejection) { toast.warning(rejection); useEditor.getState().setHint(rejection); retry(); return; }
+              if (rejection) { toast.warning(rejection,{id:blockedToast}); useEditor.getState().setHint(rejection); retry(rejection); return; }
               const ok = await env.exec({ op: "route", delete: r.delete, add: r.add, replace: r.replace });
               if (!ok) retry();
               if (ok && r.blocked) toast.warning(`${r.blocked} connection${r.blocked === 1 ? "" : "s"} could not be re-routed cleanly; joined directly (run DRC to see the conflicts).`);
             })
-            .catch(error=>{report(error);retry();})
+            .catch(error=>{report(error);retry(String(error));})
             .finally(() => { if (token === generation && !retrying) finish(); });
           return;
         }
         if (plan) {
           if(done.trackItems!==env.doc().items||done.trackFootprints!==env.doc().footprints||done.trackEpoch!==env.doc().epoch){useEditor.getState().setHint("Board changed during track drag; start again.");finish();return;}
           s={...done,placing:true};
-          const geometry=applyTrackDrag(plan,done.delta),doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch,token=generation;
-          const mode=violatorModeOf(useEditor.getState());let retrying=false;
-          const retry=()=>{if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;retrying=true;s={...done,floating:true,placing:false,copper:undefined,copperKey:undefined,copperError:undefined};excluded=new Set(trackDragIds(plan));env.redraw(true);};
-          void api.pcbTrackEditPlan(env.docId,geometry.replace,geometry.add,mode).then(async result=>{
+          const doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch,token=generation;
+          const mode=violatorModeOf(useEditor.getState()),corner=useEditor.getState().placement.cornerStyle;let retrying=false;
+          const retry=(message?:string)=>{if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;retrying=true;s={...done,floating:true,placing:false,copperError:message,partPending:undefined};excluded=new Set(done.copper?[...done.copper.delete,...done.copper.replace.map(r=>r.id)]:[]);env.redraw(true);};
+          const reviewed=done.copper&&done.acceptedKey===trackKey(done)?done.copper:null;
+          void (reviewed?Promise.resolve(reviewed):done.partPending?.key===trackKey(done)?done.partPending.promise:api.pcbDragTracks(env.docId,trackRequest(env,done))).then(async result=>{
             if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;
-            if(violatorModeOf(useEditor.getState())!==mode){retry();return;}
+            if(violatorModeOf(useEditor.getState())!==mode||useEditor.getState().placement.cornerStyle!==corner){retry();return;}
             if(!await env.exec({op:"route",delete:result.delete,add:result.add,replace:result.replace}))retry();
-          }).catch(error=>{useEditor.getState().setHint(String(error));toast.warning(String(error));retry();}).finally(()=>{if(token===generation&&!retrying)finish();});
+          }).catch(error=>{useEditor.getState().setHint(String(error));toast.warning(String(error),{id:blockedToast});retry(String(error));}).finally(()=>{if(token===generation&&!retrying)finish();});
           return;
         }
         if (done.angle || done.flipped) {
@@ -416,7 +431,7 @@ export function selectTool(): Tool {
       const origin = { x: Math.round((b.minX + b.maxX) / 2 / g) * g, y: Math.round((b.minY + b.maxY) / 2 / g) * g };
       const c = editCursor(env);
       s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x - origin.x, y: c.y - origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
-      excluded = new Set([...ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
+      excluded = new Set(ids);
       env.redraw(true);
     },
     key(env, key, event) {
@@ -446,10 +461,13 @@ export function selectTool(): Tool {
         } else {
           const c = editCursor(env);
           s = { kind: "drag", sx: 0, sy: 0, origin, ids, delta: { x: c.x-origin.x, y: c.y-origin.y }, moved: true, attach: attachedTo(env, ids), floating: true };
-          excluded = new Set([...ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
+          excluded = new Set(trackPlan(env,s)?[]:ids);
           env.redraw(true);
         }
         return true;
+      }
+      if (board && s.kind === "drag" && ["f","l"].includes(key.toLowerCase()) && s.ids.every(id=>doc.items.get(id)?.kind === "footprint")) {
+        s.flipped = !s.flipped; s.moved = true; s.copper=undefined; s.copperKey=undefined; excluded=new Set(s.ids); requestTrack(env,s); env.redraw(true); return true;
       }
       const poly = s.kind === "idle" ? editedPolygon(env) : null;
       if (poly && key === "Backspace") {
@@ -470,31 +488,31 @@ export function selectTool(): Tool {
           const order = ["preserveAngles", "free", "disconnect"] as const;
           env.setPlacement({ moveMode: order[(order.indexOf(pl.moveMode) + 1) % order.length] });
           // The attached tracks depend on the mode; show them again (or release them) right away.
-          s.attached = undefined;
-          excluded = new Set([...s.ids, ...attachedIds(partTracks(env, s)), ...partArcs(env, s).filter(a=>a.whole).map(a=>a.id)]);
+          excluded = new Set(s.ids);
         }
         requestTrack(env,s);
         env.redraw(true);
         return true;
       }
-      if (s.kind === "drag" && s.moved && (key === " " || key.toLowerCase() === "r" || key === "x" || key === "X")) {
-        if (board && (key === " " || key.toLowerCase() === "r")) {
+      if (s.kind === "drag" && s.moved && (key.toLowerCase() === "r" || key === "x" || key === "X")) {
+        if(board&&trackPlan(env,s)){useEditor.getState().setHint("Drag a track or corner to reshape its connections.");return true;}
+        if (board && (key.toLowerCase() === "r")) {
           s.angle = ((s.angle ?? 0) + (event.shiftKey ? -90 : 90) + 360) % 360;
-          s.copper=undefined;s.copperKey=undefined;excluded=new Set(s.ids);
+          s.copper=undefined;s.copperKey=undefined;excluded=new Set(s.ids);requestTrack(env,s);
           env.redraw(true);
           return true;
         }
         // Rotate/mirror the dragged items in place around the grab point.
         const center = { x: s.origin.x, y: s.origin.y };
         const ids = s.ids;
-        if (key === " " || key.toLowerCase() === "r") void env.exec({ op: "rotate", ids, center, angle: event.shiftKey ? -90 : 90 });
+        if (key.toLowerCase() === "r") void env.exec({ op: "rotate", ids, center, angle: event.shiftKey ? -90 : 90 });
         else void env.exec({ op: "mirror", ids, center });
         // Pins moved: work out attached wires again on the next pointer move.
         s.attach = null;
         return true;
       }
       if (!doc.selection.size) return false;
-      if (key === " ") {
+      if (key.toLowerCase() === "r") {
         const token=++generation;
         void rotateWithConnections(env.docId,[...doc.selection],env.cursor(),90,cmd=>env.exec(cmd),()=>env.doc(),()=>generation===token&&s.kind==="idle").catch(report);
         return true;
@@ -528,31 +546,16 @@ export function selectTool(): Tool {
       const { x: dx, y: dy } = s.delta;
       const drag = s;
       const plan = !s.angle && !s.flipped ? trackPlan(env, s) : null;
-      if (plan) {
-        if(s.copper&&s.copperKey===trackKey(s))return [...s.copper.replace.map(r=>r.item),...s.copper.add];
-        const { replace, add } = applyTrackDrag(plan, s.delta);
-        return [...replace.map((r) => r.item), ...add];
+      const nativeParts=env.doc().info.kind==='pcb'&&useEditor.getState().placement.moveMode!=='disconnect'&&s.ids.some(id=>['footprint','via'].includes(items.get(id)?.kind??''));
+      if(plan||nativeParts){
+        if(s.trackItems!==items||s.trackFootprints!==env.doc().footprints||s.trackEpoch!==env.doc().epoch)return [];
+        return s.copper?[...s.copper.replace.map(r=>r.item),...s.copper.add]:plan?[]:s.ids.flatMap(id=>{const item=items.get(id);return item?[translate(dragTransform(item,drag),dx,dy)]:[];});
       }
       const attach = s.attach ?? { stretch: [], follow: [] };
       const moved = [...s.ids, ...attach.follow]
         .map((id) => items.get(id))
         .filter((i): i is Item => !!i)
         .map((i) => translate(dragTransform(i, drag), dx, dy));
-      // Routed parts: attached tracks stretch along until the drop re-routes them.
-      if (!s.angle && !s.flipped) moved.push(...stretchAttached(partTracks(env, s), s.delta, useEditor.getState().placement.moveMode === "preserveAngles"));
-      else moved.push(...partTracks(env,s).map(a => {
-        const t=a.track;
-        const transform=(p:Point)=>{const r=s.kind==='drag'?rotatePoint(p,s.origin,s.angle??0):p;return {x:Math.round((drag.flipped?2*drag.origin.x-r.x:r.x)+dx),y:Math.round(r.y+dy)};};
-        return {...t,a:a.end==='b'?t.a:transform(t.a),b:a.end==='a'?t.b:transform(t.b)};
-      }));
-      for (const {arc,contacts,whole} of partArcs(env,s)) {
-        if (whole) moved.push(translate(dragTransform(arc,drag),dx,dy));
-        else for (const {at:end,anchor} of contacts) {
-          const rotated=rotatePoint(anchor,drag.origin,drag.angle??0);
-          const to={x:Math.round((drag.flipped?2*drag.origin.x-rotated.x:rotated.x)+dx),y:Math.round(rotated.y+dy)};
-          moved.push({kind:"track",a:end,b:to,width:arc.width,layer:arc.layer,net:arc.net});
-        }
-      }
       return [...moved, ...attach.stretch.map((r) => stretched(r, dx, dy))];
     },
     excluded: () => excluded,
@@ -600,31 +603,16 @@ export function translate(item: Item, dx: number, dy: number): Item {
   }
 }
 
-/** Tracks attached to the dragged footprints, unless the move mode disconnects them (computed once per drag). */
-function partTracks(env: ToolEnv, d: { ids: ItemId[]; attached?: Attached[] }): Attached[] {
-  const doc = env.doc();
-  if (doc.info.kind !== "pcb" || useEditor.getState().placement.moveMode === "disconnect") return [];
-  d.attached ??= attachedTracks(doc.items, doc.footprints, d.ids);
-  return d.attached;
-}
-
-function partArcs(env: ToolEnv, d: { ids: ItemId[]; arcs?: ViaArcAttachment[] }): ViaArcAttachment[] {
-  if (env.doc().info.kind !== "pcb" || useEditor.getState().placement.moveMode === "disconnect") return [];
-  d.arcs ??= attachedViaArcs(env.doc().items, d.ids);
-  return d.arcs;
-}
-
 const MOVE_MODE_LABEL = { disconnect: "disconnect tracks", free: "free (stretch)", preserveAngles: "preserve angles" } as const;
 const VIOLATOR_LABEL = { ignore: "ignore violators", walkaround: "avoid violators", shove: "push violators" } as const;
 
-/** Connected-drag plan for a board drag of tracks only (computed once per drag). */
-function trackPlan(env: ToolEnv, d: { ids: ItemId[]; tracks?: TrackDragPlan | null; trackItems?:unknown; trackFootprints?:unknown; trackEpoch?:number }): TrackDragPlan | null {
-  if (d.tracks === undefined) {
-    const doc = env.doc();
-    d.tracks = doc.info.kind === "pcb" ? planTrackDrag(doc.items, doc.footprints, d.ids) : null;
-    d.trackItems=doc.items;d.trackFootprints=doc.footprints;d.trackEpoch=doc.epoch;
-  }
-  return d.tracks;
+/** Track-only edits are planned by the native connected router. */
+function trackPlan(env: ToolEnv, d: {ids:ItemId[];tracks?:boolean|null;trackItems?:unknown;trackFootprints?:unknown;trackEpoch?:number}):boolean|null{
+ if(d.tracks===undefined){const doc=env.doc();d.tracks=doc.info.kind==='pcb'&&d.ids.length>0&&d.ids.every(id=>doc.items.get(id)?.kind==='track')?true:null;d.trackItems=doc.items;d.trackFootprints=doc.footprints;d.trackEpoch=doc.epoch;}
+ return d.tracks;
+}
+function trackRequest(env:ToolEnv,d:{ids:ItemId[];delta:Point;origin:Point}){
+ return {ids:d.ids,delta:d.delta,point:d.origin,mode:violatorModeOf(useEditor.getState()),corner:useEditor.getState().placement.cornerStyle,tolerance:Math.round(PICK_PX/env.scale())};
 }
 
 /** Temporary rotation and side flip of a drag, applied in that order about the grab point. */

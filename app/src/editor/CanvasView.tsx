@@ -1,3 +1,4 @@
+import {reviewDrc} from "../pcb/drcApprovals";
 import { PourTriangles } from "./pourTriangles";
 import { useEffect, useRef, useState } from "react";
 import { execute, undo } from "../core/actions";
@@ -76,6 +77,8 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     let raw: Point = { x: 0, y: 0 };
     let snapMark: Point | null = null;
     let pan: { x: number; y: number; sx: number; sy: number; moved: boolean; button: number } | null = null;
+    let pointerButtons = 0, releasedLeftDuringPan = false, primaryGesture = false;
+    let activePointerId: number | null = null;
     let overlayDirty = true;
     let analysisDirty = true;
     let fitted = false;
@@ -177,7 +180,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
         if (d.view.airwires) for (const w of d.airwires) lines.push({ a: w.a, b: w.b, width: px, color: rat });
         const r = 6 * px;
         const halo: [number, number, number, number] = [0, 0, 0, 0.85];
-        if (d.view.drc) for (const v of d.drc) {
+        if (d.view.drc) for (const v of reviewDrc(d).open) {
           const error = v.severity === "error";
           const c: [number, number, number, number] = error ? [1, 0.25, 0.25, 1] : theme.color("drc");
           const cross = [
@@ -340,24 +343,22 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const onPointerDown = (e: PointerEvent) => {
       frames.flush();
+      activePointerId=e.pointerId;
       canvas.setPointerCapture(e.pointerId);
       host.focus({ preventScroll: true });
       if (!isActive()) st().setActiveDoc(docId);
       const p = local(e);
       cursorScreen = p;
       computeCursor(p.x, p.y);
-      if ((e.button === 1 || e.button === 2) && tool.auxPress?.(env, e.button, e.shiftKey)) {
-        e.preventDefault();
-        rebuildOverlay();
-        updateHint();
-        return;
-      }
+      pointerButtons = e.buttons;
       if (e.button === 1 || e.button === 2) {
+        e.preventDefault();
         pan = { x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false, button: e.button };
         if (hover !== null) { hover = null; rebuildHighlights(); }
         return;
       }
       if (e.button !== 0) return;
+      primaryGesture=true;
       tool.down?.(env, info(e));
       rebuildOverlay();
       updateHint();
@@ -373,13 +374,14 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const onPointerMove = (e: PointerEvent) => {
       const p = local(e);
-      // A middle or right press while the left button holds a drag arrives as a chorded move, not a pointerdown.
-      const chord = e.button === 1 && e.buttons & 4 ? 1 : e.button === 2 && e.buttons & 2 ? 2 : 0;
-      if (!pan && chord && tool.auxPress?.(env, chord, e.shiftKey)) {
-        e.preventDefault();
-        rebuildOverlay();
-        updateHint();
-      }
+      const previousButtons=pointerButtons;pointerButtons=e.buttons;
+      // Mouse chords dispatch pointermove until the last button is released.
+      if (pan && !(e.buttons & (pan.button === 1 ? 4 : 2))) { pan=null; }
+      const pressed=e.buttons & ~previousButtons;
+      const button=(pressed & 2)?2:(pressed & 4)?1:0;
+      if (!pan && button) { frames.flush();pan={x:p.x,y:p.y,sx:p.x,sy:p.y,moved:false,button};e.preventDefault(); }
+      if(pan && primaryGesture && (previousButtons & 1) && !(e.buttons & 1)) releasedLeftDuringPan=true;
+      if(!pan && releasedLeftDuringPan){releasedLeftDuringPan=false;primaryGesture=false;computeCursor(p.x,p.y);tool.up?.(env,info(e));}
       if (pan) {
         cam.panBy(p.x - pan.x, p.y - pan.y);
         pan.x = p.x;
@@ -390,26 +392,15 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      frames.flush();
-      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-      if (pan) {
-        const done = pan;
-        pan = null;
-        updateHover();
-        if (!done.moved && done.button === 2) {
-          if (toolId === "select" && !tool.cancel(env, "mouse")) openContextMenu(e);
-          else exitOrCancel();
-        }
-        return;
-      }
-      if (e.button === 0) {
-        tool.up?.(env, info(e));
-        const p = local(e);
-        computeCursor(p.x, p.y);
-        updateHover();
-      }
-      rebuildOverlay();
-      updateHint();
+      frames.flush();pointerButtons=e.buttons;
+      if (!e.buttons && canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      const done=pan;pan=null;
+      const releasedPrimary=(e.button===0&&primaryGesture)||releasedLeftDuringPan;releasedLeftDuringPan=false;
+      if(releasedPrimary)primaryGesture=false;
+      const p=local(e);computeCursor(p.x,p.y);
+      if(releasedPrimary) tool.up?.(env,info(e));
+      else if(done && !done.moved && done.button===2 && toolId==="select" && !tool.editing?.()) openContextMenu(e);
+      updateHover();rebuildOverlay();updateHint();
     };
 
     /** Right-click in select mode: select what is under the pointer and offer actions. */
@@ -436,6 +427,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (e.shiftKey) cam.panBy(-e.deltaY, 0);
       else cam.zoomAt(p.x, p.y, Math.pow(1.0015, -e.deltaY));
       computeCursor(p.x, p.y);
+      if(!pan) tool.move?.(env,{sx:p.x,sy:p.y,shift:e.shiftKey,ctrl:e.ctrlKey,alt:e.altKey});
       rebuildOverlay();
     };
 
@@ -612,6 +604,17 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     });
 
     const onContext = (e: MouseEvent) => e.preventDefault();
+    // A context-menu mouse chord can drop capture while its primary drag is still down.
+    // Keep the canvas gesture alive, including the event that caused capture to be lost.
+    const ownsPointer=(e:PointerEvent)=>e.pointerId===activePointerId&&(primaryGesture||pan!==null);
+    const onCapturedMove=(e:PointerEvent)=>{if(e.target!==canvas&&ownsPointer(e))onPointerMove(e);};
+    const onCapturedUp=(e:PointerEvent)=>{if(e.target!==canvas&&ownsPointer(e))onPointerUp(e);};
+    const onLostCapture=(e:PointerEvent)=>{if(ownsPointer(e)&&pointerButtons){try{canvas.setPointerCapture(e.pointerId);}catch{/* Global handlers retain the current gesture. */}}};
+    const onPointerCancel=(e:PointerEvent)=>{if(e.pointerId!==activePointerId)return;pan=null;pointerButtons=0;primaryGesture=false;releasedLeftDuringPan=false;activePointerId=null;tool.cancel(env,"key");rebuildOverlay();updateHint();};
+    viewWindow.document.addEventListener("pointermove",onCapturedMove,true);
+    viewWindow.document.addEventListener("pointerup",onCapturedUp,true);
+    canvas.addEventListener("lostpointercapture",onLostCapture);
+    canvas.addEventListener("pointercancel",onPointerCancel);
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
@@ -649,6 +652,10 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       canvas.removeEventListener("dblclick", onDblClick);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContext);
+      canvas.removeEventListener("lostpointercapture",onLostCapture);
+      canvas.removeEventListener("pointercancel",onPointerCancel);
+      viewWindow.document.removeEventListener("pointermove",onCapturedMove,true);
+      viewWindow.document.removeEventListener("pointerup",onCapturedUp,true);
       viewWindow.removeEventListener("keydown", onKeyDown, true);
       renderer.dispose();
     };

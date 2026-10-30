@@ -16,7 +16,13 @@ const result = (net = 'GND') => ({ tracks: [{ ...track, net }], moved: [], reach
 async function withIPC(handler: Parameters<typeof mockIPC>[0], run: () => Promise<void>) {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
-  mockIPC(handler);
+  mockIPC((command,args)=>{
+    if(command==='pcb_routing_defaults'){
+      const settings=args!.settings as {netClasses:{nets:string[];trackWidth:number;diffPairWidth:number;diffPairGap:number}[]};const net=args!.net as string;
+      const cls=settings.netClasses?.find(c=>c.nets?.includes(net))??settings.netClasses?.[0];return{width:cls?.trackWidth||250000,pairWidth:cls?.diffPairWidth||200000,pairGap:cls?.diffPairGap||200000};
+    }
+    return handler(command,args);
+  });
   try { await run(); }
   finally {
     clearMocks();
@@ -104,7 +110,7 @@ function toolHarness() {
   const pad = {kind:'pad' as const,number:'1',pos:{x:1000000,y:0},width:1000000,height:1000000,rotation:0,shape:'rect' as const,padKind:'smd' as const,layer:0,drill:null,cornerRatio:0};
   const doc={items:new Map([[1,fp]]),footprints:{F:{items:[pad]}},activeLayer:1};
   const commands:Command[]=[];
-  const env={docId:'board',doc:()=>doc,cursor:()=>cursor,raw:()=>cursor,scale:()=>1e-5,placement:()=>useEditor.getState().placement,redraw:()=>{},exec:async(cmd:Command)=>{commands.push(cmd);return true;}} as unknown as import('../src/editor/tools/types.ts').ToolEnv;
+  const env={docId:'board',doc:()=>doc,cursor:()=>cursor,raw:()=>cursor,scale:()=>1e-5,placement:()=>useEditor.getState().placement,redraw:()=>{},setPlacement:(p:object)=>useEditor.getState().setPlacement(p),exec:async(cmd:Command)=>{commands.push(cmd);return true;}} as unknown as import('../src/editor/tools/types.ts').ToolEnv;
   return {env,commands,tool:routeTool(),move:(x:number,y:number)=>{cursor={x,y};},center:{x:10000000,y:9000000}};
 }
 
@@ -252,10 +258,10 @@ test('W widens the route and the status bar shows the new width', async () => {
   await withIPC(cmd => cmd === 'pcb_object_at' ? [1, 'SIGNAL'] : { ...result(), tracks: [] }, async () => {
     h.tool.down!(h.env, {} as never); await tick(); await tick();
     (h.env as { setPlacement: (p: object) => void }).setPlacement = (p) => useEditor.getState().setPlacement(p as never);
-    assert.match(h.tool.hint(h.env), /width 0\.25 mm/);
-    h.tool.key!(h.env, 'w', { shiftKey: false } as KeyboardEvent); assert.match(h.tool.hint(h.env), /width 0\.30 mm/);
+    assert.match(h.tool.hint(h.env), /width 0\.250 mm/);
+    h.tool.key!(h.env, 'w', { shiftKey: false } as KeyboardEvent); assert.match(h.tool.hint(h.env), /width 0\.300 mm/);
     h.tool.key!(h.env, 'W', { shiftKey: true } as KeyboardEvent); h.tool.key!(h.env, 'W', { shiftKey: true } as KeyboardEvent);
-    assert.match(h.tool.hint(h.env), /width 0\.20 mm/);
+    assert.match(h.tool.hint(h.env), /width 0\.200 mm/);
   });
   useEditor.getState().setPlacement({ trackWidth: null });
 });
@@ -726,4 +732,43 @@ for(const [pair,manual,expected] of [[true,null,140000],[false,null,190000],[tru
     return {...result('LINK_P'),tracks:[]};
   },async()=>{tool.down!(h.env,{}as never);await tick();await tick();assert(seen>0);tool.cancel(h.env);});}
   finally{useEditor.getState().setPlacement({trackWidth:null});}
+});
+
+test('resolved routing defaults are shared per settings item and invalidated by rule edits',async()=>{
+ const {loadRoutingDefaults,cachedRoutingDefaults}=await import('../src/editor/routingDefaults.ts');
+ const original=Object.getOwnPropertyDescriptor(globalThis,'window');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});let calls=0;
+ mockIPC(command=>{assert.equal(command,'pcb_routing_defaults');calls++;return{width:180000,pairWidth:140000,pairGap:160000};});
+ try{const board={kind:'board',rules:[]} as never;await Promise.all([loadRoutingDefaults(board,'CLK',0),loadRoutingDefaults(board,'CLK',0)]);assert.equal(calls,1);assert.equal(cachedRoutingDefaults(board,'CLK',0)?.width,180000);await loadRoutingDefaults({...board as object,rules:[{}]} as never,'CLK',0);assert.equal(calls,2);await loadRoutingDefaults(board,'CLK',1);assert.equal(calls,3);}finally{clearMocks();if(original)Object.defineProperty(globalThis,'window',original);else Reflect.deleteProperty(globalThis,'window');}
+});
+
+for(const width of [127000,254000,762000])for(const startX of [10000000,12000000,14000000])test('restarting an existing '+width+' nm track at '+startX+' adopts its exact width in either routing direction',async()=>{
+ const h=toolHarness();useEditor.getState().setPlacement({trackWidth:400000});
+ h.env.doc().items.set(2,{kind:'track',a:{x:10000000,y:9000000},b:{x:14000000,y:9000000},width,layer:1,net:'SIGNAL',locked:false});h.move(startX,9000000);let seen:RouteRequest[]=[];
+ try{await withIPC((cmd,args)=>{
+  if(cmd==='pcb_object_at')return args!.layer===1?[2,'SIGNAL']:null;if(cmd==='pcb_net_items')return[2];assert.equal(cmd,'pcb_route');const req=args!.req as RouteRequest;seen.push(req);return{...result('SIGNAL'),tracks:[]};
+ },async()=>{h.tool.down!(h.env,{}as never);await tick();await tick();assert.equal(useEditor.getState().placement.trackWidth,width);assert.match(h.tool.hint(h.env),new RegExp('width '+(width/1e6).toFixed(3).replace('.','\\.')+' mm'));
+  h.move(startX-2000000,11000000);h.tool.move!(h.env,{}as never);await tick();h.move(startX+2000000,7000000);h.tool.move!(h.env,{}as never);await tick();assert(seen.length>=2);assert(seen.every(r=>r.width===width));
+  h.tool.cancel(h.env);assert.equal(useEditor.getState().placement.trackWidth,400000,'finishing restores the earlier setting when no manual change was made');});
+ }finally{h.tool.cancel(h.env);useEditor.getState().setPlacement({trackWidth:null});}
+});
+
+test('an inherited width can be changed explicitly or reset to rules during the route',async()=>{
+ const h=toolHarness();useEditor.getState().setPlacement({trackWidth:null});h.env.doc().items.set(2,{kind:'track',a:{x:10000000,y:9000000},b:{x:14000000,y:9000000},width:254000,layer:1,net:'SIGNAL',locked:false});h.move(12000000,9000000);let last!:RouteRequest;
+ try{await withIPC((cmd,args)=>{if(cmd==='pcb_object_at')return args!.layer===1?[2,'SIGNAL']:null;if(cmd==='pcb_net_items')return[];last=args!.req as RouteRequest;return{...result(),tracks:[]};},async()=>{
+  h.tool.down!(h.env,{}as never);await tick();await tick();assert.equal(last.width,254000);
+  h.tool.key!(h.env,'0',{}as never);await tick();assert.equal(last.width,250000);
+  h.tool.key!(h.env,'w',{shiftKey:false}as never);await tick();assert.equal(last.width,300000);h.tool.cancel(h.env);assert.equal(useEditor.getState().placement.trackWidth,300000,'an explicit width change remains selected');
+ });}finally{h.tool.cancel(h.env);useEditor.getState().setPlacement({trackWidth:null});}
+});
+
+test('routing width inheritance ignores other nets and layers and avoids guessing at mixed-width junctions',()=>{
+ const h=toolHarness(),items=h.env.doc().items;items.set(2,{kind:'via',pos:h.center,net:'SIGNAL',diameter:600000,drill:300000,fromLayer:0,toLayer:1});
+ const t={kind:'track' as const,a:h.center,b:{x:14000000,y:9000000},width:254000,layer:1,net:'SIGNAL'};items.set(3,t);items.set(4,{...t,width:500000,net:'OTHER'});items.set(5,{...t,width:750000,layer:0});
+ assert.equal(routeModule.routingStartWidth(h.env,h.center,[2,'SIGNAL'],1),254000);items.set(6,{...t,width:400000});assert.equal(routeModule.routingStartWidth(h.env,h.center,[2,'SIGNAL'],1),null);assert.equal(routeModule.routingStartWidth(h.env,h.center,[3,'SIGNAL'],1),254000,'an explicitly picked track always supplies its own width');
+ items.set(7,{kind:'arcTrack',center:{x:10000000,y:10000000},radius:1000000,startAngle:0,sweep:180,width:127000,layer:1,net:'SIGNAL'});assert.equal(routeModule.routingStartWidth(h.env,h.center,[7,'SIGNAL'],1),127000);
+});
+
+test('cancelling a pending track lookup cannot change the routing width afterwards',async()=>{
+ const h=toolHarness();h.env.doc().items.set(2,{kind:'track',a:h.center,b:{x:14000000,y:9000000},width:254000,layer:1,net:'SIGNAL'});useEditor.getState().setPlacement({trackWidth:400000});let reply!:(v:unknown)=>void;
+ try{await withIPC(cmd=>{assert.equal(cmd,'pcb_object_at');return new Promise(resolve=>reply=resolve);},async()=>{h.tool.down!(h.env,{}as never);h.tool.cancel(h.env);reply([2,'SIGNAL']);await tick();assert.equal(useEditor.getState().placement.trackWidth,400000);assert.deepEqual(h.tool.preview!(h.env),[]);});}finally{useEditor.getState().setPlacement({trackWidth:null});}
 });

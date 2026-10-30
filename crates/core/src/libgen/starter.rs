@@ -1,4 +1,4 @@
-//! The built-in "pCAD Basic" library: hand-drawn symbols, wizard
+//! The built-in "PCBPlanner Basic" library: hand-drawn symbols, wizard
 //! footprints and components tying them together. Everything is generated
 //! here from first principles (no external library data).
 
@@ -11,7 +11,7 @@ use super::wizard::{
 use crate::item::PadShape;
 use crate::library::{Component, Footprint, Library, Parameter, PinMapping, Symbol};
 
-pub const STARTER_LIBRARY_NAME: &str = "pCAD Basic";
+pub const STARTER_LIBRARY_NAME: &str = "PCBPlanner Basic";
 
 fn chip(prefix: &str, size: ChipSize, polarity: bool) -> FootprintSpec {
     FootprintSpec::Chip(ChipSpec { size, prefix: prefix.into(), polarity })
@@ -105,7 +105,7 @@ impl Lib {
 /// The built-in starter library.
 pub fn starter_library() -> Library {
     use ChipSize::*;
-    let mut l = Lib { lib: Library { name: STARTER_LIBRARY_NAME.into(), ..Default::default() } };
+    let mut l = Lib { lib: Library { name: STARTER_LIBRARY_NAME.into(), notices: vec!["Original PCBPlanner Studio starter assets. Copyright 2026 Buchmüller Norbert. You may use, modify and include these original assets in personal, educational and commercial designs, including designs you share or sell, without attribution or a requirement to publish your design. Redistribution of the starter library as a collection is permitted free of charge with this notice retained. Third-party assets imported separately keep their own terms.".into()], ..Default::default() } };
 
     // Passives.
     let r = l.sym(symbols::resistor());

@@ -1,12 +1,6 @@
 //! Moving placed footprints and vias while their routing stays connected.
-//!
-//! Tracks ending on a moved pad follow it. In `PreserveAngles` mode the segment
-//! touching the pad keeps its angle and slides with the pad, while its neighbour
-//! shortens or lengthens along its own direction. Where that is impossible (a via
-//! or junction at the far end, a parallel neighbour) or the slid copper crowds
-//! another net, the segment is re-routed from its far end with the interactive
-//! router, pushing or walking around other nets' tracks according to the routing
-//! mode. Other components never move: pads are fixed obstacles for the router.
+//! Rebuild affected unbranched routing between electrical anchors, removing old
+//! bends before finding a new path. Fixed branches, pads, curves and locks stay put.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +21,7 @@ pub enum MoveMode {
     Disconnect,
     /// The attached end stretches straight to the new pad position.
     Free,
-    /// The attached segment slides keeping its angle; re-routed (pushing or avoiding other copper) when it can't.
+    /// Rebuild the attached routing using the selected corner and obstacle modes.
     #[default]
     PreserveAngles,
 }
@@ -81,24 +75,15 @@ struct Reroute {
     width: i64,
     from: Point,
     to: Point,
+    guides: Vec<Point>,
 }
 
 fn shifted(p: Point, d: Point) -> Point {
     Point::new(p.x + d.x, p.y + d.y)
 }
 
-/// Intersection of the line through `p` along `d` with the line through `q` along `e`.
-fn intersect(p: (f64, f64), d: (f64, f64), q: (f64, f64), e: (f64, f64)) -> Option<(f64, f64)> {
-    let den = d.0 * e.1 - d.1 * e.0;
-    if den.abs() < 1e-9 * d.0.hypot(d.1) * e.0.hypot(e.1) {
-        return None;
-    }
-    let t = ((q.0 - p.0) * e.1 - (q.1 - p.1) * e.0) / den;
-    Some((p.0 + d.0 * t, p.1 + d.1 * t))
-}
-
 /// Closest point on the arc centreline, including its round-capped endpoints.
-fn nearest_on_arc(arc: &super::items::ArcTrack, p: Point) -> Point {
+pub(super) fn nearest_on_arc(arc: &super::items::ArcTrack, p: Point) -> Point {
     let at = |angle: f64| { let r=angle.to_radians(); Point::new(arc.center.x+(arc.radius as f64*r.cos()).round() as i64,arc.center.y+(arc.radius as f64*r.sin()).round() as i64) };
     let distance = |q: Point| ((q.x-p.x) as f64).hypot((q.y-p.y) as f64);
     let a=at(arc.start_angle);let b=at(arc.start_angle+arc.sweep);
@@ -109,76 +94,6 @@ fn nearest_on_arc(arc: &super::items::ArcTrack, p: Point) -> Point {
         let radial=at(angle);if distance(radial)<distance(nearest){nearest=radial;}
     }
     nearest
-}
-
-/// The pad segment `t` moved by `delta` keeping its angle, with its far end slid
-/// along the single neighbour it joins (which keeps its angle as well).
-/// None when that is impossible: a via or junction at the far end, a parallel
-/// neighbour, or a neighbour/segment that would fold back over itself.
-fn slide(doc: &Document, moving: &std::collections::HashSet<ItemId>, id: ItemId, t: &Track, near_is_a: bool, delta: Point) -> Option<(Track, Option<(ItemId, Track)>)> {
-    let (near, far) = if near_is_a { (t.a, t.b) } else { (t.b, t.a) };
-    let near2 = shifted(near, delta);
-    let mut neighbours = Vec::new();
-    for (nid, item) in doc.items() {
-        match item {
-            Item::Via(v) if !moving.contains(&nid) && v.net==t.net => {
-                let fallback=BoardSettings::default();let board=board_settings(doc).map_or(&fallback,|(_,b)|b);
-                if board.stackup.span(v.from_layer,v.to_layer).contains(&t.layer) && ((v.pos.x-far.x) as f64).hypot((v.pos.y-far.y) as f64)<=(v.diameter+t.width) as f64/2. {return None;}
-            }
-            Item::ArcTrack(a) if !moving.contains(&nid) && a.net==t.net && a.layer==t.layer => {
-                let q=nearest_on_arc(a,far);
-                if ((q.x-far.x) as f64).hypot((q.y-far.y) as f64)<=(a.width+t.width) as f64/2. {return None;}
-            }
-            Item::Track(n) if nid != id && !moving.contains(&nid) && n.layer == t.layer && n.net == t.net => {
-                if n.a==far || n.b==far {neighbours.push((nid,n));}
-                else {
-                    let (gap,_)=super::connectivity::geo::point_seg(super::connectivity::pt(far),super::connectivity::pt(n.a),super::connectivity::pt(n.b));
-                    if gap<=(n.width+t.width) as f64/2. {return None;}
-                }
-            }
-            _ => {}
-        }
-    }
-    let rebuild = |a_end: Point, other: Point| if near_is_a { Track { a: a_end, b: other, ..t.clone() } } else { Track { a: other, b: a_end, ..t.clone() } };
-    match neighbours.as_slice() {
-        // Ending on a pad that stays: re-route from that pad instead.
-        [] if on_fixed_pad(doc, moving, far, t) => None,
-        // A dangling end: the whole segment translates.
-        [] => Some((rebuild(near2, shifted(far, delta)), None)),
-        [(nid, n)] => {
-            if n.locked { return None; }
-            let other = if n.a == far { n.b } else { n.a };
-            let f = |p: Point| (p.x as f64, p.y as f64);
-            let dir = (f(far).0 - f(near).0, f(far).1 - f(near).1);
-            let ndir = (f(far).0 - f(other).0, f(far).1 - f(other).1);
-            let x = intersect(f(near2), dir, f(other), ndir)?;
-            // Both segments keep a positive length in their original direction.
-            if (x.0 - f(other).0) * ndir.0 + (x.1 - f(other).1) * ndir.1 <= 0.0 || (x.0 - f(near2).0) * dir.0 + (x.1 - f(near2).1) * dir.1 <= 0.0 {
-                return None;
-            }
-            let xp = Point::new(x.0.round() as i64, x.1.round() as i64);
-            let n2 = if n.a == far { Track { a: xp, ..(*n).clone() } } else { Track { b: xp, ..(*n).clone() } };
-            Some((rebuild(near2, xp), Some((*nid, n2))))
-        }
-        _ => None,
-    }
-}
-
-/// `p` lies on a pad of `t`'s net and layer that belongs to a footprint not being moved.
-fn on_fixed_pad(doc: &Document, moving: &std::collections::HashSet<ItemId>, p: Point, t: &Track) -> bool {
-    let fallback = BoardSettings::default();
-    let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
-    doc.items().any(|(id, item)| {
-        let Item::Footprint(fp) = item else { return false };
-        if moving.contains(&id) {
-            return false;
-        }
-        doc.cached_footprint(&fp.footprint).is_some_and(|g| {
-            world_pads(id, fp, g, board).iter().any(|pad| {
-                pad.net == t.net && pad.copper.contains(&t.layer) && ((pad.pos.x - p.x) as f64).hypot((pad.pos.y - p.y) as f64) <= pad.width.max(pad.height) as f64 / 2.0
-            })
-        })
-    })
 }
 
 struct DragAnchor { owner: ItemId, number: String, net: String, pos: Point, copper: Vec<LayerId>, reach: f64, via: bool }
@@ -198,7 +113,7 @@ fn drag_anchors(doc: &Document, id: ItemId, item: &Item, board: &BoardSettings) 
 /// The preparation lives only in the candidate; cancellation/rejection cannot split the board.
 pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
     let plan=drag_footprints_inner(doc,req);
-    if plan.failure.is_some() || req.route_mode==RouteMode::Ignore {return plan;}
+    if plan.failure.is_some() {return plan;}
     let mut candidate=doc.clone();
     let mut edits:Vec<_>=plan.replace.iter().map(|r|Edit{id:r.id,before:doc.get(r.id).cloned(),after:Some(r.item.clone())}).collect();
     edits.extend(plan.delete.iter().map(|id|Edit{id:*id,before:doc.get(*id).cloned(),after:None}));
@@ -206,8 +121,21 @@ pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
     let added:Vec<_>=plan.add.iter().map(|item|{let id=candidate.alloc_id();touched.push(id);Edit{id,before:None,after:Some(item.clone())}}).collect();candidate.apply(&added);
     // Committing regenerates pours; fixed copper and component bodies must be legal first.
     let pours:Vec<_>=candidate.items().filter_map(|(id,item)|matches!(item,Item::Zone(z)if !z.keepout).then(||Edit{id,before:Some(item.clone()),after:None})).collect();candidate.apply(&pours);
-    if let Some(violation)=super::drc::run_near(&candidate,&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error) {
+    if req.mode!=MoveMode::Disconnect {
+        let before=super::elastic::net_connectivity(doc);let after=super::elastic::net_connectivity(&candidate);
+        let mut groups=std::collections::HashMap::new();
+        for object in before.objects().iter().filter(|o|!o.net.is_empty()&&candidate.get(o.item).is_some()) {
+            let Some(old)=before.cluster_of(object.item,object.pad.as_deref())else{continue;};
+            let Some(now)=after.cluster_of(object.item,object.pad.as_deref())else{continue;};
+            if groups.insert((old,object.net.as_str()),now).is_some_and(|previous|previous!=now){
+                return DragResult{message:Some("This move would disconnect existing copper; choose another position".into()),..rejected(DragFailure::Unroutable)};
+            }
+        }
+    }
+    if req.route_mode!=RouteMode::Ignore {    if let Some(violation)=super::drc::run_near(&candidate,&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error) {
+
         return DragResult{message:Some(format!("Placement blocked: {}",violation.message)),..rejected(DragFailure::Unroutable)};
+    }
     }
     plan
 }
@@ -284,12 +212,12 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
     };
 
     let mut reroutes = Vec::new();
-    // Slid pad segments: (id, original, far end, new pad point), checked for clearance after the move.
-    let mut slid: Vec<(ItemId, Track, Point, Point)> = Vec::new();
+    let topology = super::elastic::Topology::new(doc);
+    let mut handled = std::collections::HashSet::new();
     if req.mode != MoveMode::Disconnect {
         for (id, item) in doc.items() {
             let Item::Track(t) = item else { continue };
-            if moving.contains(&id) || t.net.is_empty() {
+            if moving.contains(&id) || handled.contains(&id) || t.net.is_empty() {
                 continue;
             }
             let (on_a, on_b) = (on_moved_pad(t.a, t.layer, &t.net, t.width), on_moved_pad(t.b, t.layer, &t.net, t.width));
@@ -314,23 +242,37 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
                             }
                         }
                     }
-                    if on_fixed_pad(doc, &moving, near, t) {
-                        reroutes.push(Reroute { net:t.net.clone(),layer:t.layer,width:t.width,from:near,to });
+                    if topology.anchor(near,t,&moving) {
+                        reroutes.push(Reroute { net:t.net.clone(),layer:t.layer,width:t.width,from:near,to,guides:vec![] });
                         continue;
                     }
                     if req.mode == MoveMode::Free {
                         let moved = if on_a { Track { a: to, ..t.clone() } } else { Track { b: to, ..t.clone() } };
                         edits.push(Edit { id, before: Some(item.clone()), after: Some(Item::Track(moved)) });
-                    } else if let Some(s) = if req.angle == 0.0 && !req.flipped { slide(doc, &moving, id, t, on_a, req.delta) } else { None } {
-                        // The pad segment keeps its angle and slides; its neighbour keeps its own angle too.
-                        slid.push((id, t.clone(), far, to));
-                        edits.push(Edit { id, before: Some(item.clone()), after: Some(Item::Track(s.0)) });
-                        if let Some((nid, n)) = s.1 {
-                            edits.push(Edit { id: nid, before: doc.get(nid).cloned(), after: Some(Item::Track(n)) });
-                        }
                     } else {
-                        edits.push(Edit { id, before: Some(item.clone()), after: None });
-                        reroutes.push(Reroute { net: t.net.clone(), layer: t.layer, width: t.width, from: far, to });
+                        // Replace the whole degree-two section, rather than tethering
+                        // the new pad to successively older bends on every move.
+                        let mut excluded = moving.clone(); excluded.insert(id);
+                        let chain = topology.walk(far, t, &excluded);
+                        let mut guide = vec![far]; let mut cursor = far;
+                        for edge in &chain.edges {if let Some(Item::Track(t))=doc.get(*edge){cursor=if t.a==cursor{t.b}else{t.a};guide.push(cursor);}}
+                        guide.reverse();
+                        let mut ids = vec![id]; ids.extend(chain.edges);
+                        let endpoint = chain.end;
+                        let end_target = pads.iter().find(|pad| pad.net == t.net && pad.copper.contains(&t.layer)
+                            && ((pad.pos.x-endpoint.x)as f64).hypot((pad.pos.y-endpoint.y)as f64) <= pad.reach + if pad.via { t.width as f64 / 2. } else { 0. })
+                            .and_then(|pad|new_pads.iter().find(|p|p.owner==pad.owner && p.number==pad.number));
+                        if let Some(target)=end_target.filter(|p|!p.copper.contains(&t.layer)) {
+                            if let Some(&layer)=target.copper.first(){
+                                if !edits.iter().any(|e|matches!(&e.after,Some(Item::Via(v))if v.pos==target.pos&&v.net==t.net)){
+                                    let mut via=super::router::via_for(doc,&t.net,target.pos);via.from_layer=t.layer;via.to_layer=layer;
+                                    if let Some(style)=board.via_type_between(t.layer,layer){via.diameter=style.diameter;via.drill=style.drill;}
+                                    edits.push(Edit{id:work.alloc_id(),before:None,after:Some(Item::Via(via))});
+                                }
+                            }
+                        }
+                        for tid in ids { if handled.insert(tid) { edits.push(Edit{id:tid,before:doc.get(tid).cloned(),after:None}); } }
+                        reroutes.push(Reroute{net:t.net.clone(),layer:t.layer,width:t.width,from:end_target.map_or(endpoint,|p|p.pos),to,guides:if end_target.is_none(){guide}else{vec![]}});
                     }
                 }
             }
@@ -355,40 +297,13 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
                     let reach=anchor.reach+if anchor.via {arc.width as f64/2.}else{0.};
                     if ((anchor.pos.x-from.x)as f64).hypot((anchor.pos.y-from.y)as f64)>reach {continue;}
                     if let Some(target)=new_pads.iter().find(|p|p.owner==anchor.owner&&p.number==anchor.number) {
-                        if from!=target.pos {reroutes.push(Reroute {net:arc.net.clone(),layer:arc.layer,width:arc.width,from,to:target.pos});}
+                        if from!=target.pos {reroutes.push(Reroute {net:arc.net.clone(),layer:arc.layer,width:arc.width,from,to:target.pos,guides:vec![]});}
                     }
                 }
             }
         }
     }
     work.apply(&edits);
-
-    // A slide that now crowds another net is undone and re-routed instead, so violators get pushed or avoided.
-    if req.route_mode != RouteMode::Ignore && !slid.is_empty() {
-        let ids: Vec<ItemId> = slid.iter().map(|s| s.0).collect();
-        let crowded: std::collections::HashSet<ItemId> = super::drc::run_near(&work, &ids)
-            .into_iter()
-            .filter(|v| v.code == "clearance" || v.code == "short")
-            .flat_map(|v| v.items)
-            .collect();
-        let mut undo = Vec::new();
-        for (id, original, far, to) in slid {
-            if !crowded.contains(&id) {
-                continue;
-            }
-            undo.push(Edit { id, before: work.get(id).cloned(), after: None });
-            // The neighbour went back to its original shape, still ending at `far`.
-            for (nid, n) in doc.items() {
-                if let (Item::Track(nt), Some(Item::Track(now))) = (n, work.get(nid)) {
-                    if nid != id && nt.net == original.net && (nt.a == far || nt.b == far) && now != nt {
-                        undo.push(Edit { id: nid, before: Some(Item::Track(now.clone())), after: Some(n.clone()) });
-                    }
-                }
-            }
-            reroutes.push(Reroute { net: original.net.clone(), layer: original.layer, width: original.width, from: far, to });
-        }
-        work.apply(&undo);
-    }
 
     let mut out = DragResult::default();
     // Shorter connections first: they have the least room to detour.
@@ -397,6 +312,23 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
         if r.from == r.to { continue; }
         let request = RouteRequest { net: r.net.clone(), layer: r.layer, start: r.from, end: r.to, width: r.width, mode: req.route_mode, corner: req.corner, ignore: vec![], posture_flip: false };
         let mut result = route(&work, &request);
+        if !result.reached {let alternate=route(&work,&RouteRequest{posture_flip:true,..request.clone()});if alternate.reached{result=alternate;}}
+        // Retain a clear prefix of the old section when an obstacle needs a
+        // waypoint. The whole section is still replaced, so detours cannot pile up.
+        if !result.reached && r.guides.len()>1 {
+            for split in (1..r.guides.len()).rev() {
+                let via=r.guides[split];
+                let mut joined=route(&work,&RouteRequest{start:via,..request.clone()});
+                if !joined.reached {joined=route(&work,&RouteRequest{start:via,posture_flip:true,..request.clone()});}
+                if !joined.reached {continue;}
+                let mut path=r.guides[..=split].to_vec();
+                for track in &joined.tracks {path.push(track.b);}
+                let path=super::elastic::simplify(&path);
+                if !super::elastic::simple_path(&path){continue;}
+                joined.tracks=path.windows(2).map(|p|Track{a:p[0],b:p[1],width:r.width,layer:r.layer,net:r.net.clone(),locked:false}).collect();
+                result=joined;break;
+            }
+        }
         if !result.reached || result.tracks.is_empty() {
             // Avoid/push modes must not silently fall back to crossing obstacles.
             if req.route_mode != RouteMode::Ignore { return rejected(DragFailure::Unroutable); }
@@ -406,6 +338,8 @@ fn drag_connected(doc: &Document, req: &DragRequest) -> DragResult {
         } else {
             out.rerouted += 1;
         }
+        let mut path=vec![r.from];path.extend(result.tracks.iter().map(|t|t.b));
+        if !super::elastic::simple_path(&super::elastic::simplify(&path)) { return rejected(DragFailure::Unroutable); }
         let mut step: Vec<Edit> = Vec::new();
         let mut gone = std::collections::HashSet::new();
         for m in &result.moved {
@@ -564,7 +498,7 @@ mod tests {
         assert!(connected(&d));
         let u2 = id_of(&d, "U2");
         let r = drag_footprints(&d, &req(vec![u2], p(0.0, -3.0), MoveMode::PreserveAngles));
-        assert_eq!(r.rerouted, 0, "a free slide needs no re-routing");
+        assert_eq!(r.failure, None);
         assert_eq!(r.blocked, 0);
         assert!(r.replace.iter().any(|x| x.id == u2), "the footprint keeps its ID");
         let mut s = Session::with_document(d);
@@ -579,14 +513,16 @@ mod tests {
     }
 
     #[test]
-    fn the_pad_segment_slides_along_its_neighbour_keeping_both_angles() {
-        // U2's 45° segment (15,5)→(20,0) meets the horizontal (5,5)→(15,5). Move U2 down by 3 mm.
-        let d = doc(vec![]);
-        let r = drag_footprints(&d, &req(vec![id_of(&d, "U2")], p(0.0, -3.0), MoveMode::PreserveAngles));
-        assert!(r.add.is_empty() && r.delete.is_empty(), "no segments are added or removed");
-        let tracks: Vec<&Track> = r.replace.iter().filter_map(|x| if let Item::Track(t) = &x.item { Some(t) } else { None }).collect();
-        assert!(tracks.iter().any(|t| (t.a == p(12.0, 5.0) && t.b == p(20.0, -3.0)) || (t.b == p(12.0, 5.0) && t.a == p(20.0, -3.0))), "still 45°, now from (12,5): {tracks:?}");
-        assert!(tracks.iter().any(|t| t.a == p(5.0, 5.0) && t.b == p(12.0, 5.0)), "the horizontal neighbour just got shorter");
+    fn rebuilt_pad_connection_has_no_obsolete_bends_and_reaches_both_pads() {
+        let d=doc(vec![]);let u2=id_of(&d,"U2");
+        let r=drag_footprints(&d,&req(vec![u2],p(0.,-3.),MoveMode::PreserveAngles));
+        assert_eq!(r.failure,None);
+        let mut session=Session::with_document(d);session.execute(Command::Route{replace:r.replace,delete:r.delete,add:r.add}).unwrap();
+        assert!(connected(session.document()));
+        let tracks:Vec<_>=session.document().items().filter_map(|(_,i)|if let Item::Track(t)=i{Some(t)}else{None}).collect();
+        assert!(tracks.len()<=3,"unnecessary old bends remain: {tracks:?}");
+        assert!(tracks.iter().any(|t|t.a==p(0.,0.)||t.b==p(0.,0.)));
+        assert!(tracks.iter().any(|t|t.a==p(20.,-3.)||t.b==p(20.,-3.)));
     }
 
     #[test]
@@ -953,4 +889,27 @@ mod tests {
             session.redo().unwrap();assert!(session.can_undo());
         }
     }
+    #[test]
+    fn repeated_component_moves_do_not_keep_old_loops_or_grow_the_route() {
+        let d=doc(vec![]);let id=id_of(&d,"U2");let mut session=Session::with_document(d);let mut previous=p(20.,0.);
+        for _ in 0..8 {for target in [p(23.,8.),p(8.,-6.),p(20.,0.)]{
+            let result=drag_footprints(session.document(),&req(vec![id],Point::new(target.x-previous.x,target.y-previous.y),MoveMode::PreserveAngles));assert_eq!(result.failure,None);
+            session.execute(Command::Route{replace:result.replace,delete:result.delete,add:result.add}).unwrap();
+            let mut points=vec![p(0.,0.)];let mut used=std::collections::HashSet::new();
+            while let Some((tid,t))=session.document().items().find_map(|(tid,i)|if let Item::Track(t)=i {let at=*points.last().unwrap();(!used.contains(&tid)&&t.net=="A"&&(t.a==at||t.b==at)).then_some((tid,t))}else{None}){
+                used.insert(tid);let at=*points.last().unwrap();points.push(if t.a==at{t.b}else{t.a});assert!(points.len()<=4);
+            }
+            assert_eq!(*points.last().unwrap(),target);assert!(super::super::elastic::simple_path(&points));assert!(connected(session.document()));
+            assert_eq!(used.len(),session.document().items().filter(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).count());previous=target;
+        }}
+        assert_eq!(session.document().items().filter(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).count(),1);
+    }
+    #[test]
+    fn flipping_two_connected_parts_keeps_both_new_pad_layers_joined() {
+        let d=doc(vec![]);let (a,b)=(id_of(&d,"U1"),id_of(&d,"U2"));let mut request=req(vec![a,b],p(0.,10.),MoveMode::PreserveAngles);request.flipped=true;
+        let result=drag_footprints(&d,&request);assert_eq!(result.failure,None);let mut session=Session::with_document(d);
+        session.execute(Command::Route{replace:result.replace,delete:result.delete,add:result.add}).unwrap();assert!(connected(session.document()));
+        assert_eq!(session.document().items().filter(|(_,i)|matches!(i,Item::Via(_))).count(),2);
+    }
+
 }

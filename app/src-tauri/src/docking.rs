@@ -40,7 +40,7 @@ pub fn create_main(app: &tauri::App) -> tauri::Result<()> {
             .disable_drag_drop_handler()
             .min_inner_size(260., 180.)
             .initialization_script(script)
-            .title("pCAD · Detached view")
+            .title("PCBPlanner Studio · Detached view")
             .on_navigation(move |url| url.as_str() == "about:blank" || allowed_popup(url, &source));
             match builder.build() {
                 Ok(window) => {

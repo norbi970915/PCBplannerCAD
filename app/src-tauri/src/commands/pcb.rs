@@ -35,6 +35,12 @@ pub fn pcb_analysis(state: State<AppState>, id: String) -> Res<Analysis> {
     Ok(Analysis { airwires: connectivity::ratsnest(doc), stats: connectivity::stats(doc) })
 }
 
+#[tauri::command]
+pub fn pcb_routing_defaults(settings: pcbplannercad_core::pcb::board::BoardSettings, net: String, layer: LayerId) -> pcbplannercad_core::pcb::setup::RoutingDefaults { pcbplannercad_core::pcb::setup::routing_defaults(&settings,&net,layer) }
+
+#[tauri::command]
+pub fn pcb_validate_setup(settings: pcbplannercad_core::pcb::board::BoardSettings) -> Vec<String> { pcbplannercad_core::pcb::setup::validate(&settings) }
+
 // DRC runs off the main thread on a snapshot, so editing continues while a (online) check is busy.
 #[tauri::command(async)]
 pub fn pcb_drc(state: State<AppState>, id: String) -> Res<drc::DrcReport> {
@@ -58,6 +64,16 @@ pub struct DocUpdate {
 fn run(ws: &mut Workspace, id: &str, cmd: Command) -> Res<DocUpdate> {
     let delta = ws.doc_mut(id)?.session.execute(cmd).map_err(|e| e.to_string())?;
     Ok(DocUpdate { delta, info: ws.doc_info(id)? })
+}
+
+/// Approval changes are merged under the document lock, without replacing unrelated settings.
+#[tauri::command]
+pub fn pcb_drc_approval(state: State<AppState>, id: String, approval: pcbplannercad_core::pcb::board::DrcApproval, approve: bool) -> Res<DocUpdate> {
+    let mut ws = lock(&state);
+    let (bid, settings) = geometry::board_settings(pcb_doc(&ws, &id)?).ok_or("Board settings are missing; reopen this board before approving findings.")?;
+    let mut settings = settings.clone();
+    settings.set_drc_approval(approval, approve);
+    run(&mut ws, &id, Command::Replace { id: bid, item: Item::Board(settings) })
 }
 
 /// Recomputes pour fills (one zone, or all) as a single undo step.
@@ -132,6 +148,12 @@ pub fn pcb_via(state: State<AppState>, id: String, net: String, pos: Point, from
 }
 
 #[tauri::command(async)]
+pub fn pcb_drag_tracks(state: State<AppState>, id:String, req:pcbplannercad_core::pcb::elastic::TrackRequest)->Res<pcbplannercad_core::pcb::drag::DragResult>{
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    pcbplannercad_core::pcb::elastic::drag_tracks(&doc,&req)
+}
+
+#[tauri::command(async)]
 pub fn pcb_track_edit_plan(state: State<AppState>, id:String, replace:Vec<IdItem>, add:Vec<Item>, mode:router::RouteMode)->Res<pcbplannercad_core::pcb::drag::DragResult>{
     let doc=pcb_doc(&lock(&state),&id)?.clone();
     router::plan_track_edit(&doc,replace,add,mode)
@@ -196,7 +218,7 @@ pub fn pcb_cache_footprint(state: State<AppState>, id: String, library: String, 
 // ---------- schematic → board ----------
 
 /// Resolves a schematic part's footprint ("Lib:Name" or "Name") in open libraries.
-/// Boards imported from structured format key footprints "Lib:Name" while pCAD uses
+/// Boards imported from structured format key footprints "Lib:Name" while PCBPlanner Studio uses
 /// "Lib/Name"; an existing key of either form is reused so unchanged parts
 /// don't show up as footprint swaps.
 fn resolver<'a>(ws: &'a Workspace, board: &'a pcbplannercad_core::Document) -> impl Fn(&schematic::NetlistPart) -> Option<(String, Footprint)> + 'a {
@@ -206,7 +228,7 @@ fn resolver<'a>(ws: &'a Workspace, board: &'a pcbplannercad_core::Document) -> i
             return None;
         }
         // Prefer the library the component came from.
-        let preferred = ws.libs.iter().find(|(_, l)| l.lib.name == p.library).map(|(id, _)| id.clone()).unwrap_or_default();
+        let preferred = ws.libs.iter().find(|(_, l)| l.lib.name == p.library || (p.library == "pCAD Basic" && l.readonly && l.lib.name == pcbplannercad_core::libgen::starter::STARTER_LIBRARY_NAME)).map(|(id, _)| id.clone()).unwrap_or_default();
         let (lib_id, fp) = ws.find_footprint(&preferred, reference)?;
         let lib_name = ws.libs.get(&lib_id).map(|l| l.lib.name.clone()).unwrap_or_default();
         let candidates = [format!("{lib_name}/{}", fp.name), format!("{lib_name}:{}", fp.name), reference.to_string()];
@@ -283,8 +305,8 @@ pub fn pcb_panelize(state: State<AppState>, id: String, spec: pcbplannercad_core
 /// Plans dragging footprints with their routing kept connected; the frontend commits it as a `route` command.
 #[tauri::command(async)]
 pub fn pcb_drag_footprints(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::DragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
-    let ws = lock(&state);
-    Ok(pcbplannercad_core::pcb::drag::drag_footprints(pcb_doc(&ws, &id)?, &req))
+    let doc = pcb_doc(&lock(&state), &id)?.clone();
+    Ok(pcbplannercad_core::pcb::drag::drag_footprints(&doc, &req))
 }
 
 /// Plans Cleanup Tracks & Vias; the frontend commits it as a `route` command.

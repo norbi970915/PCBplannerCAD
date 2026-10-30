@@ -27,7 +27,7 @@ export function MessagesPanel() {
   const sources=useMemo(()=>[...new Set(messages.flatMap(m=>m.source?[m.source]:[]))].sort(),[messages]);
   const logRef = useRef<HTMLDivElement>(null);
   const shown = useMemo(()=>filterMessages(messages,{level:filter,source,query}),[messages,filter,source,query]);
-  const exportLog=async()=>{setSaving(true);try{const path=await save({defaultPath:"pCAD-log.txt",filters:[{name:"Text log",extensions:["txt"]}]});if(path)await api.writeFileBytes(path,new TextEncoder().encode(messageLogText(shown)));}catch(e){report(e);}finally{setSaving(false);}};
+  const exportLog=async()=>{setSaving(true);try{const path=await save({defaultPath:"PCBPlanner Studio-log.txt",filters:[{name:"Text log",extensions:["txt"]}]});if(path)await api.writeFileBytes(path,new TextEncoder().encode(messageLogText(shown)));}catch(e){report(e);}finally{setSaving(false);}};
   const errors = messages.filter((m) => m.level === "error").length;
   const warnings = messages.filter((m) => m.level === "warning").length;
 

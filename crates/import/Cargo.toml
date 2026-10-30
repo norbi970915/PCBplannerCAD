@@ -2,8 +2,8 @@
 name = "pcbplannercad-import"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-description = "Structured and XML design-file importers for pCAD"
+license-file.workspace = true
+description = "Structured and XML design-file importers for PCBPlanner Studio"
 
 [dependencies]
 pcbplannercad-core.workspace = true

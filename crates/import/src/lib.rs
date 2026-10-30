@@ -1,8 +1,9 @@
-//! Importers that turn foreign design files into pCAD core types.
+//! Importers that turn foreign design files into PCBPlanner Studio core types.
 //!
 //! - [`structured`]: S-expression projects, sheets, boards and libraries.
 //! - [`xml`]: XML designs and libraries.
 
+pub mod notices;
 pub mod paths;
 pub mod xml;
 pub mod structured;

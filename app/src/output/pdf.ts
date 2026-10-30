@@ -255,7 +255,7 @@ export function buildPdf(pages: PdfPage[], meta?: { title?: string; author?: str
   objs[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${list.length} >>`;
   objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
   objs[4] = `<< ${[...gs.alphas].map(([a, name]) => `/${name} << /Type /ExtGState /CA ${n(a)} /ca ${n(a)} >>`).join(" ")} >>`;
-  const info = [`/Producer (pCAD)`, `/CreationDate ${pdfDate(new Date())}`];
+  const info = [`/Producer (PCBPlanner Studio)`, `/CreationDate ${pdfDate(new Date())}`];
   if (meta?.title) info.push(`/Title ${infoString(meta.title)}`);
   if (meta?.author) info.push(`/Author ${infoString(meta.author)}`);
   objs[5] = `<< ${info.join(" ")} >>`;
@@ -316,7 +316,7 @@ export function pdfSelfCheck(): boolean {
       { tris: [30e6, 10e6, 40e6, 10e6, 35e6, 20e6], color: [0, 0.6, 0, 0.4] },
     ],
   });
-  const bytes = buildPdf([page("Schematic – Ünïcode (test) \\ page"), page("Board")], { title: "Self check ✓", author: "pCAD" });
+  const bytes = buildPdf([page("Schematic – Ünïcode (test) \\ page"), page("Board")], { title: "Self check ✓", author: "PCBPlanner Studio" });
   let text = "";
   for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
   if (!text.startsWith("%PDF-1.4\n") || !text.endsWith("%%EOF\n")) return false;

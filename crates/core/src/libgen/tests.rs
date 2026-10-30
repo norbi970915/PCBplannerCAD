@@ -301,40 +301,21 @@ fn parameter_sweeps_pass_all_rules() {
 }
 
 #[test]
-fn chip_0603_matches_ipc_nominal() {
-    // IPC-7351B RESC1608X55N is about 0.95 × 1.00 mm lands at 1.55–1.6 mm
-    // centers; accepted tolerance ±0.15 mm on pad length, ±0.1 mm elsewhere.
-    let fp = generate(&FootprintSpec::Chip(ChipSpec::default())).unwrap();
-    assert_eq!(fp.name, "R_0603_1608Metric");
-    let (a, b) = (pad(&fp, "1"), pad(&fp, "2"));
-    assert!((to_mm(a.width) - 0.95).abs() <= 0.15, "pad length {}", to_mm(a.width));
-    assert!((to_mm(a.height) - 1.0).abs() <= 0.1, "pad width {}", to_mm(a.height));
-    assert!((to_mm(b.pos.x - a.pos.x) - 1.6).abs() <= 0.1);
-    assert_eq!(a.pos.y, 0);
-    assert!(a.pos.x < 0 && b.pos.x > 0, "pad 1 left");
-    // Exact values of our math: 0.85 × 0.95 at ±0.80.
-    assert_eq!((a.width, a.height, b.pos.x), (mm(0.85), mm(0.95), mm(0.8)));
+fn chip_0603_uses_uniform_editable_land_goals() {
+    let spec=FootprintSpec::Chip(ChipSpec::default());let fp=generate(&spec).unwrap();check_footprint(&fp);
+    let (a,b)=(pad(&fp,"1"),pad(&fp,"2"));assert_eq!(a.pos.y,0);assert_eq!(a.pos.x,-b.pos.x);assert_eq!(a.width,mm(0.6));
+    let larger=super::wizard::generate_with_goals(&spec,super::wizard::LandGoals{toe:0.3,heel:0.0,side:0.1}).unwrap();
+    assert!(pad(&larger,"1").width>a.width);assert!(pad(&larger,"1").height>a.height);check_footprint(&larger);
+    for goals in [super::wizard::LandGoals{toe:f64::NAN,heel:0.0,side:0.0},super::wizard::LandGoals{toe:-0.1,heel:0.0,side:0.0},super::wizard::LandGoals{toe:0.1,heel:0.0,side:3.0}] {assert!(super::wizard::generate_with_goals(&spec,goals).is_err());}
 }
 
 #[test]
-fn soic8_rows_and_pitch() {
-    let fp = generate(&FootprintSpec::Soic(DualRowSpec::default())).unwrap();
-    assert_eq!(fp.name, "SOIC-8_3.9x4.9mm_P1.27mm");
-    let (p1, p2, p8, p4, p5) = (pad(&fp, "1"), pad(&fp, "2"), pad(&fp, "8"), pad(&fp, "4"), pad(&fp, "5"));
-    assert_eq!(p1.pos.y - p2.pos.y, mm(1.27));
-    assert_eq!(p1.pos.y, p8.pos.y);
-    assert_eq!(p4.pos.y, p5.pos.y);
-    assert!(p1.pos.x < 0 && p1.pos.y > 0, "pin 1 top-left");
-    // IPC-7351B RMS math with the JEDEC MS-012 foot length (0.40–1.27 mm)
-    // puts the rows 4.95 mm apart (2.0 × 0.6 mm lands).
-    // The shorter-foot pattern quoted by many
-    // datasheets (5.40 mm rows, 1.55 mm lands) results from L = 0.40–0.70.
-    assert!((to_mm(p8.pos.x - p1.pos.x) - 4.95).abs() <= 0.05);
-    assert_eq!(p1.height, mm(0.6));
-    let short = generate(&FootprintSpec::Soic(DualRowSpec { lead_length_max: Some(0.7), ..Default::default() })).unwrap();
-    let (s1, s8) = (pad(&short, "1"), pad(&short, "8"));
-    assert!((to_mm(s8.pos.x - s1.pos.x) - 5.4).abs() <= 0.05, "{}", to_mm(s8.pos.x - s1.pos.x));
-    assert!((to_mm(s1.width) - 1.55).abs() <= 0.05);
+fn soic8_rows_pitch_and_lead_length_response() {
+    let fp=generate(&FootprintSpec::Soic(DualRowSpec::default())).unwrap();check_footprint(&fp);
+    let (p1,p2,p8,p4,p5)=(pad(&fp,"1"),pad(&fp,"2"),pad(&fp,"8"),pad(&fp,"4"),pad(&fp,"5"));
+    assert_eq!(p1.pos.y-p2.pos.y,mm(1.27));assert_eq!(p1.pos.y,p8.pos.y);assert_eq!(p4.pos.y,p5.pos.y);assert!(p1.pos.x<0&&p1.pos.y>0);assert_eq!(p1.height,p8.height);
+    let short=generate(&FootprintSpec::Soic(DualRowSpec{lead_length_max:Some(0.7),..Default::default()})).unwrap();check_footprint(&short);
+    let (s1,s8)=(pad(&short,"1"),pad(&short,"8"));assert!(s8.pos.x-s1.pos.x>p8.pos.x-p1.pos.x);assert!(s1.width<p1.width);
 }
 
 #[test]
@@ -511,7 +492,7 @@ fn box_symbol_validation_and_width_override() {
 #[test]
 fn starter_library_is_consistent() {
     let lib = starter_library();
-    assert_eq!(lib.name, "pCAD Basic");
+    assert_eq!(lib.name, "PCBPlanner Basic");
     let uniq = |v: Vec<&str>| v.len() == v.iter().collect::<HashSet<_>>().len();
     assert!(uniq(lib.symbols.iter().map(|s| s.name.as_str()).collect()));
     assert!(uniq(lib.footprints.iter().map(|s| s.name.as_str()).collect()));

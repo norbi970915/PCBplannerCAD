@@ -9,7 +9,7 @@ export function filterDrc(violations:readonly DrcViolation[],items:ReadonlyMap<I
     return [v.code,v.rule,v.message,...related].some(text=>text.toLowerCase().includes(query));
   });
 }
-export function drcCsv(violations:readonly DrcViolation[]):string{
+export function drcCsv(violations:readonly DrcViolation[],reviewStatus?:(finding:DrcViolation)=>string):string{
   const cell=(value:string|number)=>{
     let text=String(value);
     // Treat user-provided names as text when opened in a spreadsheet.
@@ -17,5 +17,6 @@ export function drcCsv(violations:readonly DrcViolation[]):string{
     return '"'+text.replace(/"/g,'""')+'"';
   };
   const rows:(string|number)[][]=[['Severity','Code','Rule','Message','Item IDs','Layer ID','X (mm)','Y (mm)'],...violations.map(v=>[v.severity,v.code,v.rule,v.message,v.items.join(';'),v.layer??'',v.pos.x/1e6,v.pos.y/1e6])];
+  if(reviewStatus){rows[0].push('Review status');violations.forEach((finding,index)=>rows[index+1].push(reviewStatus(finding)));}
   return '\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n')+'\r\n';
 }

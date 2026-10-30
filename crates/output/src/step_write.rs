@@ -195,8 +195,8 @@ pub(super) fn write(name: &str, meshes: &[Mesh], timestamp: &str) -> Result<Stri
     let file = step_string(name);
     let _ = write!(
         w.out,
-        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('pCAD 3D board model'),'2;1');\n\
-         FILE_NAME('{file}.step','{timestamp}',(''),(''),'pCAD','pCAD','');\n\
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('PCBPlanner Studio 3D board model'),'2;1');\n\
+         FILE_NAME('{file}.step','{timestamp}',(''),(''),'PCBPlanner Studio','PCBPlanner Studio','');\n\
          FILE_SCHEMA(('AUTOMOTIVE_DESIGN {{ 1 0 10303 214 1 1 1 1 }}'));\nENDSEC;\nDATA;\n"
     );
 

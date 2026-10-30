@@ -290,9 +290,10 @@ export function App() {
         buildDefaultLayout(a);
         for (const d of docs) bus.emit("showDoc", d);
       }),
-      bus.on("showPanel", ({ id }) => {
+      bus.on("showPanel", ({ id, docId }) => {
         const a = api();
         if (!a) return;
+        if(id === "properties" && docId && a.getPanel(`doc:${docId}`)?.api.location.type === "popout") return;
         const existing = a.getPanel(id);
         if (existing) {existing.api.setActive();focusPanelWindow(existing);return;}
         if (id === "pcb" && a.getPanel("projects")) {
@@ -327,7 +328,7 @@ export function App() {
       if (s.project?.path !== prev.project?.path) rememberProject(s.project?.path ?? null);
       const active = s.activeDocId ? s.docs[s.activeDocId] : undefined;
       const title = `${s.project ? `${s.project.name} — ` : ""}${active ? active.info.title : ""}${active?.info.dirty ? " *" : ""}`;
-      void getCurrentWindow().setTitle(`${title ? `${title} — ` : ""}pCAD`).catch(() => {});
+      void getCurrentWindow().setTitle(`${title ? `${title} — ` : ""}PCBPlanner Studio`).catch(() => {});
     });
 
     // The close listener registers asynchronously; if the effect is torn down
@@ -341,7 +342,7 @@ export function App() {
         try {
         const ok=await allowWindowClose({
           unsaved:anyUnsaved,
-          confirm:names=>ask("Unsaved changes in: "+names.slice(0,6).join(", ")+(names.length>6?"…":"")+". Quit anyway?",{title:"pCAD",kind:"warning",okLabel:"Quit",cancelLabel:"Cancel"}),
+          confirm:names=>ask("Unsaved changes in: "+names.slice(0,6).join(", ")+(names.length>6?"…":"")+". Quit anyway?",{title:"PCBPlanner Studio",kind:"warning",okLabel:"Quit",cancelLabel:"Cancel"}),
           capture:()=>useRecoveryStatus.getState().enabled?backendApi.recoveryCapture(false):Promise.resolve(null),
           report:message=>st().log("error",message,{source:"Recovery"})
         });

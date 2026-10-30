@@ -343,7 +343,14 @@ export interface ViaType {
   drill: Coord;
 }
 
+export interface DrcApproval {
+  finding: DrcViolation;
+  /** Exact reviewed geometry/rule context; not a wildcard suppression. */
+  context: string;
+}
+
 export interface BoardSettings {
+  drcApprovals?: DrcApproval[];
   autoTeardrops?: TeardropOptions | null;
   stackup: { layers: StackLayer[] };
   viaTypes?: ViaType[];
@@ -476,6 +483,7 @@ export interface Component {
 
 export interface Library {
   name: string;
+  notices?: string[];
   symbols: LibSymbol[];
   footprints: Footprint[];
   components: Component[];

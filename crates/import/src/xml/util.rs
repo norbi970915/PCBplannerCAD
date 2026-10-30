@@ -199,7 +199,7 @@ fn v_flipped(v: VAlign) -> VAlign {
     }
 }
 
-/// Converts an XML text orientation into a readable pCAD rotation and
+/// Converts an XML text orientation into a readable PCBPlanner Studio rotation and
 /// alignment. Mirroring keeps glyphs readable but flips the horizontal
 /// alignment (`flip_mirror`, schematic texts); texts turned upside down
 /// (90° < angle ≤ 270°) are shown rotated by 180° with both alignments
@@ -257,7 +257,7 @@ pub(crate) fn schematic_layer(n: u32) -> Option<LayerId> {
     (91..=98).contains(&n).then_some(layer::SCHEMATIC)
 }
 
-/// Counts items dropped because their layer has no pCAD equivalent.
+/// Counts items dropped because their layer has no PCBPlanner Studio equivalent.
 #[derive(Debug, Default)]
 pub(crate) struct LayerSkips(pub BTreeMap<u32, usize>);
 

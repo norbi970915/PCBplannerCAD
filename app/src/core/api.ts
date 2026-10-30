@@ -8,6 +8,7 @@ import type {
   BoardModel3d,
   BoardSettings,
   DrcReport,
+  DrcApproval,
   DrcViolation,
   EcoChange,
   Mesh3d,
@@ -80,6 +81,9 @@ const routeItems = (result: RouteResponse): RouteResult => ({
 });
 
 export const api = {
+  libSetNotices: (id: string, notices: string[]) => invoke<void>("lib_set_notices", { id, notices }),
+  legalInfo: () => invoke<{ legal: string; data: string; migration: string[] }>("legal_info"),
+  openLegalFolder: () => invoke<void>("open_legal_folder"),
   dockCloseWindow: (label:string)=>invoke<void>("dock_close_window",{label}),
   dockFocusWindow: (label:string)=>invoke<void>("dock_focus_window",{label}),
   // documents
@@ -124,8 +128,8 @@ export const api = {
   // wizards
   wizardFamilies: () => invoke<WizardFamily[]>("wizard_families"),
   wizardDefaultName: (spec: WizardSpec) => invoke<string>("wizard_default_name", { spec }),
-  wizardPreview: (spec: WizardSpec) => invoke<Footprint>("wizard_preview", { spec }),
-  wizardGenerate: (id: string, spec: WizardSpec, name: string | null) => invoke<string>("wizard_generate", { id, spec, name }),
+  wizardPreview: (spec: WizardSpec, goals?: WizardGoals) => invoke<Footprint>("wizard_preview", { spec, goals: goals ?? null }),
+  wizardGenerate: (id: string, spec: WizardSpec, name: string | null, goals?: WizardGoals) => invoke<string>("wizard_generate", { id, spec, name, goals: goals ?? null }),
   symbolWizard: (id: string, spec: SymbolSpec) => invoke<string>("symbol_wizard", { id, spec }),
 
   // project
@@ -147,6 +151,9 @@ export const api = {
   // board
   projectNewPcb: () => invoke<ProjectState>("project_new_pcb"),
   pcbAnalysis: (id: string) => invoke<{ airwires: AirWire[]; stats: RoutingStats }>("pcb_analysis", { id }),
+  pcbRoutingDefaults: (settings: BoardSettings, net: string, layer: number) => invoke<{width:number;pairWidth:number;pairGap:number}>("pcb_routing_defaults", { settings, net, layer }),
+  pcbValidateSetup: (settings: BoardSettings) => invoke<string[]>("pcb_validate_setup", { settings }),
+  pcbDrcApproval: (id: string, approval: DrcApproval, approve: boolean) => invoke<Update>("pcb_drc_approval", {id, approval, approve}),
   pcbDrc: (id: string) => invoke<DrcReport>("pcb_drc", { id }),
   pcbDrcNear: (id: string, items: ItemId[]) => invoke<DrcViolation[]>("pcb_drc_near", { id, items }),
   pcbRepour: (id: string, zone: ItemId | null) => invoke<Update>("pcb_repour", { id, zone }),
@@ -165,6 +172,7 @@ export const api = {
   /** Several footprints, each by its own offset, with tracks kept connected (Pack & Move), as a `route` command plan. */
   pcbDragEach: (id: string, req: { moves: { id: ItemId; delta: Point }[]; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
     invoke<PcbDragPlan>("pcb_drag_each", { id, req }),
+  pcbDragTracks: (id:string,req:{ids:ItemId[];delta:Point;point:Point;mode:RouteMode;corner:CornerStyle;tolerance:number})=>invoke<PcbDragPlan>("pcb_drag_tracks",{id,req}),
   pcbTrackEditPlan: (id:string,replace:IdItem[],add:Item[],mode:RouteMode)=>invoke<PcbDragPlan>("pcb_track_edit_plan",{id,replace,add,mode}),
   pcbRoute: async (id: string, req: RouteRequest): Promise<RouteResult> => routeItems(await invoke<RouteResponse>("pcb_route", { id, req })),
   pcbRoutePair: async (id: string, req: RouteRequest, negNet: string, gap: number, negStart: Point | null = null): Promise<[RouteResult, RouteResult]> => {
@@ -230,6 +238,8 @@ export const api = {
 };
 
 /** Footprint wizard spec: `{ family: "...", ...params }` (see libgen::wizard). */
+export interface WizardGoals { toe: number; heel: number; side: number }
+
 export type WizardSpec = { family: string } & Record<string, unknown>;
 
 export interface WizardParam {

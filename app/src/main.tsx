@@ -12,7 +12,7 @@ import { initTheme } from "./core/theme";
 
 initTheme();
 void loadInitialState();
-useEditor.getState().log("info", "pCAD started. Create or open a project from the Home tab; the built-in “pCAD Basic” library is ready in the Components panel.");
+useEditor.getState().log("info", "PCBPlanner Studio started. Create or open a project from the Home tab; the built-in “PCBPlanner Basic” library is ready in the Components panel.");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

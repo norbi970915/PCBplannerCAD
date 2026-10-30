@@ -14,6 +14,7 @@ pub mod cleanup;
 pub mod connectivity;
 pub mod dimension;
 pub mod drag;
+pub mod elastic;
 pub mod drc;
 pub mod fill;
 pub mod geometry;
@@ -35,3 +36,5 @@ mod editing_tests;
 
 #[cfg(test)]
 mod via_guard_tests;
+
+pub mod setup;

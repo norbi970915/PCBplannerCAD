@@ -1,55 +1,8 @@
-//! Footprint wizard: IPC-7351B-style land-pattern generators.
-//!
-//! # Land-pattern math (IPC-7351B, density level B "nominal")
-//!
-//! For two-row / four-row terminations the generator works from the
-//! datasheet min/max of three package dimensions:
-//!
-//! * `L` — overall terminal span (tip to tip),
-//! * `T` — terminal (foot) length,
-//! * `W` — terminal width,
-//!
-//! and computes, with `C* = max − min` tolerances, fabrication tolerance
-//! `F = 0.10 mm` and placement tolerance `P = 0.05 mm`:
-//!
-//! ```text
-//! Smin = Lmin − 2·Tmax          Smax = Lmax − 2·Tmin
-//! CS   = Smax − Smin            CSrms = √(CL² + 2·CT²)     (statistical S tolerance)
-//! Smax' = Smax − (CS − CSrms)/2
-//! Zmax = Lmin  + 2·Jt + √(CL²    + F² + P²)   outer land extent  → rounded up to 0.05
-//! Gmin = Smax' − 2·Jh − √(CSrms² + F² + P²)   inner land gap     → rounded down to 0.05
-//! Xmax = Wmin  + 2·Js + √(CW²    + F² + P²)   land width         → rounded up to 0.05
-//! pad length = (Z − G)/2,  pad-center distance = (Z + G)/2
-//! ```
-//!
-//! Solder-fillet goals (toe `Jt`, heel `Jh`, side `Js`, mm) used per family:
-//!
-//! | terminations                          | Jt   | Jh   | Js    |
-//! |---------------------------------------|------|------|-------|
-//! | chip ≥ 1608 (0603)                    | 0.35 | 0.00 | 0.00  |
-//! | chip < 1608                           | 0.20 | 0.00 | 0.00  |
-//! | gull-wing, pitch > 0.625              | 0.35 | 0.35 | 0.03  |
-//! | gull-wing, pitch ≤ 0.625              | 0.35 | 0.35 | −0.02 |
-//! | flat lead (SOD-123/323/523)           | 0.30 | 0.00 | 0.05  |
-//! | molded inward-L (SMA/SMB/SMC)         | 0.50 | 0.15 | −0.05 |
-//! | no-lead QFN                           | 0.30 | 0.00 | −0.04 |
-//!
-//! Fine-pitch land widths are capped at `pitch − 0.2 mm` so a 0.2 mm copper
-//! gap remains. QFN lands are shortened on the heel side to keep ≥ 0.2 mm
-//! from the exposed pad. SOT-89 and the 4-pad crystals use tabulated lands.
-//!
-//! # Conventions
-//!
-//! * Origin is the body center for every family (THT included), Y up.
-//! * Dual-row parts: pin 1 top-left, pins counted down the left column and
-//!   up the right column. Quad parts: pin 1 at the top of the left side,
-//!   counter-clockwise. Pin headers: pin 1 top-left, numbered across the
-//!   rows first (odd/even columns for 2-row headers). Exposed pads get
-//!   number `pins + 1`. 4-pad crystals: pin 1 bottom-left, counter-clockwise.
-//! * Pin 1 is marked by a rectangular pad (THT), a silk dot (QFN/QFP/SMD
-//!   crystals), a silk line extended to pad 1 (dual-row, SOT) or a polarity
-//!   bar (diodes, polarized chips), plus the pin-1 bevel on the assembly
-//!   outline.
+//! Editable footprint geometry using user-selected land goals.
+//! Default goals are uniform PCBPlanner Studio modeling choices: 0.10 mm toe, zero heel and side.
+//! No family-by-family standards fillet table is used. Package dimensions are example
+//! inputs; verify the actual component drawing and manufacturing process before use.
+//! Existing tolerance propagation and geometric clearance checks remain engineering models.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,7 +12,7 @@ use crate::error::CoreError;
 use crate::item::PadShape;
 use crate::library::Footprint;
 
-// ---------- IPC math ----------
+// ---------- Geometry model ----------
 
 const FAB_TOL: f64 = 0.10;
 const PLACE_TOL: f64 = 0.05;
@@ -88,26 +41,14 @@ impl Tol {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Fillet {
-    pub toe: f64,
-    pub heel: f64,
-    pub side: f64,
-}
-
-const fn fillet(toe: f64, heel: f64, side: f64) -> Fillet {
-    Fillet { toe, heel, side }
-}
-
-const GULL_WIDE: Fillet = fillet(0.35, 0.35, 0.03);
-const GULL_FINE: Fillet = fillet(0.35, 0.35, -0.02);
-const FLAT_LEAD: Fillet = fillet(0.30, 0.0, 0.05);
-const INWARD_L: Fillet = fillet(0.50, 0.15, -0.05);
-const NO_LEAD: Fillet = fillet(0.30, 0.0, -0.04);
-
-fn gull_fillet(pitch: f64) -> Fillet {
-    if pitch > 0.625 { GULL_WIDE } else { GULL_FINE }
-}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LandGoals { pub toe: f64, pub heel: f64, pub side: f64 }
+impl Default for LandGoals { fn default() -> Self { Self { toe:0.10, heel:0.0, side:0.0 } } }
+impl LandGoals { fn validate(&self)->Result<(),CoreError>{
+    ensure(self.toe.is_finite()&&self.heel.is_finite()&&self.side.is_finite(),"Land goals must be finite")?;
+    ensure((0.0..=2.0).contains(&self.toe)&&(-0.5..=2.0).contains(&self.heel)&&(-0.5..=2.0).contains(&self.side),"Land goals are outside the supported range")
+} }
 
 /// Outer extent `z`, inner gap `g` and land width `x` (mm).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,7 +81,7 @@ fn round_down(v: f64) -> f64 {
     snap((v / ROUND + 1e-6).floor() * ROUND)
 }
 
-pub(crate) fn ipc_land(l: Tol, t: Tol, w: Tol, j: Fillet) -> Land {
+pub(crate) fn calculate_land(l: Tol, t: Tol, w: Tol, j: LandGoals) -> Land {
     let ft = FAB_TOL * FAB_TOL + PLACE_TOL * PLACE_TOL;
     let (cl, ct, cw) = (l.range(), t.range(), w.range());
     let s_min = l.min - 2.0 * t.max;
@@ -729,17 +670,20 @@ pub struct CrystalSpec {
 // ---------- Public API ----------
 
 /// Builds the footprint described by `spec`, named by [`default_name`].
-pub fn generate(spec: &FootprintSpec) -> Result<Footprint, CoreError> {
+pub fn generate(spec: &FootprintSpec) -> Result<Footprint, CoreError> { generate_with_goals(spec, LandGoals::default()) }
+
+pub fn generate_with_goals(spec: &FootprintSpec, goals: LandGoals) -> Result<Footprint, CoreError> {
+    goals.validate()?;
     let name = default_name(spec);
     match spec {
-        FootprintSpec::Chip(s) => chip(s, name),
-        FootprintSpec::Sod(s) => sod(s, name),
-        FootprintSpec::Sot(s) => sot(s, name),
-        FootprintSpec::Soic(s) => dual_row(&s.resolve(DualFamily::Soic), DualFamily::Soic, name),
-        FootprintSpec::Ssop(s) => dual_row(&s.resolve(DualFamily::Ssop), DualFamily::Ssop, name),
-        FootprintSpec::Tssop(s) => dual_row(&s.resolve(DualFamily::Tssop), DualFamily::Tssop, name),
-        FootprintSpec::Qfn(s) => qfn(s, name),
-        FootprintSpec::Qfp(s) => qfp(s, name),
+        FootprintSpec::Chip(s) => chip(s, name, goals),
+        FootprintSpec::Sod(s) => sod(s, name, goals),
+        FootprintSpec::Sot(s) => sot(s, name, goals),
+        FootprintSpec::Soic(s) => dual_row(&s.resolve(DualFamily::Soic), DualFamily::Soic, name, goals),
+        FootprintSpec::Ssop(s) => dual_row(&s.resolve(DualFamily::Ssop), DualFamily::Ssop, name, goals),
+        FootprintSpec::Tssop(s) => dual_row(&s.resolve(DualFamily::Tssop), DualFamily::Tssop, name, goals),
+        FootprintSpec::Qfn(s) => qfn(s, name, goals),
+        FootprintSpec::Qfp(s) => qfp(s, name, goals),
         FootprintSpec::Dip(s) => dip(s, name),
         FootprintSpec::PinHeader(s) => pin_header(s, name),
         FootprintSpec::Axial(s) => axial(s, name),
@@ -845,32 +789,32 @@ fn row_positions(n: u32, pitch: f64) -> impl DoubleEndedIterator<Item = f64> {
 
 // ---------- Family generators ----------
 
-fn chip(s: &ChipSpec, name: String) -> Result<Footprint, CoreError> {
+fn chip(s: &ChipSpec, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     validate_prefix(&s.prefix)?;
     let d = s.size.dims();
-    let j = if d.l.0 >= 1.6 { fillet(0.35, 0.0, 0.0) } else { fillet(0.20, 0.0, 0.0) };
-    let land = ipc_land(Tol::pm(d.l.0, d.l.1), Tol::pm(d.t.0, d.t.1), Tol::pm(d.w.0, d.w.1), j);
+    let j = goals;
+    let land = calculate_land(Tol::pm(d.l.0, d.l.1), Tol::pm(d.t.0, d.t.1), Tol::pm(d.w.0, d.w.1), j);
     check_land(&land)?;
-    let desc = format!("{} chip {} ({} metric), {:.2}x{:.2} mm body, IPC-7351B nominal land pattern", s.prefix, d.code, d.metric, d.l.0, d.w.0);
+    let desc = format!("{} chip {} ({} metric), {:.2}x{:.2} mm body, PCBPlanner Studio editable land-pattern estimate", s.prefix, d.code, d.metric, d.l.0, d.w.0);
     let mut b = FpBuilder::new(name, desc);
     two_terminal(&mut b, &land, d.l.0, d.w.0, s.polarity);
     Ok(b.build())
 }
 
-fn sod(s: &SodSpec, name: String) -> Result<Footprint, CoreError> {
+fn sod(s: &SodSpec, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     validate_prefix(&s.prefix)?;
     // (body length, body width, span L, foot T, width W, fillet)
     let (bl, bw, l, t, w, j) = match s.package {
-        SodPackage::Sod123 => (2.7, 1.6, Tol::new(3.55, 3.85), Tol::new(0.25, 0.40), Tol::new(0.50, 0.70), FLAT_LEAD),
-        SodPackage::Sod323 => (1.7, 1.25, Tol::new(2.30, 2.70), Tol::new(0.25, 0.40), Tol::new(0.25, 0.40), FLAT_LEAD),
-        SodPackage::Sod523 => (1.2, 0.8, Tol::new(1.50, 1.70), Tol::new(0.15, 0.35), Tol::new(0.25, 0.35), FLAT_LEAD),
-        SodPackage::Sma => (4.3, 2.6, Tol::new(4.80, 5.28), Tol::new(0.76, 1.52), Tol::new(1.25, 1.65), INWARD_L),
-        SodPackage::Smb => (4.3, 3.6, Tol::new(5.21, 5.59), Tol::new(0.76, 1.52), Tol::new(1.96, 2.21), INWARD_L),
-        SodPackage::Smc => (6.9, 5.9, Tol::new(7.75, 8.13), Tol::new(0.76, 1.52), Tol::new(2.90, 3.20), INWARD_L),
+        SodPackage::Sod123 => (2.7, 1.6, Tol::new(3.55, 3.85), Tol::new(0.25, 0.40), Tol::new(0.50, 0.70), goals),
+        SodPackage::Sod323 => (1.7, 1.25, Tol::new(2.30, 2.70), Tol::new(0.25, 0.40), Tol::new(0.25, 0.40), goals),
+        SodPackage::Sod523 => (1.2, 0.8, Tol::new(1.50, 1.70), Tol::new(0.15, 0.35), Tol::new(0.25, 0.35), goals),
+        SodPackage::Sma => (4.3, 2.6, Tol::new(4.80, 5.28), Tol::new(0.76, 1.52), Tol::new(1.25, 1.65), goals),
+        SodPackage::Smb => (4.3, 3.6, Tol::new(5.21, 5.59), Tol::new(0.76, 1.52), Tol::new(1.96, 2.21), goals),
+        SodPackage::Smc => (6.9, 5.9, Tol::new(7.75, 8.13), Tol::new(0.76, 1.52), Tol::new(2.90, 3.20), goals),
     };
-    let land = ipc_land(l, t, w, j);
+    let land = calculate_land(l, t, w, j);
     check_land(&land)?;
-    let desc = format!("{} diode package, pad 1 = cathode, IPC-7351B nominal land pattern", s.package.label());
+    let desc = format!("{} diode package, pad 1 = cathode, PCBPlanner Studio editable land-pattern estimate", s.package.label());
     let mut b = FpBuilder::new(name, desc);
     two_terminal(&mut b, &land, bl, bw, true);
     Ok(b.build())
@@ -884,7 +828,7 @@ struct Lead {
     width: Tol,
 }
 
-fn sot(s: &SotSpec, name: String) -> Result<Footprint, CoreError> {
+fn sot(s: &SotSpec, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     let pkg = s.package;
     if pkg == SotPackage::Sot89 {
         return Ok(sot89(name));
@@ -892,7 +836,7 @@ fn sot(s: &SotSpec, name: String) -> Result<Footprint, CoreError> {
     let lead = |number, right, y, width| Lead { number, right, y, width };
     let w23 = Tol::new(0.30, 0.50);
     // (body width across leads, body length, span, foot, leads, pitch)
-    let (bw, bl, span, foot, leads, pitch): (f64, f64, Tol, Tol, Vec<Lead>, f64) = match pkg {
+    let (bw, bl, span, foot, leads, _pitch): (f64, f64, Tol, Tol, Vec<Lead>, f64) = match pkg {
         SotPackage::Sot23 => (1.3, 2.9, Tol::new(2.10, 2.64), Tol::new(0.30, 0.50), vec![lead("1", false, 0.95, w23), lead("2", false, -0.95, w23), lead("3", true, 0.0, w23)], 0.95),
         SotPackage::Sot23_5 => (
             1.6,
@@ -923,12 +867,12 @@ fn sot(s: &SotSpec, name: String) -> Result<Footprint, CoreError> {
         }
         SotPackage::Sot89 => unreachable!(),
     };
-    let j = gull_fillet(pitch);
-    let mut b = FpBuilder::new(name, format!("{} package, IPC-7351B nominal land pattern", pkg.label()));
+    let j = goals;
+    let mut b = FpBuilder::new(name, format!("{} package, PCBPlanner Studio editable land-pattern estimate", pkg.label()));
     let mut z = 0.0_f64;
     let mut pad_top = f64::MIN;
     for l in &leads {
-        let land = ipc_land(span, foot, l.width, j);
+        let land = calculate_land(span, foot, l.width, j);
         check_land(&land)?;
         let x = if l.right { land.offset() } else { -land.offset() };
         b.smd(l.number, x, l.y, land.len(), land.x);
@@ -942,7 +886,7 @@ fn sot(s: &SotSpec, name: String) -> Result<Footprint, CoreError> {
 
 
 /// SOT-89-3 (TO-243): leads 1-3 on the left at 1.5 mm pitch, pin 2 also
-/// continues as a tab to the right. Tabulated land (toe 0.35 mm beyond the
+/// continues as a tab to the right. Fixed example geometry (toe 0.35 mm beyond the
 /// lead tips, tab land 0.1 mm over the tab on each side).
 fn sot89(name: String) -> Footprint {
     let mut b = FpBuilder::new(name, "SOT-89-3 package, tab connected to pin 2");
@@ -958,7 +902,7 @@ fn sot89(name: String) -> Footprint {
     b.build()
 }
 
-fn dual_row(d: &DualRow, fam: DualFamily, name: String) -> Result<Footprint, CoreError> {
+fn dual_row(d: &DualRow, fam: DualFamily, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     ensure(d.pins >= 4 && d.pins.is_multiple_of(2) && d.pins <= 128, "pin count must be even, 4 to 128")?;
     let pitch = positive(d.pitch, "pitch must be positive")?;
     let bw = positive(d.body_width, "body width must be positive")?;
@@ -971,11 +915,11 @@ fn dual_row(d: &DualRow, fam: DualFamily, name: String) -> Result<Footprint, Cor
     let n = d.pins / 2;
     ensure(bl >= (n - 1) as f64 * pitch + width.max, "body is too short for the pin count and pitch")?;
 
-    let mut land = ipc_land(span, foot, width, gull_fillet(pitch));
+    let mut land = calculate_land(span, foot, width, goals);
     land.x = land.x.min(snap(pitch - MIN_COPPER_GAP));
     check_land(&land)?;
     let desc = format!(
-        "{}-{} {}x{} mm body, {} mm pitch, IPC-7351B nominal land pattern",
+        "{}-{} {}x{} mm body, {} mm pitch, PCBPlanner Studio editable land-pattern estimate",
         fam.label(),
         d.pins,
         num(bw),
@@ -1031,7 +975,7 @@ fn quad_silk(b: &mut FpBuilder, body: f64, land: &Land, n: u32, pitch: f64) {
     b.silk_dot(-land.z / 2.0 - dot_offset(), y1);
 }
 
-fn qfn(s: &QfnSpec, name: String) -> Result<Footprint, CoreError> {
+fn qfn(s: &QfnSpec, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     let n = s.pins_per_side;
     ensure((1..=64).contains(&n), "pins per side must be 1 to 64")?;
     let pitch = positive(s.pitch, "pitch must be positive")?;
@@ -1040,7 +984,7 @@ fn qfn(s: &QfnSpec, name: String) -> Result<Footprint, CoreError> {
     let width = tol(s.lead_width_min, s.lead_width_max, "lead width min/max must be positive and ordered")?;
     ensure(width.max < pitch, "lead width must be smaller than the pitch")?;
     ensure(2.0 * foot.max < body, "terminals longer than half the body")?;
-    let mut land = ipc_land(Tol::pm(body, 0.05), foot, width, NO_LEAD);
+    let mut land = calculate_land(Tol::pm(body, 0.05), foot, width, goals);
     land.x = land.x.min(snap(pitch - MIN_COPPER_GAP));
     let ep = s.ep();
     if s.exposed_pad {
@@ -1052,7 +996,7 @@ fn qfn(s: &QfnSpec, name: String) -> Result<Footprint, CoreError> {
     quad_corner_check(n, pitch, &land)?;
     ensure(s.paste_grid <= 8, "paste grid must be 0 to 8")?;
 
-    let desc = format!("QFN-{} {b}x{b} mm body, {} mm pitch, IPC-7351B nominal land pattern", n * 4, num(pitch), b = num(body));
+    let desc = format!("QFN-{} {b}x{b} mm body, {} mm pitch, PCBPlanner Studio editable land-pattern estimate", n * 4, num(pitch), b = num(body));
     let mut b = FpBuilder::new(name, desc);
     quad_pads(&mut b, n, pitch, &land);
     if s.exposed_pad {
@@ -1075,7 +1019,7 @@ fn qfn(s: &QfnSpec, name: String) -> Result<Footprint, CoreError> {
     Ok(b.build())
 }
 
-fn qfp(s: &QfpSpec, name: String) -> Result<Footprint, CoreError> {
+fn qfp(s: &QfpSpec, name: String, goals: LandGoals) -> Result<Footprint, CoreError> {
     ensure(s.pins >= 8 && s.pins.is_multiple_of(4) && s.pins <= 256, "pin count must be a multiple of 4, 8 to 256")?;
     let n = s.pins / 4;
     let pitch = positive(s.pitch, "pitch must be positive")?;
@@ -1087,11 +1031,11 @@ fn qfp(s: &QfpSpec, name: String) -> Result<Footprint, CoreError> {
     let width = tol(width.min, width.max, "lead width min/max must be positive and ordered")?;
     ensure(width.max < pitch, "lead width must be smaller than the pitch")?;
     ensure(span.min > body, "lead span must exceed the body size")?;
-    let mut land = ipc_land(span, foot, width, gull_fillet(pitch));
+    let mut land = calculate_land(span, foot, width, goals);
     land.x = land.x.min(snap(pitch - MIN_COPPER_GAP));
     check_land(&land)?;
     quad_corner_check(n, pitch, &land)?;
-    let desc = format!("{}-{} {b}x{b} mm body, {} mm pitch, IPC-7351B nominal land pattern", s.style.label(), s.pins, num(pitch), b = num(body));
+    let desc = format!("{}-{} {b}x{b} mm body, {} mm pitch, PCBPlanner Studio editable land-pattern estimate", s.style.label(), s.pins, num(pitch), b = num(body));
     let mut b = FpBuilder::new(name, desc);
     quad_pads(&mut b, n, pitch, &land);
     b.body(0.0, 0.0, body, body, Pin1Corner::TopLeft);

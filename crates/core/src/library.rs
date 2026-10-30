@@ -217,6 +217,8 @@ impl Component {
 #[serde(rename_all = "camelCase")]
 pub struct Library {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     #[serde(default)]
     pub symbols: Vec<Symbol>,
     #[serde(default)]
@@ -247,6 +249,7 @@ impl Library {
 
     /// Adds or replaces symbols/footprints/components by name.
     pub fn merge(&mut self, other: Library) {
+        for notice in &other.notices { if !self.notices.contains(notice) { self.notices.push(notice.clone()); } }
         fn upsert<T>(dst: &mut Vec<T>, src: Vec<T>, name: impl Fn(&T) -> &str) {
             for item in src {
                 match dst.iter().position(|d| name(d) == name(&item)) {

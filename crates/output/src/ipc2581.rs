@@ -938,13 +938,13 @@ pub fn write_ipc2581(doc: &Document, project_name: &str) -> Result<String, Outpu
 
     w.open("LogisticHeader", &[]);
     w.leaf("Role", &[("id", "Owner".into()), ("roleFunction", "SENDER".into())]);
-    w.leaf("Enterprise", &[("id", "pCAD".into()), ("code", "NONE".into())]);
-    w.leaf("Person", &[("name", "pCAD".into()), ("enterpriseRef", "pCAD".into()), ("roleRef", "Owner".into())]);
+    w.leaf("Enterprise", &[("id", "PCBPlanner Studio".into()), ("code", "NONE".into())]);
+    w.leaf("Person", &[("name", "PCBPlanner Studio".into()), ("enterpriseRef", "PCBPlanner Studio".into()), ("roleRef", "Owner".into())]);
     w.close();
     let now = utc_now();
-    w.open("HistoryRecord", &[("number", "1".into()), ("origination", now.clone()), ("software", "pCAD".into()), ("lastChange", now)]);
+    w.open("HistoryRecord", &[("number", "1".into()), ("origination", now.clone()), ("software", "PCBPlanner Studio".into()), ("lastChange", now)]);
     w.open("FileRevision", &[("fileRevisionId", "1".into()), ("comment", "".into()), ("label", "".into())]);
-    w.open("SoftwarePackage", &[("name", "pCAD".into()), ("revision", env!("CARGO_PKG_VERSION").into()), ("vendor", "pCAD".into())]);
+    w.open("SoftwarePackage", &[("name", "PCBPlanner Studio".into()), ("revision", env!("CARGO_PKG_VERSION").into()), ("vendor", "PCBPlanner Studio".into())]);
     w.leaf("Certification", &[("certificationStatus", "SELFTEST".into())]);
     w.close();
     w.close();
@@ -978,7 +978,7 @@ pub fn write_ipc2581(doc: &Document, project_name: &str) -> Result<String, Outpu
         }
         chars.extend(params.iter().cloned());
         for (k, v) in chars {
-            w.leaf("Textual", &[("definitionSource", "pCAD".into()), ("textualCharacteristicName", k), ("textualCharacteristicValue", v)]);
+            w.leaf("Textual", &[("definitionSource", "PCBPlanner Studio".into()), ("textualCharacteristicName", k), ("textualCharacteristicValue", v)]);
         }
         w.close();
         w.close();

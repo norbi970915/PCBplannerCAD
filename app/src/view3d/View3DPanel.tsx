@@ -166,7 +166,7 @@ export function View3DPanel({ docId }: { docId: string }) {
       }
       v.render();
       const warn = model.outlineFound ? "" : " · no board outline (placeholder shown)";
-      setStatus(`${total} components${missing ? ` · ${missing} without 3D model (boxes)` : ""}${warn}`);
+      setStatus(`${total} components${missing ? ` · ${missing} without 3D model (boxes)` : ""}${warn} · VRML previews; STEP references use boxes`);
     })();
     return () => {
       cancelled = true;

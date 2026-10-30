@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { api, type FabOptions } from "../core/api";
 import { execute, report } from "../core/actions";
 import { bus } from "../core/bus";
-import { refreshFootprints, scheduleAnalysis } from "../core/pcbActions";
+import { refreshFootprints, scheduleAnalysis, runDrc } from "../core/pcbActions";
 import { activeDoc, useEditor, type DocState } from "../core/store";
 import type { BoardItem, EcoChange, ItemId, LayerId, NetClass, Rule, StackLayer, ViaItem, ViaType } from "../core/types";
 import { NM_PER_MM } from "../core/units";
@@ -95,7 +95,9 @@ function useBoard(docId: string): [ItemId, BoardItem] | null {
 }
 
 async function saveBoard(docId: string, id: ItemId, board: BoardItem) {
-  if (await execute(docId, { op: "replace", id, item: board })) scheduleAnalysis(docId, 0);
+  const saved=await execute(docId, { op: "replace", id, item: board });
+  if(saved) scheduleAnalysis(docId, 0);
+  return saved;
 }
 
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
@@ -467,6 +469,8 @@ function RulesDialog({ docId }: { docId: string }) {
   const [pairs, setPairs] = useState(board?.[1].diffPairs ?? []);
   const [current, setCurrent] = useState(0);
   const [addType, setAddType] = useState<Rule["type"]>("clearance");
+  const source=useRef(board?.[1]);
+  const [busy,setBusy]=useState(false),[errors,setErrors]=useState<string[]>([]);
   if (!board) return null;
   const [id, settings] = board;
   const rule = rules[current];
@@ -480,9 +484,18 @@ function RulesDialog({ docId }: { docId: string }) {
     setRules(next);
     setCurrent(j);
   };
-  const save = async () => {
-    await saveBoard(docId, id, { ...settings, rules, netClasses: classes, diffPairs: pairs });
-    close();
+  const addRule=()=>{const next=newRule(addType);let n=2;while(rules.some(r=>r.name===next.name))next.name=RULE_LABEL[addType]+" "+n++;setRules([next,...rules]);setCurrent(0);};
+  const save = async (check=false) => {
+    if(busy)return;setBusy(true);setErrors([]);
+    const draft={...settings,rules,netClasses:classes,diffPairs:pairs};
+    const stillCurrent=()=>useEditor.getState().docs[docId]?.items.get(id)===source.current;
+    try{
+      if(!stillCurrent())throw Error("Board setup changed while this editor was open. Cancel and reopen it to review the latest rules.");
+      const issues=await api.pcbValidateSetup(draft);if(issues.length){setErrors(issues);return;}
+      if(!stillCurrent())throw Error("Board setup changed during validation. Cancel and reopen this editor.");
+      if(!await saveBoard(docId,id,draft)){setErrors(["Board setup was not applied. Check Messages for the reason; your draft is still open."]);return;}
+      close();if(check)void runDrc(docId);
+    }catch(error){setErrors([String(error)]);}finally{setBusy(false);}
   };
 
   return (
@@ -490,16 +503,20 @@ function RulesDialog({ docId }: { docId: string }) {
       title="Rules & net classes"
       description="Rules are checked top to bottom; the first enabled rule whose scope matches wins. Scopes: All, InNet('GND'), InNetClass('Power'), OnLayer('Top Layer'), IsPad, IsVia, InComponent('U1'), HasFootprint('SOIC*') — combine with and / or / not."
       wide
+      busy={busy}
       footer={
         <>
-          <Button variant="outline" onClick={close}>
+          <Button variant="outline" disabled={busy} onClick={close}>
             Cancel
           </Button>
-          <Button onClick={() => void save()}>Apply</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void save()}>Apply</Button>
+          <Button disabled={busy} onClick={() => void save(true)}>Apply & run DRC</Button>
         </>
       }
     >
-      <Tabs defaultValue="rules">
+      <p className="mb-3 text-xs leading-relaxed text-muted-foreground">Board settings · lengths in {units.toUpperCase()} · saved with the board and undoable. Put specific rules above general rules. Net classes supply routing preferences and fallback values; a matching custom rule can override them.</p>
+      {!!errors.length&&<div role="alert" className="mb-3 rounded border border-err-line p-2 text-xs text-err-line"><strong>Review these settings before applying</strong><ul className="mt-1 grid gap-1">{errors.map((error,i)=><li key={i}>{error}</li>)}</ul></div>}
+      <fieldset disabled={busy} className="min-w-0"><Tabs defaultValue="rules">
         <TabsList>
           <TabsTrigger value="rules">Design rules</TabsTrigger>
           <TabsTrigger value="classes">Net classes</TabsTrigger>
@@ -518,22 +535,22 @@ function RulesDialog({ docId }: { docId: string }) {
                 ))}
               </div>
               <div className="flex gap-1">
-                <NativeSelect value={addType} onChange={(e) => setAddType(e.target.value as Rule["type"])}>
+                <NativeSelect aria-label="New rule type" value={addType} onChange={(e) => setAddType(e.target.value as Rule["type"])}>
                   {Object.entries(RULE_LABEL).map(([k, v]) => (
                     <NativeSelectOption key={k} value={k}>
                       {v}
                     </NativeSelectOption>
                   ))}
                 </NativeSelect>
-                <Button variant="outline" size="icon" title="Add rule" onClick={() => (setRules([...rules, newRule(addType)]), setCurrent(rules.length))}>
+                <Button variant="outline" size="icon" title="Add rule" onClick={addRule}>
                   <Plus />
                 </Button>
               </div>
               <div className="flex gap-1">
-                <Button variant="outline" size="sm" onClick={() => move(-1)}>
+                <Button variant="outline" size="sm" disabled={current<=0} onClick={() => move(-1)}>
                   Up
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => move(1)}>
+                <Button variant="outline" size="sm" disabled={current>=rules.length-1} onClick={() => move(1)}>
                   Down
                 </Button>
                 <Button variant="outline" size="sm" disabled={!rule} onClick={() => (setRules(rules.filter((_, i) => i !== current)), setCurrent(Math.max(0, current - 1)))}>
@@ -580,46 +597,19 @@ function RulesDialog({ docId }: { docId: string }) {
           </div>
         </TabsContent>
         <TabsContent value="classes" className="mt-3">
-          <div className="grid gap-1">
-            <div className="grid grid-cols-[110px_repeat(6,90px)_1fr_24px] gap-1.5 px-1 text-[11px] font-semibold text-faint">
-              <span>Class</span>
-              <span>Track</span>
-              <span>Clearance</span>
-              <span>Via Ø</span>
-              <span>Via drill</span>
-              <span>DP width</span>
-              <span>DP gap</span>
-              <span>Nets (comma separated)</span>
-              <span />
-            </div>
-            {classes.map((c, i) => (
-              <div key={i} className="grid grid-cols-[110px_repeat(6,90px)_1fr_24px] items-center gap-1.5">
-                <Input value={c.name} onChange={(e) => patchClass(i, { name: e.target.value })} />
-                <LengthInput value={c.trackWidth} units={units} onCommit={(v) => patchClass(i, { trackWidth: v })} />
-                <LengthInput value={c.clearance} units={units} onCommit={(v) => patchClass(i, { clearance: v })} />
-                <LengthInput value={c.viaDiameter} units={units} onCommit={(v) => patchClass(i, { viaDiameter: v })} />
-                <LengthInput value={c.viaDrill} units={units} onCommit={(v) => patchClass(i, { viaDrill: v })} />
-                <LengthInput value={c.diffPairWidth} units={units} onCommit={(v) => patchClass(i, { diffPairWidth: v })} />
-                <LengthInput value={c.diffPairGap} units={units} onCommit={(v) => patchClass(i, { diffPairGap: v })} />
-                <Input className="font-mono" value={c.nets.join(", ")} placeholder={i === 0 ? "every other net" : "VCC, GND"} onChange={(e) => patchClass(i, { nets: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
-                <Button variant="ghost" size="icon" disabled={i === 0} onClick={() => setClasses(classes.filter((_, j) => j !== i))}>
-                  <Trash2 />
-                </Button>
-              </div>
-            ))}
-            <Button variant="outline" size="sm" className="mt-1 w-fit" onClick={() => setClasses([...classes, { ...classes[0], name: `Class${classes.length}`, nets: [] }])}>
-              <Plus /> Net class
-            </Button>
-            <p className="pt-1 text-[11px] text-faint">The first class is the default for nets not listed anywhere.</p>
-          </div>
+          <div className="grid gap-3">{classes.map((c,i)=><section key={i} className="grid gap-2 rounded border border-line p-3" aria-label={"Net class "+(c.name||i+1)}>
+            <div className="flex items-center justify-between gap-2"><strong>{i===0?"Default net class":"Net class "+(i+1)}</strong><Button variant="ghost" size="sm" disabled={i===0} aria-label={"Delete net class "+c.name} onClick={()=>setClasses(classes.filter((_,j)=>j!==i))}>Remove</Button></div>
+            <div className="grid grid-cols-2 gap-2"><Field label="Class name"><Input value={c.name} onChange={e=>patchClass(i,{name:e.target.value})}/></Field><Field label="Nets (comma separated)"><Input className="font-mono" value={c.nets.join(", ")} placeholder={i===0?"Every unassigned net":"VCC, GND"} onChange={e=>patchClass(i,{nets:e.target.value.split(",").map(n=>n.trim()).filter(Boolean)})}/></Field></div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{([["trackWidth","Track width"],["clearance","Copper clearance"],["viaDiameter","Via diameter"],["viaDrill","Via drill"],["diffPairWidth","Pair width (0 = fallback)"],["diffPairGap","Pair gap (0 = fallback)"]] as const).map(([key,label])=><Field key={key} label={label+" ("+units+")"}><LengthInput value={c[key]} units={units} onCommit={value=>patchClass(i,{[key]:value})}/></Field>)}</div>
+          </section>)}<Button variant="outline" size="sm" className="w-fit" onClick={()=>setClasses([...classes,{...(classes[0]??{trackWidth:mm(.25),clearance:mm(.2),viaDiameter:mm(.6),viaDrill:mm(.3),diffPairWidth:mm(.2),diffPairGap:mm(.2)}),name:"Class"+classes.length,nets:[]}])}><Plus/> Net class</Button><p className="text-[11px] text-muted-foreground">The first class handles nets not assigned elsewhere. A net should belong to only one class. Matching rules take priority: place an InNetClass scope above an All rule to override a general limit.</p></div>
         </TabsContent>
         <TabsContent value="pairs" className="mt-3">
           <div className="grid gap-1">
             {pairs.map((p, i) => (
               <div key={i} className="grid grid-cols-[1fr_1fr_1fr_24px] gap-1.5">
-                <Input value={p.name} placeholder="Name" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
-                <Input className="font-mono" value={p.positive} placeholder="Positive net" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, positive: e.target.value } : x)))} />
-                <Input className="font-mono" value={p.negative} placeholder="Negative net" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, negative: e.target.value } : x)))} />
+                <Input aria-label={"Pair "+(i+1)+" name"} value={p.name} placeholder="Name" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+                <Input aria-label={"Pair "+(i+1)+" positive net"} className="font-mono" value={p.positive} placeholder="Positive net" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, positive: e.target.value } : x)))} />
+                <Input aria-label={"Pair "+(i+1)+" negative net"} className="font-mono" value={p.negative} placeholder="Negative net" onChange={(e) => setPairs(pairs.map((x, j) => (j === i ? { ...x, negative: e.target.value } : x)))} />
                 <Button variant="ghost" size="icon" onClick={() => setPairs(pairs.filter((_, j) => j !== i))}>
                   <Trash2 />
                 </Button>
@@ -631,7 +621,7 @@ function RulesDialog({ docId }: { docId: string }) {
             <p className="pt-1 text-[11px] text-faint">Nets ending in _P/_N or +/- pair up automatically when routing with P I.</p>
           </div>
         </TabsContent>
-      </Tabs>
+      </Tabs></fieldset>
     </Dialog>
   );
 }
@@ -673,7 +663,7 @@ function ImpedanceDialog({ docId }: { docId: string | null }) {
   const solved = solveWidth(f, n(target));
 
   return (
-    <Dialog title="Impedance calculator" description="IPC-2141A closed-form approximations (±10% typical) — confirm critical lines with your fab's field solver." footer={<Button onClick={close}>Close</Button>}>
+    <Dialog title="Impedance calculator" description="Approximate transmission-line model. Accuracy depends on geometry and materials; confirm critical lines with your fabricator." footer={<Button onClick={close}>Close</Button>}>
       <div className="grid gap-3">
         <Tabs value={kind} onValueChange={(v) => setKind(v as typeof kind)}>
           <TabsList>

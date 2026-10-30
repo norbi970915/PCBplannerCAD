@@ -18,7 +18,7 @@ export function DocumentPanel({ docId }: { docId: string }) {
   if (!detached) return <CanvasView docId={docId} />;
   return <div className="flex h-full min-h-0" onPointerDownCapture={() => useEditor.getState().setActiveDoc(docId)}>
     <div className="min-w-0 flex-1"><CanvasView docId={docId} /></div>
-    <aside aria-label="Document properties and view" className="w-72 shrink-0 border-l border-line"><PropertiesPanel docId={docId} /></aside>
+    <aside aria-label="Document properties, view and DRC" className="w-72 shrink-0 border-l border-line"><PropertiesPanel docId={docId} /></aside>
   </div>;
 }
 

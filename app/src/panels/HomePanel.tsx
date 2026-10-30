@@ -24,7 +24,7 @@ export function rememberProject(path: string | null) {
 function lastProject(): string | null {
   try {
     const saved = readPreference(LAST_PROJECT_KEY);
-    return saved?.replace(/^A:\\Workspaces\\AllRoute(?=\\|$)/i, "A:\\Workspaces\\pCAD") ?? null;
+    return saved ?? null;
   } catch {
     return null;
   }
@@ -54,7 +54,7 @@ const SHORTCUTS: [string[], string][] = [
   [["P", "W"], "Wire"],
   [["P", "N"], "Net label"],
   [["P", "V"], "VCC / GND"],
-  [["Space"], "Schematic rotate"],
+  [["R"], "Schematic rotate"],
   [["M"], "PCB move"],
   [["R"], "PCB rotate"],
   [["X"], "PCB route"],
@@ -76,7 +76,7 @@ export function HomePanel() {
           <div className="px-6 pt-6 pb-5">
             <div className="eyebrow mb-1">PCB design workbench</div>
             <h1 className="text-[25px] leading-tight font-[650] tracking-[-0.6px] text-ink">
-              pCAD<span className="title-dot">.</span> Schematic, layout and manufacturing in one place.
+              PCBPlanner Studio<span className="title-dot">.</span> Schematic, layout and manufacturing in one place.
             </h1>
             <p className="mt-2 max-w-[100ch] text-[13px] leading-relaxed text-muted-foreground">
               Capture schematics, build component libraries, route boards and generate fabrication files. Import existing projects, schematics and libraries — everything stays on this PC.

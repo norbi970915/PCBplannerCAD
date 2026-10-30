@@ -17,6 +17,7 @@ import { promptText } from "./modal";
 import { openLocalHub } from "../project/LocalHub";
 import { openImportWizard } from "../project/ImportWizard";
 import {openRecovery} from "../project/Recovery";
+import { openLegalDialog } from "../legal/LegalDialog";
 import { openRevisions } from "../project/Revisions";
 
 export interface AppCommand {
@@ -91,7 +92,7 @@ export const COMMANDS: Record<string, AppCommand> = {
   "edit.selectSimilar": { label: "Select Similar…", when: ["pcb"], run: () => openDialog("similar"), enabled: () => activeDoc()?.selection.size === 1 },
   "edit.duplicate": { label: "Duplicate", keys: ["Ctrl+D"], run: clipboard.duplicateSelection, enabled: () => !!activeDoc()?.selection.size },
   "edit.delete": { label: "Delete", keys: ["Delete", "E D"], run: actions.deleteSelection, enabled: () => !!activeDoc()?.selection.size },
-  "edit.rotate": { label: "Rotate Selection", display: "Space", run: () => actions.rotateSelection(), enabled: () => !!activeDoc()?.selection.size },
+  "edit.rotate": { label: "Rotate Selection", display: "R", run: () => actions.rotateSelection(), enabled: () => !!activeDoc()?.selection.size },
   "edit.mirror": { label: "Mirror Selection", display: "X", run: actions.mirrorSelection, enabled: () => !!activeDoc()?.selection.size },
   "edit.selectAll": { label: "Select All", keys: ["Ctrl+A", "S A"], run: actions.selectAll, enabled: hasDoc },
   "edit.find": { label: "Find…", keys: ["Ctrl+F"], run: openFind, enabled: hasDoc },
@@ -195,8 +196,8 @@ export const COMMANDS: Record<string, AppCommand> = {
   "window.messages": { label: "Messages Panel", run: () => bus.emit("showPanel", { id: "messages" }) },
   "help.canvasTimings": { label: "Record/Stop Canvas Timings", enabled: hasDoc, run: () => { const d=activeDoc(); if(d)bus.emit("canvasTimings",{docId:d.info.id}); } },
   "help.about": {
-    label: "About pCAD",
-    run: () => ed().log("info", "pCAD 0.6.0 — schematic capture, PCB layout, manufacturing outputs, 3D, and external design import."),
+    label: "About PCBPlanner Studio",
+    run: openLegalDialog,
   },
 };
 

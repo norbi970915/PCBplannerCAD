@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import {approvalOnlyChange} from "../pcb/drcApprovals";
 import { readPreference } from "./preferences";
 import { normalizeView, type LayerMode, type ViewSettings } from "./view";
 import { L } from "./layers";
@@ -38,6 +39,9 @@ export interface DocState {
   footprints: Record<string, Footprint>;
   /** PCB: unrouted connections and the latest DRC result. */
   airwires: AirWire[];
+  inspectorTab?: "properties" | "view" | "drc";
+  drcRunId?: number;
+  drcScope?: "full" | "online";
   drc: DrcViolation[];
   drcStatus: "unchecked" | "checking" | "current" | "stale" | "error";
   drcCheckedAt: number | null;
@@ -279,6 +283,8 @@ export const useEditor = create<AppState>()((set, get) => ({
       cache: s.cache,
       footprints: s.footprints ?? {},
       airwires: prev?.airwires ?? [],
+      inspectorTab: prev?.inspectorTab ?? "properties",
+      drcRunId: prev?.drcRunId ?? 0,
       drc: prev?.drc ?? [],
       drcStatus: "unchecked",
       drcCheckedAt: null,
@@ -304,7 +310,7 @@ export const useEditor = create<AppState>()((set, get) => ({
     for (const id of delta.removed) items.delete(id);
     for (const u of delta.upserted) items.set(u.id, u.item);
     const selection = new Set([...doc.selection].filter((id) => items.has(id)));
-    set({ docs: { ...get().docs, [info.id]: { ...doc, items, info, selection, drcStatus: "stale" } } });
+    set({ docs: { ...get().docs, [info.id]: { ...doc, items, info, selection, drcStatus: approvalOnlyChange(doc.items,items)?doc.drcStatus:"stale" } } });
   },
 
   setInfo: (info) => {

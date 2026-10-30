@@ -1,4 +1,4 @@
-//! XML `<package>` → pCAD [`Footprint`].
+//! XML `<package>` → PCBPlanner Studio [`Footprint`].
 
 use pcbplannercad_core::geom::{BBox, rotate};
 use pcbplannercad_core::item::{DESIGNATOR_TOKEN, Drill, FillStyle, Item, Pad, PadKind, PadShape, Rect, Text, VALUE_TOKEN};

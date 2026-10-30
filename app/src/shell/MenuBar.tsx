@@ -113,7 +113,7 @@ export function MenuBar() {
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line bg-chrome px-2">
       <span className="mr-2 pl-1 text-[13px] font-semibold tracking-tight text-ink">
-        pCAD<span className="title-dot">·</span>
+        PCBPlanner Studio<span className="title-dot">·</span>
       </span>
       <Menubar className="h-8">
         {menus(kind).map((menu) => (

@@ -137,7 +137,7 @@ pub fn mesh_to_obj(meshes: &[Mesh]) -> String {
     let tris: usize = meshes.iter().map(|m| m.indices.len() / 3).sum();
     let verts: usize = meshes.iter().map(|m| m.positions.len() / 3).sum();
     let mut out = String::with_capacity(verts * 32 + tris * 24 + 256);
-    out.push_str("# pCAD 3D export\n");
+    out.push_str("# PCBPlanner Studio 3D export\n");
     let mut seen = std::collections::BTreeSet::new();
     for m in meshes {
         let (mat, _) = material(m.color);

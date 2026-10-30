@@ -156,6 +156,7 @@ impl Ctx {
                     symbols: vec![cp.symbol.clone()],
                     footprints: Vec::new(),
                     components: vec![cp.component.clone()],
+                    ..Default::default()
                 });
                 cache.insert(full, cp);
             }

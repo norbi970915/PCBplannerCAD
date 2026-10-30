@@ -520,6 +520,9 @@ pub fn via_between(doc: &Document, net: &str, pos: Point, a: LayerId, b: LayerId
 
 /// Read-only connected-track drag plan, including pushed foreign tracks.
 pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:RouteMode)->Result<super::drag::DragResult,String> {
+    plan_track_edit_removed(doc,replace,add,vec![],mode)
+}
+pub(crate) fn plan_track_edit_removed(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, delete:Vec<ItemId>, mode:RouteMode)->Result<super::drag::DragResult,String> {
     let mut ids=std::collections::BTreeSet::new();let mut tracks=Vec::new();
     for entry in &replace {
         if !ids.insert(entry.id){return Err("Duplicate track in drag plan".into());}
@@ -529,8 +532,9 @@ pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:R
         if after.a!=after.b {tracks.push(after.clone());}
     }
     if replace.is_empty(){return Err("Select tracks to drag".into());}
+    for id in &delete {if !ids.insert(*id)||!matches!(doc.get(*id),Some(Item::Track(t))if !t.locked){return Err("Only unlocked tracks in the affected section may be removed".into());}}
     for item in &add {let Item::Track(t)=item else{return Err("Track drag can add only joining tracks".into());};if t.a!=t.b {tracks.push(t.clone());}}
-    let mut out=super::drag::DragResult{replace,add,..Default::default()};
+    let mut out=super::drag::DragResult{replace,add,delete,..Default::default()};
     if mode!=RouteMode::Ignore {
         let ignored=routing_ignored(doc,&ids.iter().copied().collect::<Vec<_>>());
         let layers:std::collections::BTreeSet<_>=tracks.iter().map(|t|t.layer).collect();
@@ -541,6 +545,7 @@ pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:R
                 for (id,pieces) in shove::shove_many(&mut world,&roots)? {out.delete.push(id);out.add.extend(pieces.into_iter().map(Item::Track));out.rerouted+=1;}
             }else{for p in roots {let excl=[p.net];if !world.seg_clear(p.a,p.b,&Probe{hw:p.hw,net:p.net,excl:&excl}){return Err("Track drag is blocked; choose another position or Push mode".into());}}}
         }
+    }
         // Pours are regenerated on commit; check all fixed copper and mechanical obstacles now.
         let mut delete:Vec<_>=out.replace.iter().map(|r|r.id).chain(out.delete.iter().copied()).collect();
         delete.extend(doc.items().filter_map(|(id,item)|matches!(item,Item::Zone(z)if !z.keepout).then_some(id)));
@@ -560,7 +565,6 @@ pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:R
             }
         }
 
-        if let Some(v)=super::drc::run_near(check.document(),&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error){return Err(format!("Track drag blocked: {}",v.message));}
-    }
+        if mode!=RouteMode::Ignore {if let Some(v)=super::drc::run_near(check.document(),&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error){return Err(format!("Track drag blocked: {}",v.message));}}
     Ok(out)
 }

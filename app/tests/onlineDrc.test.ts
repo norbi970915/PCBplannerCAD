@@ -143,3 +143,15 @@ test('global Undo leaves routing while tool-owned undo can preserve the routing 
 });
 
 test('online updates discard stale whole-net length markers until batch DRC',()=>{assert.deepEqual(mergeViolations([v('length',[1]),v('short',[2,3])],new Set(),[v('length',[4])]).map(x=>x.code),['short']);});
+
+test('manual DRC selects its board inspector while online checks leave View selected',async()=>{
+ const {useEditor}=await import('../src/core/store.ts');const {runDrc}=await import('../src/core/pcbActions.ts');const {bus}=await import('../src/core/bus.ts');const requests:unknown[]=[];const off=bus.on('showPanel',request=>requests.push(request));
+ try{await onlineHarness(()=>drcReport([v('clearance',[1])]),async flush=>{
+  useEditor.getState().patchDoc('test-drc',{inspectorTab:'view'});await flush();assert.equal(useEditor.getState().docs['test-drc'].inspectorTab,'view');assert.deepEqual(requests,[]);
+  await runDrc('test-drc');const doc=useEditor.getState().docs['test-drc'];assert.equal(doc.inspectorTab,'drc');assert.equal(doc.drcScope,'full');assert.equal(doc.drcRunId,1);assert.deepEqual(requests,[{id:'properties',docId:'test-drc'}]);
+ });}finally{off();}
+});
+test('failed manual DRC keeps the inspector open and reports the failure',async()=>{
+ const {useEditor}=await import('../src/core/store.ts');const {runDrc}=await import('../src/core/pcbActions.ts');let calls=0;
+ await onlineHarness(()=>{if(++calls>1)throw Error('Native DRC unavailable');return drcReport();},async flush=>{await flush();useEditor.setState({onlineDrc:false});await runDrc('test-drc');const doc=useEditor.getState().docs['test-drc'];assert.equal(doc.inspectorTab,'drc');assert.equal(doc.drcStatus,'error');assert.match(doc.drcError??'',/unavailable/);});
+});

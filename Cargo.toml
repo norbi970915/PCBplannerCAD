@@ -3,9 +3,9 @@ resolver = "3"
 members = ["crates/core", "crates/import", "crates/output", "app/src-tauri"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.6"
 edition = "2024"
-license = "UNLICENSED"
+license-file = "LICENSE.md"
 
 [workspace.dependencies]
 pcbplannercad-core = { path = "crates/core" }

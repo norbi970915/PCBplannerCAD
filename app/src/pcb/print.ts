@@ -67,6 +67,6 @@ export function buildPrint(doc: DocState, opts: PrintOptions): Uint8Array {
   const page = fitPage(bounds, opts.paper, opts.landscape);
   return buildPdf(
     [{ ...page, lines: ranked.flatMap((g) => g.lines), fills: ranked.flatMap((g) => g.fills), title: doc.info.title }],
-    { title: doc.info.title, author: "pCAD" },
+    { title: doc.info.title, author: "PCBPlanner Studio" },
   );
 }

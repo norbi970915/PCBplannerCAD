@@ -65,7 +65,7 @@ test('repository naming uses neutral paths, identifiers and prose; only exact wi
 test('naming checks reject prose and internal identifier variants without blocking ordinary words',()=>{
   const name=structuredPrefix;
   assert(hasProhibitedName(name));assert(hasProhibitedName(name+'Paths'));assert(hasProhibitedName('import_'+name+'_project'));
-  assert(!hasProhibitedName('pCAD copper pads and format parsing; confusion accuracy'));
+  assert(!hasProhibitedName('PCBPlanner Studio copper pads and format parsing; confusion accuracy'));
   assert(!hasProhibitedName(withoutWireMarkers('crates/import/src/structured/board.rs','"'+name+'_pcb"')));
   assert(!hasProhibitedName(withoutWireMarkers('crates/import/src/structured/board.rs','"'+name+'_dru"')));
   assert(hasProhibitedName(withoutWireMarkers('app/src/App.tsx','"'+xmlRoot+'"')));

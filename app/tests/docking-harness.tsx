@@ -11,6 +11,7 @@ import {useEditor} from '../src/core/store';
 import {useTheme} from '../src/core/theme';
 import {useRecoveryStatus} from '../src/core/recovery';
 import {api} from '../src/core/api';
+import {runDrc} from '../src/core/pcbActions';
 import {bus} from '../src/core/bus';
 import {revealLinkedComponent} from '../src/core/crossProbe';
 import {useModal,Dialog} from '../src/shell/modal';
@@ -22,7 +23,7 @@ mockIPC((command,args)=>{
  calls.push({command,args});
  if(command==='plugin:dialog|save')return picks.shift()??null;
  if(command==='doc_save_copy'){if(copyError){copyError=false;throw Error('File already exists; choose a new filename.');}return;}
- if(command==='doc_save')throw Error('File changed outside pCAD. Your edits are still open; use File > Save Copy.');
+ if(command==='doc_save')throw Error('File changed outside PCBPlanner Studio. Your edits are still open; use File > Save Copy.');
  if(command==='recovery_list')return {location:'isolated',entries:[],issues:[]};
  if(command==='lib_list'||command==='doc_list'||command==='lib_component_index')return [];
  if(command==='pcb_object_at')return null;
@@ -32,6 +33,7 @@ mockIPC((command,args)=>{
   const info=useEditor.getState().docs[args!.id as string].info;
   return {info:{...info,canUndo:command==='doc_redo',canRedo:command==='doc_undo'},delta:{removed:[],upserted:[]},touchedLibrary:null};
  }
+ if(command==='pcb_drc')return {stats:{nets:1,connections:1,unrouted:0},violations:[{severity:'error',code:'clearance',message:'Detached board finding',items:[1],pos:{x:30e6,y:20e6},layer:0,rule:'General clearance'}],ruleErrors:[]};
  if(command==='pcb_ratsnest')return [];
  if(command==='pcb_route')return {tracks:[],reached:false,moved:[],blockedAt:null,message:''};
  throw Error('Unexpected test IPC '+command);
@@ -56,7 +58,7 @@ useEditor.getState().setProject({path:'A:/Fixture/Fixture.arproj',name:'Fixture'
 useTheme.getState().setTheme('dark');
 createRoot(document.getElementById('root')!).render(<TooltipProvider><App/></TooltipProvider>);
 Object.assign(window,{dockTest:{
- calls,picks,badCopy:()=>{copyError=true;},
+ calls,picks,runDrc:()=>runDrc('pcb'),badCopy:()=>{copyError=true;},
  nativeClose:(label:string)=>emit("pcad-dock-close",label),
  open:(docId:string)=>bus.emit('showDoc',{docId}),
  state:()=>{const s=useEditor.getState();return {path:s.docs.pcb.info.path,linked:s.project?.pcb?.docId,hint:s.hint,messages:s.messages.map(m=>m.text),active:s.activeDocId,tool:s.docs.pcb.tool,selection:[...s.docs.pcb.selection],dirty:s.docs.pcb.info.dirty,undo:s.docs.pcb.info.canUndo,items:JSON.stringify([...s.docs.pcb.items]),focus:s.docs.pcb.focus};},

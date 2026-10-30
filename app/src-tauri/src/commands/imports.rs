@@ -48,12 +48,13 @@ pub fn import_library(state: State<AppState>, source: LibrarySource, path: Strin
     let path = PathBuf::from(path);
     let name = stem(&path);
     let read = |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()));
-    let (lib, report) = match source {
+    let (mut lib, report) = match source {
         LibrarySource::StructuredSymbols => structured::parse_symbol_library(&read(&path)?, &name),
         LibrarySource::StructuredFootprints => structured::import_footprint_dir(&path, &name),
         LibrarySource::XmlLibrary => xml::parse_library(&read(&path)?, &name),
     }
     .map_err(|e| format!("{}: {e}", path.display()))?;
+    for notice in pcbplannercad_import::notices::collect(&path) { if !lib.notices.contains(&notice) { lib.notices.push(notice); } }
     let mut ws = lock(&state);
     let id = ws.add_lib(lib, None, true);
     Ok(LibraryImport { library: ws.lib_info(&id)?, report: report_lines(&report) })
@@ -79,7 +80,7 @@ fn sanitize(name: &str) -> String {
     name.chars().map(|c| if c.is_alphanumeric() || "-_ .".contains(c) { c } else { '_' }).collect()
 }
 
-/// Imports a schematic design into a new pCAD project in `dest_dir`
+/// Imports a schematic design into a new PCBPlanner Studio project in `dest_dir`
 /// (which must not already contain the files to be written), then opens it.
 #[tauri::command]
 pub fn import_design(state: State<AppState>, source: DesignSource, path: String, dest_dir: String) -> Res<DesignImport> {

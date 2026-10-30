@@ -1,4 +1,4 @@
-//! pCAD core: the editor-agnostic design model.
+//! PCBPlanner Studio core: the editor-agnostic design model.
 //!
 //! All geometry is stored as integer nanometers ([`Coord`]) so that snapping,
 //! rule checks and manufacturing output never suffer from float rounding.

@@ -19,7 +19,7 @@ export interface BusEvents {
   canvasTimings: { docId: string };
   togglePanelWindow: {id:string};
   resetLayout: Record<string, never>;
-  showPanel: { id: "projects" | "components" | "properties" | "messages" | "scripts" | "pcb" };
+  showPanel: { id: "projects" | "components" | "properties" | "messages" | "scripts" | "pcb"; docId?: string };
   /** Open the 3D viewer for a board. */
   show3d: { docId: string };
   /** Open the Gerber viewer (optionally with a folder/zip to load). */

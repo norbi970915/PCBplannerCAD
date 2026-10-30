@@ -1,19 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pCAD",
-  "mainBinaryName": "pCAD",
-  "version": "0.6.0",
-  "identifier": "eu.allengra.pcbplannercad",
+  "productName": "PCBPlanner Studio",
+  "mainBinaryName": "PCBPlannerStudio",
+  "version": "0.6.6",
+  "identifier": "com.pcbplanner.studio",
   "build": {
-    "beforeDevCommand": "pnpm vite",
+    "beforeDevCommand": "pnpm legal:prepare && pnpm vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm vite build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "pnpm legal:prepare && pnpm vite build && pnpm legal:verify --dist",
+    "frontendDist": "../dist",
+    "beforeBundleCommand": "pnpm installers:verify && pnpm legal:prepare && pnpm legal:verify --dist"
   },
   "app": {
     "windows": [
       {
-        "title": "pCAD",
+        "title": "PCBPlanner Studio",
         "width": 1600,
         "height": 960,
         "minWidth": 1024,
@@ -25,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -47,10 +48,28 @@
         "ext": [
           "arpcb"
         ],
-        "name": "pCAD PCB",
-        "description": "pCAD PCB document",
+        "name": "PCBPlanner Studio PCB",
+        "description": "PCBPlanner Studio PCB document",
         "role": "Editor"
       }
-    ]
+    ],
+    "publisher": "Buchmüller Norbert",
+    "copyright": "Copyright © 2026 Buchmüller Norbert. All rights reserved.",
+    "homepage": "https://www.pcbplanner.com",
+    "licenseFile": "../../LICENSE.md",
+    "resources": {
+      "../../LICENSE/": "legal/"
+    },
+    "windows": {
+      "nsis": {
+        "template": "installers/setup.nsi",
+        "installerHooks": "installers/shortcut-icons.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "template": "installers/setup.wxs"
+      }
+    }
   }
 }

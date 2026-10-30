@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const read=name=>readFileSync(root+name,'utf8');
+const config=JSON.parse(read('app/src-tauri/tauri.conf.json')),manifest=JSON.parse(read('app/src-tauri/installers/provenance.json'));
+assert.equal(JSON.parse(read('app/node_modules/@tauri-apps/cli/package.json')).version,manifest.cliVersion,'Review installer templates when upgrading the CLI');
+for(const[name,expected]of Object.entries(manifest.files))assert.equal(createHash('sha256').update(readFileSync(root+'app/src-tauri/installers/'+name)).digest('hex'),expected,'Review template changes and refresh provenance: '+name);
+const nsis=read('app/src-tauri/installers/setup.nsi'),wix=read('app/src-tauri/installers/setup.wxs'),helper=read('app/src-tauri/installers/shortcut-icons.nsh');
+const creates=nsis.split('\n').filter(line=>/^\s*CreateShortcut /.test(line));assert.equal(creates.length,3);for(const line of creates)assert(line.endsWith('"" "$INSTDIR\\${MAINBINARYNAME}.exe" 0'),'A shortcut lacks an explicit executable icon');
+assert.equal((nsis.match(/!insertmacro SetStudioShortcutIcon /g)??[]).length,3);assert(helper.includes('IShellLink::SetIconLocation'));
+assert(nsis.includes('MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut'));
+assert.equal((wix.match(/IconIndex="0"/g)??[]).length,3);
+assert.equal(config.bundle.windows.nsis.template,'installers/setup.nsi');assert.equal(config.bundle.windows.nsis.installerHooks,'installers/shortcut-icons.nsh');assert.equal(config.bundle.windows.wix.template,'installers/setup.wxs');
+for(const field of ['installerIcon','uninstallerIcon'])assert.equal(config.bundle.windows.nsis[field],'icons/icon.ico');
+assert(read('LICENSE/upstream/tauri-installer-templates@2.12.4.txt').includes('Permission is hereby granted'));
+console.log('Pinned installer templates and explicit fresh/upgrade shortcut icons verified.');

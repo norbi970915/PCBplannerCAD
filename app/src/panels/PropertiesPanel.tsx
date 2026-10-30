@@ -1,5 +1,6 @@
+import { DrcPanel } from "./DrcPanel";
 import { BulkProperties } from "./BulkProperties";
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { ViewPanel } from "./ViewPanel";
 import { api } from "../core/api";
 import { deleteSelection, execute, mirrorSelection, report, rotateSelection } from "../core/actions";
@@ -681,9 +682,10 @@ function DocumentOptions({ doc }: { doc: DocState }) {
 }
 
 export function PropertiesPanel({docId}: {docId?:string} = {}) {
-  const [panelTab, setPanelTab] = useState<"properties" | "view">("properties");
   const doc = useEditor((s) => ((docId ?? s.activeDocId) ? s.docs[(docId ?? s.activeDocId)!] : undefined));
   const units = useEditor((s) => s.units);
+  const panelTab = doc?.inspectorTab ?? "properties";
+  const setPanelTab = (value:"properties"|"view"|"drc") => doc && useEditor.getState().patchDoc(doc.info.id,{inspectorTab:value});
   if (!doc)
     return (
       <Panel>
@@ -696,7 +698,9 @@ export function PropertiesPanel({docId}: {docId?:string} = {}) {
 
   const canView = doc.info.kind === "pcb" || doc.info.kind === "footprint";
   let body: ReactNode;
-  if (canView && panelTab === "view") {
+  if (doc.info.kind === "pcb" && panelTab === "drc") {
+    body = <DrcPanel key={doc.info.id} doc={doc}/>;
+  } else if (canView && panelTab === "view") {
     body = <ViewPanel doc={doc} />;
   } else if (doc.tool !== "select") {
     body = <PlacementEditor tool={doc.tool} kind={doc.info.kind} units={units} />;
@@ -732,14 +736,14 @@ export function PropertiesPanel({docId}: {docId?:string} = {}) {
     body = <DocumentOptions doc={doc} />;
   }
   const context =
-    canView && panelTab === "view" ? "View" : doc.tool !== "select" ? "Placement" : doc.selection.size === 1 ? (doc.items.get([...doc.selection][0])?.kind ?? "") : doc.selection.size > 1 ? "Selection" : doc.info.title;
+    doc.info.kind === "pcb" && panelTab === "drc" ? "DRC" : canView && panelTab === "view" ? "View" : doc.tool !== "select" ? "Placement" : doc.selection.size === 1 ? (doc.items.get([...doc.selection][0])?.kind ?? "") : doc.selection.size > 1 ? "Selection" : doc.info.title;
   return (
     <Panel>
       <PanelHeading title="Properties">
         <span className="max-w-40 truncate text-[11px] text-faint capitalize">{context}</span>
       </PanelHeading>
       {canView && <div className="flex gap-1 border-b border-line bg-panel-head px-2 py-1.5" role="tablist" aria-label="Panel mode">
-        {(["properties", "view"] as const).map(tab => <button key={tab} role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${panelTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab}</button>)}
+        {(["properties", "view", ...(doc.info.kind === "pcb" ? ["drc" as const] : [])] as const).map(tab => <button key={tab} role="tab" aria-selected={panelTab === tab} onClick={() => setPanelTab(tab)} className={`h-7 flex-1 rounded-[4px] text-xs capitalize ${panelTab === tab ? "bg-sel text-accent-ink" : "text-muted-foreground hover:bg-hover"}`}>{tab === "drc" ? "DRC" : tab}</button>)}
       </div>}
       <div key={doc.info.id} className="min-h-0 flex-1 overflow-auto">
         {body}
