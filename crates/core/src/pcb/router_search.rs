@@ -26,6 +26,9 @@ pub(super) struct Walk {
 
 /// Coarse-pass expansion budget; the fine pass gets twice as many.
 const BUDGET: usize = 12_000;
+
+#[path = "router_visibility.rs"]
+mod visibility;
 /// A* heuristic weight (>1 trades optimality for speed; smoothing recovers).
 const H_WEIGHT: f64 = 1.25;
 
@@ -132,6 +135,7 @@ impl<'s, 'w> Search<'s, 'w> {
                 continue;
             }
             closed[idx as usize] = true;
+            if !super::engine::consume_work(1){break;}
             pops += 1;
             if pops > budget {
                 break;
@@ -285,6 +289,10 @@ pub(super) fn walkaround(world: &World, probe: &Probe, start: Point, end: Point,
     } else {
         (end, false)
     };
+    if let Some(path)=visibility::walk(world,probe,start,goal,style,flip){
+        let last=*path.last().unwrap();
+        return Walk{path,reached:!end_blocked,blocked_at:end_blocked.then_some(last),message:if end_blocked{"End point violates clearance; routed as close as possible".into()}else{String::new()}};
+    }
     let margin = (dist * 0.5).max(40.0 * pitch);
     let mut lo = V::new(start.x.min(goal.x) as f64 - margin, start.y.min(goal.y) as f64 - margin);
     let mut hi = V::new(start.x.max(goal.x) as f64 + margin, start.y.max(goal.y) as f64 + margin);
@@ -312,7 +320,7 @@ pub(super) fn walkaround(world: &World, probe: &Probe, start: Point, end: Point,
     if reached && !end_blocked {
         Walk { path, reached: true, blocked_at: None, message: String::new() }
     } else {
-        let message = if end_blocked { "end point violates clearance; routed as close as possible" } else { "no clear path to the end point; routed as close as possible" };
+        let message = if super::engine::work_exhausted() {"Preview search limit reached; continue from the last legal point"}else if end_blocked { "end point violates clearance; routed as close as possible" } else { "no clear path to the end point; routed as close as possible" };
         Walk { path, reached: false, blocked_at: Some(last), message: message.into() }
     }
 }

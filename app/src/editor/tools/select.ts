@@ -21,8 +21,10 @@ const editCursor = (env: ToolEnv) => cursorPoint(env.raw(), env.doc().grid, env.
 /** Selected items that may move: locked items stay put. */
 function movableIds(env: ToolEnv, ids: ItemId[]): ItemId[] {
   const items = env.doc().items;
-  const free = ids.filter((id) => { const it = items.get(id); return !it || !("locked" in it && it.locked); });
-  if (free.length < ids.length) useEditor.getState().setHint(free.length ? `${ids.length - free.length} locked item${ids.length - free.length === 1 ? "" : "s"} left in place (unlock in Properties)` : "Locked: unlock the item in Properties to move it");
+  const eligible=ids.filter(id=>{const it=items.get(id);return !!it&&selectable(env.doc().info.kind,it,env.doc());});
+  const free = eligible.filter((id) => { const it = items.get(id)!; return !("locked" in it && it.locked); });
+  if (!eligible.length && ids.length) useEditor.getState().setHint("No movable objects in the current view and selection filter");
+  if (free.length < eligible.length) useEditor.getState().setHint(free.length ? `${eligible.length - free.length} locked item${eligible.length - free.length === 1 ? "" : "s"} left in place (unlock in Properties)` : "Locked: unlock the item in Properties to move it");
   return free;
 }
 
@@ -107,8 +109,24 @@ export function selectTool(): Tool {
   let generation = 0;
   const blockedToast="connected-move-"+Math.random().toString(36).slice(2);
   let ignoreRelease = false;
+  type BufferedInput={kind:"down"|"move"|"up";event:PointerInfo;raw:Point;cursor:Point};
+  let buffered:BufferedInput[]=[];
+  const buffer=(kind:BufferedInput["kind"],env:ToolEnv,event:PointerInfo)=>{const input={kind,event:{...event},raw:{...env.raw()},cursor:{...env.cursor()}};if(kind==="move"&&buffered.at(-1)?.kind==="move")buffered[buffered.length-1]=input;else if(buffered.length<32)buffered.push(input);};
   type Drag = Extract<State,{kind:"drag"}>;
   let planningTrack=false;let queuedTrack:(()=>void)|null=null;
+  const previews=new WeakMap<Drag,Map<string,PcbDragPlan>>();
+  const restorePreview=(env:ToolEnv,drag:Drag,key:string)=>{
+    const plan=previews.get(drag)?.get(key);if(!plan)return false;
+    drag.copper=plan;drag.acceptedKey=key;drag.copperKey=key;drag.copperError=undefined;drag.partPending=undefined;
+    excluded=new Set([...plan.delete,...plan.replace.map(r=>r.id)]);queuedTrack=null;env.redraw(true);return true;
+  };
+  const acceptPreview=(env:ToolEnv,drag:Drag,key:string,plan:PcbDragPlan,currentKey:string)=>{
+    let history=previews.get(drag);if(!history){history=new Map();previews.set(drag,history);}
+    history.delete(key);history.set(key,plan);if(history.size>12)history.delete(history.keys().next().value!);
+    // A late solve cannot displace a restored, exact-target preview.
+    if(drag.acceptedKey===currentKey&&key!==currentKey)return;
+    drag.copper=plan;drag.acceptedKey=key;excluded=new Set([...plan.delete,...plan.replace.map(r=>r.id)]);env.redraw(true);
+  };
   const trackKey=(drag:Drag)=>[drag.delta.x,drag.delta.y,drag.angle??0,drag.flipped??false,violatorModeOf(useEditor.getState()),useEditor.getState().placement.cornerStyle].join("/");
   const trackSettings=(d:Drag)=>[d.angle??0,d.flipped??false,violatorModeOf(useEditor.getState()),useEditor.getState().placement.cornerStyle].join('/');
   const partSettings=(d:Drag)=>[trackSettings(d),useEditor.getState().placement.moveMode].join('/');
@@ -120,7 +138,7 @@ export function selectTool(): Tool {
     const doc=env.doc(),placement=useEditor.getState().placement;
     if(doc.info.kind!=='pcb'||placement.moveMode==='disconnect'||!drag.ids.some(id=>['footprint','via'].includes(doc.items.get(id)?.kind??'')))return;
     if(drag.trackItems!==doc.items||drag.trackFootprints!==doc.footprints||drag.trackEpoch!==doc.epoch){drag.copperError='Board changed during the move; cancel and start again.';return;}
-    const key=partKey(drag);if(drag.copperKey===key)return;
+    const key=partKey(drag);if(restorePreview(env,drag,key)||drag.copperKey===key)return;
     if(planningTrack){queuedTrack=()=>{if(s===drag)requestParts(env,drag);};return;}
     planningTrack=true;drag.copperKey=key;drag.copperError=undefined;
     if(!drag.copper)excluded=new Set(drag.ids);env.redraw(true);
@@ -130,13 +148,14 @@ export function selectTool(): Tool {
     const current=()=>valid()&&partKey(drag)===key;
     const previewRequest=api.pcbDragFootprints(env.docId,{ids:drag.ids,delta:drag.delta,angle:drag.angle??0,flipped:drag.flipped??false,center:drag.origin,mode:placement.moveMode,routeMode:mode,corner:placement.cornerStyle});
     drag.partPending={key,promise:previewRequest};
-    void previewRequest.then(result=>{if(!valid())return;const rejection=moveRejection(result,mode);if(rejection){if(current())drag.copperError=rejection;}else{drag.copper=result;drag.acceptedKey=key;excluded=new Set([...drag.ids,...result.delete,...result.replace.map(r=>r.id)]);}env.redraw(true);})
+    void previewRequest.then(result=>{if(!valid())return;const rejection=moveRejection(result,mode);if(rejection){if(current())drag.copperError=rejection;}else acceptPreview(env,drag,key,result,partKey(drag));env.redraw(true);})
       .catch(error=>{if(current()){drag.partPending=undefined;drag.copperError=String(error);env.redraw(true);}})
       .finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
   };
   const requestTrack=(env:ToolEnv,drag:Drag)=>{
     const plan=trackPlan(env,drag);if(!plan){requestParts(env,drag);return;}if(drag.angle||drag.flipped)return;
     const key=trackKey(drag);if(drag.trackItems!==env.doc().items||drag.trackFootprints!==env.doc().footprints||drag.trackEpoch!==env.doc().epoch){drag.copperError="Board changed during track drag; cancel and start again.";return;}if(drag.copperKey===key)return;
+    if(restorePreview(env,drag,key))return;
     if(planningTrack){queuedTrack=()=>{if(s===drag)requestTrack(env,drag);};return;}
     planningTrack=true;drag.copperKey=key;drag.copperError=undefined;if(!drag.copper)excluded=new Set();env.redraw(true);
     const doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch;
@@ -146,8 +165,7 @@ export function selectTool(): Tool {
     const previewRequest=api.pcbDragTracks(env.docId,trackRequest(env,drag));
     drag.partPending={key,promise:previewRequest};
     void previewRequest.then(result=>{
-      if(!valid())return;drag.copper=result;drag.acceptedKey=key;
-      excluded=new Set([...result.delete,...result.replace.map(r=>r.id)]);env.redraw(true);
+      if(!valid())return;const rejection=moveRejection(result,violatorModeOf(useEditor.getState()));if(rejection)throw new Error(rejection);acceptPreview(env,drag,key,result,trackKey(drag));
     }).catch(error=>{if(current()){drag.partPending=undefined;drag.copperError=String(error);useEditor.getState().setHint(String(error));env.redraw(true);}}).finally(()=>{planningTrack=false;const next=queuedTrack;queuedTrack=null;next?.();});
   };
 
@@ -173,12 +191,13 @@ export function selectTool(): Tool {
           (env.doc().info.kind === "pcb" ? (env.doc().marked.size ? " · Net highlighted (Esc clears)" : " · Alt+click or ` highlights a net · I selects its copper") : ""),
     editing: () => s.kind !== "idle",
     reset() {
+      buffered=[];
       generation++;
       s = { kind: "idle" };
       excluded = new Set();
     },
     down(env, e) {
-      if(s.kind==="drag"&&s.placing)return;
+      if(s.kind==="drag"&&s.placing){if(s.tracks){buffer("down",env,e);const d=env.doc();const hit=env.scene.pick(env.raw(),PICK_PX/env.scale(),i=>selectable(d.info.kind,i,d));if(hit!==null)env.select([hit]);}return;}
       ignoreRelease = false;
       generation++;
       if (s.kind === "drag" && s.floating) {
@@ -232,7 +251,7 @@ export function selectTool(): Tool {
         void import("../../core/pcbActions").then((m) => m.highlightNetAt(env.docId, at));
         return;
       }
-      const hit = env.scene.pick(p, PICK_PX / env.scale(), (i) => selectable(kind, i));
+      const hit = env.scene.pick(p, PICK_PX / env.scale(), (i) => selectable(kind, i, doc));
       if (hit === null) {
         s = { kind: "box", sx: e.sx, sy: e.sy, mode: selectionMode(e), shown: false };
         return;
@@ -250,7 +269,7 @@ export function selectTool(): Tool {
       if (ids.length) s = { kind: "drag", sx: e.sx, sy: e.sy, origin: editCursor(env), ids, delta: { x: 0, y: 0 }, moved: false, attach: null };
     },
     move(env, e) {
-      if(s.kind==="drag"&&s.placing)return;
+      if(s.kind==="drag"&&s.placing){if(s.tracks&&buffered.length)buffer("move",env,e);return;}
       if (s.kind === "vertex") {
         s.moved ||= far(e, s.sx, s.sy);
         const prev = s.ring[(s.index + s.ring.length - 1) % s.ring.length];
@@ -285,7 +304,7 @@ export function selectTool(): Tool {
       }
     },
     up(env, e) {
-      if(s.kind==="drag"&&s.placing)return;
+      if(s.kind==="drag"&&s.placing){if(s.tracks&&buffered.length)buffer("up",env,e);return;}
       if (ignoreRelease) { ignoreRelease = false; return; }
       const done = s;
       s = { kind: "idle" };
@@ -312,7 +331,7 @@ export function selectTool(): Tool {
         const b = env.toWorld(e.sx, e.sy);
         const kind = env.doc().info.kind;
         const rect = { minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y), maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y) };
-        const ids = env.scene.inRect(rect, e.sx < done.sx, (i) => selectable(kind, i));
+        const ids = env.scene.inRect(rect, e.sx < done.sx, (i) => selectable(kind, i, env.doc()));
         env.select(combineSelection(env.doc().selection, ids, done.mode));
         if (!ids.length && kind === "pcb" && filterActive(useSelectFilter.getState())) {
           const excluded = env.scene.inRect(rect, e.sx < done.sx, (i) => i.kind !== "board").length;
@@ -326,6 +345,8 @@ export function selectTool(): Tool {
           if(s.kind==="drag"&&s.placing)s={kind:"idle"};
           excluded = new Set();
           env.redraw(true);
+          const inputs=buffered;buffered=[];
+          for(const input of inputs){const currentEnv={...env,raw:()=>input.raw,cursor:()=>input.cursor};tool[input.kind]?.(currentEnv,input.event);}
         };
         if (!moved) return finish();
         const { x: dx, y: dy } = done.delta;
@@ -371,14 +392,20 @@ export function selectTool(): Tool {
           if(done.trackItems!==env.doc().items||done.trackFootprints!==env.doc().footprints||done.trackEpoch!==env.doc().epoch){useEditor.getState().setHint("Board changed during track drag; start again.");finish();return;}
           s={...done,placing:true};
           const doc=env.doc(),items=doc.items,footprints=doc.footprints,epoch=doc.epoch,token=generation;
-          const mode=violatorModeOf(useEditor.getState()),corner=useEditor.getState().placement.cornerStyle;let retrying=false;
-          const retry=(message?:string)=>{if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;retrying=true;s={...done,floating:true,placing:false,copperError:message,partPending:undefined};excluded=new Set(done.copper?[...done.copper.delete,...done.copper.replace.map(r=>r.id)]:[]);env.redraw(true);};
-          const reviewed=done.copper&&done.acceptedKey===trackKey(done)?done.copper:null;
-          void (reviewed?Promise.resolve(reviewed):done.partPending?.key===trackKey(done)?done.partPending.promise:api.pcbDragTracks(env.docId,trackRequest(env,done))).then(async result=>{
+          const mode=violatorModeOf(useEditor.getState()),corner=useEditor.getState().placement.cornerStyle;
+          const retry=(message?:string)=>{if(message)useEditor.getState().setHint(message);};
+          // Retain exactly the checked geometry shown while a later target is blocked.
+          const fallback=done.copper&&done.acceptedKey?.endsWith('/'+trackSettings(done))?done.copper:null;
+          const commit=async(result:PcbDragPlan)=>{
             if(token!==generation||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch)return;
             if(violatorModeOf(useEditor.getState())!==mode||useEditor.getState().placement.cornerStyle!==corner){retry();return;}
-            if(!await env.exec({op:"route",delete:result.delete,add:result.add,replace:result.replace}))retry();
-          }).catch(error=>{useEditor.getState().setHint(String(error));toast.warning(String(error),{id:blockedToast});retry(String(error));}).finally(()=>{if(token===generation&&!retrying)finish();});
+            const rejection=moveRejection(result,mode);if(rejection)throw new Error(rejection);
+            if(await env.exec({op:"route",delete:result.delete,add:result.add,replace:result.replace})){if(done.acceptedKey!==trackKey(done))useEditor.getState().setHint("Placed the last valid track position; the cursor position was blocked or still being checked.");}
+          };
+          const reviewed=fallback;
+          void (reviewed?Promise.resolve(reviewed):done.partPending?.key===trackKey(done)?done.partPending.promise:api.pcbDragTracks(env.docId,trackRequest(env,done))).then(commit).catch(async error=>{
+            useEditor.getState().setHint(String(error));toast.warning(String(error),{id:blockedToast});
+          }).finally(()=>{if(token===generation)finish();});
           return;
         }
         if (done.angle || done.flipped) {
@@ -415,7 +442,7 @@ export function selectTool(): Tool {
       }
     },
     dblclick(env) {
-      const hit = env.scene.pick(env.raw(), PICK_PX / env.scale());
+      const hit = env.scene.pick(env.raw(), PICK_PX / env.scale(),item=>selectable(env.doc().info.kind,item,env.doc()));
       const item = hit !== null ? env.doc().items.get(hit) : undefined;
       if (item?.kind === "sheet") void navigateTo({ sheet: item.file });
       else if(item?.kind==="part"&&hit!==null)void revealLinkedComponent(env.docId,hit);
@@ -447,7 +474,7 @@ export function selectTool(): Tool {
       if (board && s.kind === "idle" && ["m", "r"].includes(key.toLowerCase())) {
         generation++;
         if (!doc.selection.size) {
-          const hit = env.scene.pick(env.raw(), PICK_PX / env.scale(), item => selectable(doc.info.kind, item));
+          const hit = env.scene.pick(env.raw(), PICK_PX / env.scale(), item => selectable(doc.info.kind, item, doc));
           if (hit === null) return false;
           env.select([hit]);
         }
@@ -524,6 +551,7 @@ export function selectTool(): Tool {
       return false;
     },
     cancel(env, source) {
+      buffered=[];
       generation++;
       if (s.kind === "idle") {
         // Esc first clears a net highlight, then (next press) the selection as before;
@@ -608,7 +636,7 @@ const VIOLATOR_LABEL = { ignore: "ignore violators", walkaround: "avoid violator
 
 /** Track-only edits are planned by the native connected router. */
 function trackPlan(env: ToolEnv, d: {ids:ItemId[];tracks?:boolean|null;trackItems?:unknown;trackFootprints?:unknown;trackEpoch?:number}):boolean|null{
- if(d.tracks===undefined){const doc=env.doc();d.tracks=doc.info.kind==='pcb'&&d.ids.length>0&&d.ids.every(id=>doc.items.get(id)?.kind==='track')?true:null;d.trackItems=doc.items;d.trackFootprints=doc.footprints;d.trackEpoch=doc.epoch;}
+ if(d.tracks===undefined){const doc=env.doc();d.tracks=doc.info.kind==='pcb'&&d.ids.length>0&&d.ids.every(id=>['track','arcTrack'].includes(doc.items.get(id)?.kind??''))?true:null;d.trackItems=doc.items;d.trackFootprints=doc.footprints;d.trackEpoch=doc.epoch;}
  return d.tracks;
 }
 function trackRequest(env:ToolEnv,d:{ids:ItemId[];delta:Point;origin:Point}){

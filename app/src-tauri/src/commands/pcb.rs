@@ -11,6 +11,7 @@ use tauri::State;
 
 use super::{Res, lock};
 use crate::AppState;
+use crate::routing::RoutingState;
 use crate::workspace::{DocInfo, Workspace};
 
 #[derive(Serialize)]
@@ -28,11 +29,11 @@ fn pcb_doc<'a>(ws: &'a Workspace, id: &str) -> Res<&'a pcbplannercad_core::Docum
     Ok(d.session.document())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pcb_analysis(state: State<AppState>, id: String) -> Res<Analysis> {
-    let ws = lock(&state);
-    let doc = pcb_doc(&ws, &id)?;
-    Ok(Analysis { airwires: connectivity::ratsnest(doc), stats: connectivity::stats(doc) })
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    let (airwires,stats)=connectivity::routing_summary(&doc);
+    Ok(Analysis {airwires,stats})
 }
 
 #[tauri::command]
@@ -99,15 +100,15 @@ pub fn pcb_repour(state: State<AppState>, id: String, zone: Option<ItemId>) -> R
 }
 
 #[tauri::command(async)]
-pub fn pcb_route(state: State<AppState>, id: String, req: router::RouteRequest) -> Res<router::RouteResult> {
-    let ws = lock(&state);
-    Ok(router::route(pcb_doc(&ws, &id)?, &req))
+pub fn pcb_route(state: State<AppState>, engines:State<RoutingState>, id: String, req: router::RouteRequest) -> Res<router::RouteResult> {
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    engines.solve(&id,doc,|engine|engine.route(&req))
 }
 
 #[tauri::command(async)]
-pub fn pcb_route_pair(state: State<AppState>, id: String, req: router::RouteRequest, neg_net: String, gap: Coord, neg_start: Option<Point>) -> Res<(router::RouteResult, router::RouteResult)> {
-    let ws = lock(&state);
-    Ok(router::route_diff_pair_from(pcb_doc(&ws, &id)?, &req, &neg_net, gap, neg_start))
+pub fn pcb_route_pair(state: State<AppState>, engines:State<RoutingState>, id: String, req: router::RouteRequest, neg_net: String, gap: Coord, neg_start: Option<Point>) -> Res<(router::RouteResult, router::RouteResult)> {
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    engines.solve(&id,doc,|engine|engine.pair(&req,&neg_net,gap,neg_start))
 }
 
 #[tauri::command]
@@ -148,9 +149,9 @@ pub fn pcb_via(state: State<AppState>, id: String, net: String, pos: Point, from
 }
 
 #[tauri::command(async)]
-pub fn pcb_drag_tracks(state: State<AppState>, id:String, req:pcbplannercad_core::pcb::elastic::TrackRequest)->Res<pcbplannercad_core::pcb::drag::DragResult>{
+pub fn pcb_drag_tracks(state: State<AppState>, engines:State<RoutingState>, id:String, req:pcbplannercad_core::pcb::elastic::TrackRequest)->Res<pcbplannercad_core::pcb::drag::DragResult>{
     let doc=pcb_doc(&lock(&state),&id)?.clone();
-    pcbplannercad_core::pcb::elastic::drag_tracks(&doc,&req)
+    engines.solve(&id,doc,|engine|engine.drag(&req))?
 }
 
 #[tauri::command(async)]
@@ -163,6 +164,12 @@ pub fn pcb_track_edit_plan(state: State<AppState>, id:String, replace:Vec<IdItem
 pub fn pcb_pair_via_clearance(state: State<AppState>, id: String, positive: pcbplannercad_core::pcb::Via, negative: pcbplannercad_core::pcb::Via, source: LayerId) -> Res<Coord> {
     let ws=lock(&state);
     router::pair_via_clearance(pcb_doc(&ws,&id)?,&positive,&negative,source)
+}
+
+#[tauri::command(async)]
+pub fn pcb_pair_via_plan(state:State<AppState>,engines:State<RoutingState>,id:String,req:router::PairViaRequest)->Res<router::PairViaPlan>{
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    engines.solve(&id,doc,|engine|engine.transition(&req))?
 }
 
 #[tauri::command]
@@ -304,9 +311,9 @@ pub fn pcb_panelize(state: State<AppState>, id: String, spec: pcbplannercad_core
 
 /// Plans dragging footprints with their routing kept connected; the frontend commits it as a `route` command.
 #[tauri::command(async)]
-pub fn pcb_drag_footprints(state: State<AppState>, id: String, req: pcbplannercad_core::pcb::drag::DragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
+pub fn pcb_drag_footprints(state: State<AppState>, engines:State<RoutingState>, id: String, req: pcbplannercad_core::pcb::drag::DragRequest) -> Res<pcbplannercad_core::pcb::drag::DragResult> {
     let doc = pcb_doc(&lock(&state), &id)?.clone();
-    Ok(pcbplannercad_core::pcb::drag::drag_footprints(&doc, &req))
+    engines.solve(&id,doc,|engine|engine.parts(&req))
 }
 
 /// Plans Cleanup Tracks & Vias; the frontend commits it as a `route` command.

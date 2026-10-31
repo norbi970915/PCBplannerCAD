@@ -156,3 +156,14 @@ fn rotation_that_rounds_a_tiny_segment_to_zero_length_is_atomic() {
     let document=doc(vec![item.clone()]);let id=document.items().find(|(_,i)|*i==&item).unwrap().0;
     assert_rejected_without_history_change(document,Command::Rotate{ids:vec![id],center:Point::default(),angle:45.});
 }
+
+#[test]
+fn routed_surface_copper_refills_only_its_layer_with_full_priority_dependencies(){
+    let mut session=Session::with_document(doc(vec![zone(0.,0.,10.,10.,TOP_COPPER,"A"),zone(5.,0.,15.,10.,TOP_COPPER,"B"),zone(0.,0.,15.,10.,BOTTOM_COPPER,"C")]));
+    session.execute(Command::EditPours{items:vec![],refill:None}).unwrap();let before=content(session.document());
+    let bottom=session.document().items().find(|(_,i)|matches!(i,Item::Zone(z)if z.layer==BOTTOM_COPPER)).map(|(id,i)|(id,i.clone())).unwrap();
+    let delta=session.execute(Command::Route{delete:vec![],replace:vec![],add:vec![track((2.,2.),(8.,8.),0.25,TOP_COPPER,"OTHER")]}).unwrap();
+    assert!(!delta.upserted.iter().any(|i|i.id==bottom.0));assert_eq!(session.document().get(bottom.0),Some(&bottom.1));
+    for (id,fill) in super::fill::fill_all(session.document()) {let Some(Item::Zone(zone))=session.document().get(id)else{panic!()};assert_eq!(zone.fill,fill,"priority-dependent fill changed");}
+    let after=content(session.document());session.undo();assert_eq!(content(session.document()),before);session.redo();assert_eq!(content(session.document()),after);
+}

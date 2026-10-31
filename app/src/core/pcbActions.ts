@@ -1,3 +1,4 @@
+import { selectable } from "./selectFilter";
 import {approvalOnlyChange,reviewDrc} from "../pcb/drcApprovals";
 import {linkedTargets,designator} from "./crossProbe";
 import { toast } from "sonner";
@@ -10,6 +11,9 @@ import { NM_PER_MM } from "./units";
 import { mergeViolations, ONLINE_SKIP, touchedBetween, type Touched } from "../pcb/drcMerge";
 
 const st = () => useEditor.getState();
+const checkedDrcState=(errors:readonly string[])=>errors.length
+  ? {drcStatus:'error' as const,drcError:'Check incomplete: some design rules could not be evaluated. Fix the listed rules and run DRC again.'}
+  : {drcStatus:'current' as const,drcError:null};
 const timers = new Map<string, number>();
 const analysisVersions = new Map<string,number>();
 
@@ -24,7 +28,7 @@ export function scheduleAnalysis(docId: string, delay = 200) {
       try {
         const a = await api.pcbAnalysis(docId);
         const current=st().docs[docId];
-        if(version!==analysisVersions.get(docId)||!current||current.items!==snapshot.items||current.epoch!==snapshot.epoch)return;
+        if(version!==analysisVersions.get(docId)||!current||current.items!==snapshot.items||current.footprints!==snapshot.footprints||current.epoch!==snapshot.epoch)return;
         st().patchDoc(docId, { airwires: a.airwires });
         const unrouted = a.stats.unrouted;
         if(st().activeDocId===docId&&current.tool==="select")st().setHint(unrouted ? `${unrouted} of ${a.stats.connections} connections unrouted` : st().hint);
@@ -57,13 +61,13 @@ export async function runDrc(docId = st().activeDocId) {
     const r = await api.pcbDrc(docId);
     if(drcVersions.get(docId)!==token.version)return;
     if(!sameDrcBoard(docId,token)) { if(st().onlineDrc)onlineJob(docId).full=true;st().patchDoc(docId,{drcStatus:'stale'});st().log('info','The board changed during DRC. Run the check again for current results.');return; }
-    st().patchDoc(docId, { drc:r.violations, drcScope:'full', drcStatus:'current', drcCheckedAt:Date.now(), drcRuleErrors:r.ruleErrors, drcError:null });
+    st().patchDoc(docId, { drc:r.violations, drcScope:'full', ...checkedDrcState(r.ruleErrors), drcCheckedAt:Date.now(), drcRuleErrors:r.ruleErrors });
     st().clearMessages("drc");
     for (const e of r.ruleErrors) st().log("warning", 'Rule: '+e, { source:"drc" });
     const reviewed=reviewDrc(st().docs[docId]);
-    for (const v of reviewed.open) st().log(v.severity, v.message, { source:"drc", target:{ docId,items:v.items,pos:v.pos } });
+    for (const v of reviewed.open) st().log(v.severity, v.message, { source:"drc", target:{ docId,items:v.items,pos:v.pos,layer:v.layer } });
     const errors=reviewed.open.filter(v=>v.severity==='error').length;
-    st().log(errors?'error':'info', 'DRC: '+errors+' errors, '+(reviewed.open.length-errors)+' warnings · '+reviewed.current.size+' approved · '+r.stats.unrouted+' of '+r.stats.connections+' connections unrouted.', {source:'drc'});
+    st().log(errors||r.ruleErrors.length?'error':'info', (r.ruleErrors.length?'DRC incomplete: ':'DRC: ')+errors+' errors, '+(reviewed.open.length-errors)+' warnings · '+reviewed.current.size+' approved · '+r.stats.unrouted+' of '+r.stats.connections+' connections unrouted.', {source:'drc'});
     // The document-specific DRC inspector remains selected; messages retain the log.
   } catch(e) {
     failed=true;
@@ -150,7 +154,7 @@ export async function netAt(docId: string, pos: Point): Promise<string | null> {
   const board = [...d.items.values()].find((i) => i.kind === "board");
   const cu = board?.kind === "board" ? board.stackup.layers.filter((l) => l.kind === "copper" && l.layer !== null).map((l) => l.layer as number) : [0, 1];
   const at = { x: Math.round(pos.x), y: Math.round(pos.y) };
-  for (const layer of [d.activeLayer, ...cu.filter((l) => l !== d.activeLayer)].filter((l) => cu.includes(l))) {
+  for (const layer of [d.activeLayer, ...(d.layerMode === "dim" || d.layerMode === "only" ? [] : cu.filter((l) => l !== d.activeLayer))].filter((l) => cu.includes(l))) {
     const hit = await api.pcbObjectAt(docId, at, layer);
     if (hit?.[1]) return hit[1];
   }
@@ -179,8 +183,8 @@ export async function selectNetCopperAt(docId: string, pos: Point) {
   try {
     const net = await netAt(docId, pos);
     if (!net) return;
-    const items = st().docs[docId]?.items;
-    const ids = (await api.pcbNetItems(docId, net)).filter((id) => ["track", "arcTrack", "via"].includes(items?.get(id)?.kind ?? ""));
+    const doc = st().docs[docId];if(!doc)return;
+    const ids = (await api.pcbNetItems(docId, net)).filter((id) => {const item=doc.items.get(id);return !!item&&["track", "arcTrack", "via"].includes(item.kind)&&selectable("pcb",item,doc);});
     st().patchDoc(docId, { selection: new Set(ids) });
     st().setHint(`Net ${net}: ${ids.length} tracks and vias selected`);
   } catch (e) {
@@ -237,7 +241,7 @@ async function runOnline(docId: string) {
       for(const id of touched.drop)j.touched.drop.add(id);
       return;
     }
-    st().patchDoc(docId,{drc:violations,drcScope:'online',drcStatus:'current',drcCheckedAt:Date.now(),drcRuleErrors:ruleErrors,drcError:null});
+    st().patchDoc(docId,{drc:violations,drcScope:'online',...checkedDrcState(ruleErrors),drcCheckedAt:Date.now(),drcRuleErrors:ruleErrors});
   }catch(e){
     failed=true;j.full=true;
     if(st().onlineDrc&&drcVersions.get(docId)===token.version)st().patchDoc(docId,{drcStatus:'error',drcError:String(e)});

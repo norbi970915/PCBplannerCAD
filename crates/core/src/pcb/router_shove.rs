@@ -34,6 +34,10 @@ enum Detour {
 /// Raised detour of track `a`–`b` clearing every pusher (`(a, b, required
 /// centerline distance)`), or `None` when it cannot fit inside the segment.
 fn detour(a: Point, b: Point, pushers: &[(V, V, f64)]) -> Option<Detour> {
+    detour_side(a,b,pushers,None)
+}
+
+fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -> Option<Detour> {
     let (av, bv) = (V::of(a), V::of(b));
     let len = (bv - av).len();
     if len < 1.0 {
@@ -48,6 +52,7 @@ fn detour(a: Point, b: Point, pushers: &[(V, V, f64)]) -> Option<Detour> {
     let oct = octant(b.x - a.x, b.y - a.y).is_some();
     let mut best: Option<(f64, Vec<Point>)> = None;
     for sigma in [1.0, -1.0] {
+        if side.is_some_and(|s|s!=sigma) {continue;}
         let n = u.perp() * sigma;
         let local = |p: V| V::new((p - av).dot(u), (p - av).dot(n));
         // Initial window: conflicting pusher parts near the original line.
@@ -140,16 +145,32 @@ pub(super) fn shove(world: &mut World, probe: &Probe, path: &[Point]) -> Result<
 
 /// Plan all selected conductors together so pushed tracks clear the entire drag.
 pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
+    let removed=world.removed.clone();let added=world.added.clone();
+    let first=shove_attempt(world,roots,false);
+    if first.is_ok(){return first;}
+    world.removed=removed.clone();world.added=added.clone();
+    let second=shove_attempt(world,roots,true);
+    if second.is_ok(){return second;}
+    world.removed=removed;world.added=added;
+    first
+}
+
+fn shove_attempt(world: &mut World, roots: &[Pusher], alternate: bool) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
+    let topology=super::engine::cached_topology(world.doc).unwrap_or_else(||std::sync::Arc::new(crate::pcb::elastic::Topology::new(world.doc)));
+    let movable=|world:&World,index:u32|world.obstacles[index as usize].track.is_some()&&world.obstacles[index as usize].id.is_some_and(|id|topology.interior_joints(id).is_empty());
     let mut pushers = roots.to_vec();
     let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
     let mut queued: FxSet<u32> = FxSet::default();
-    let blocked = |world: &World, h: Hit| format!("blocked by a {}", world.hit_kind(h).name());
+    let blocked = |world: &World, h: Hit| {
+        let detail=match h {Hit::Ob(index)=>{let ob=&world.obstacles[index as usize];format!("{}{} on net '{}'",ob.kind.name(),ob.id.map(|id|format!(" #{}",id.0)).unwrap_or_default(),world.net_name(ob.net))},_=>world.hit_kind(h).name().to_string()};
+        format!("blocked by a {detail} on layer {}",world.layer.0)
+    };
     for p in &pushers {
         let excluded = [p.net];
         let probe = Probe { hw:p.hw, net:p.net, excl:&excluded };
         for h in world.seg_collisions(p.a, p.b, &probe) {
             match h {
-                Hit::Ob(i) if world.obstacles[i as usize].kind == ObKind::Track => {
+                Hit::Ob(i) if movable(world,i) => {
                     if queued.insert(i) {
                         queue.push_back((i, 1));
                     }
@@ -163,15 +184,29 @@ pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(Ite
         if depth > MAX_DEPTH {
             return Err("shove depth limit reached".into());
         }
+        if world.removed.contains(&i) {continue;}
         let ob = world.obstacles[i as usize].clone();
         let track = ob.track.clone().ok_or("locked track cannot be pushed")?;
         let reqs: Vec<(V, V, f64)> = pushers.iter().filter(|p| p.net != ob.net || p.net == super::world::NO_NET).map(|p| (p.a, p.b, ob.r + p.hw + world.clr(ob.key, p.net))).collect();
-        let pts = match detour(track.a, track.b, &reqs) {
-            Some(Detour::NotNeeded) => continue,
-            Some(Detour::Points(p)) => p,
-            None => return Err("no room to push a track".into()),
+        let nearest=detour(track.a,track.b,&reqs);
+        if matches!(nearest,Some(Detour::NotNeeded)){continue;}
+        let mut options=vec![nearest,detour_side(track.a,track.b,&reqs,Some(-1.0)),detour_side(track.a,track.b,&reqs,Some(1.0))];
+        if alternate{options.reverse();}
+        let excluded=[ob.net];let candidate_probe=Probe{hw:ob.r,net:ob.net,excl:&excluded};
+        let local=options.into_iter().flatten().find_map(|option|{
+            let Detour::Points(points)=option else{return None};
+            // Fixed copper rules out this side before propagating neighboring tracks.
+            let clear=points.windows(2).all(|w|world.seg_collisions(V::of(w[0]),V::of(w[1]),&candidate_probe).into_iter().all(|hit|matches!(hit,Hit::Ob(j)if movable(world,j)&&!world.removed.contains(&j))));
+            clear.then_some(points)
+        });
+        let (indices,points)=if let Some(path)=local {(vec![i],path)}else{
+            super::chain::displace(world,i,&pushers,alternate).ok_or_else(||{
+                let reason=if super::engine::work_exhausted(){"Routing search limit reached while displacing"}else{"No clear corridor is available for"};
+                format!("{reason} connected track{} on net '{}' on layer {}",ob.id.map(|id|format!(" #{}",id.0)).unwrap_or_default(),track.net,world.layer.0)
+            })?
         };
-        world.removed.insert(i);
+        let pts=super::chain::assign(points,indices.len()).ok_or("Connected track collapsed below routing resolution")?;
+        for index in &indices {world.removed.insert(*index);}
         let pieces: Vec<Track> = pts.windows(2).map(|w| Track { a: w[0], b: w[1], ..track.clone() }).collect();
         for t in &pieces {
             world.added.push(Obstacle { core: Core::Seg(V::of(t.a), V::of(t.b)), r: ob.r, net: ob.net, key: ob.key, kind: ObKind::Track, id: ob.id, track: None });
@@ -182,7 +217,7 @@ pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(Ite
         for t in &pieces {
             for h in world.seg_collisions(V::of(t.a), V::of(t.b), &tprobe) {
                 match h {
-                    Hit::Ob(j) if world.obstacles[j as usize].kind == ObKind::Track && !world.removed.contains(&j) => {
+                    Hit::Ob(j) if movable(world,j) && !world.removed.contains(&j) => {
                         if queued.insert(j) {
                             queue.push_back((j, depth + 1));
                         }
@@ -193,8 +228,10 @@ pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(Ite
                 }
             }
         }
-        if let Some(id) = ob.id {
-            moved.push((id, pieces));
+        for (ordinal,index) in indices.iter().enumerate() {
+            if let Some(id)=world.obstacles[*index as usize].id {
+                moved.push((id,pieces.iter().enumerate().filter(|(piece,_)|piece%indices.len()==ordinal).map(|(_,track)|track.clone()).collect()));
+            }
         }
     }
     // The route itself must now be clean against the edited world.

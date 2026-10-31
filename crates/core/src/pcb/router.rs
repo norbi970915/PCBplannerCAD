@@ -1,24 +1,18 @@
-//! Interactive router: walkaround, push-and-shove, differential pairs and
-//! length tuning.
+//! Native interactive routing with immutable board snapshots and speculative edits.
 //!
-//! Every call builds an obstacle [`world::World`] for the routed layer (an
-//! R-tree of every other copper object, grown by its half width; clearances
-//! come from [`RuleSet`](super::query::RuleSet) and are memoized per call).
-//! There is no cross-call cache: building the index is linear in the board
-//! size and takes ~1–3 ms for a few thousand objects in release builds, well
-//! inside an interactive mouse-move budget, and it can never go stale.
+//! The desktop [RoutingEngine] retains topology, layer indexes and a bounded
+//! history of reviewed targets. Each solve starts with a fresh overlay; shared
+//! spatial data cannot retain failed edits or cross a changed source board.
 //!
-//! - **Walkaround** ([`search`]): direct corner-style path if clean, otherwise
-//!   A* on an implicit grid aligned to the start point (coarse pitch =
-//!   half width + clearance, then a 3× finer retry), with direction-aware
-//!   states that penalize bends and only allow 45° (or 90°) turns. Edges are
-//!   proven clear from cached per-node clearance slack and only tested exactly
-//!   near obstacles. The result is shortcut with corner-style connections.
-//! - **Shove** ([`shove`]): pushes other-net tracks sideways into 45° detours,
-//!   recursively (depth 5); falls back to walkaround.
-//! - **Diff pairs**: one corridor (`2w + gap`, plus miter allowance) is routed
-//!   along the pair centerline and offset to both sides.
-//! - **Tuning** ([`tune`]): one-sided meanders, trombone or accordion.
+//! Walkaround first tests direct connections, then clearance-contour vertices,
+//! with a bounded grid fallback. Searches share one deterministic work allowance
+//! across pad launches, connected-chain windows and fallback attempts. A limited
+//! preview stops at checked copper and reports that it needs a closer target.
+//!
+//! Shove preserves local corridors where possible and expands to connected
+//! conductor windows when neighboring bends must move. Fixed copper remains
+//! anchored and failed branches restore their overlay. Pair corridors, joint
+//! via transitions and length tuning use the same geometry and rule primitives.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,10 +24,19 @@ use crate::units::{Coord, Point};
 use super::items::{Track, Via};
 use super::query::{Obj, ObjKind, RuleSet};
 
+#[path = "router_engine.rs"]
+mod engine;
+pub use engine::{RoutingEngine,EngineStats};
+pub(crate) use engine::{WorkScope,WorkSlice,with_snapshot};
+
 #[path = "router_geom.rs"]
 mod geom;
 #[path = "router_search.rs"]
 mod search;
+#[path = "router_chain.rs"]
+mod chain;
+#[path = "router_contour.rs"]
+mod contour;
 #[path = "router_shove.rs"]
 mod shove;
 #[path = "router_via.rs"]
@@ -42,6 +45,11 @@ mod via_shove;
 mod tune;
 #[path = "router_world.rs"]
 mod world;
+#[path = "router_escape.rs"]
+mod escape;
+#[path = "router_transition.rs"]
+mod transition;
+pub use transition::{pair_via_plan,PairViaPlan,PairViaRequest};
 
 #[cfg(test)]
 #[path = "router_tests.rs"]
@@ -194,23 +202,33 @@ fn routing_ignored(doc: &Document, ignored: &[ItemId]) -> Vec<ItemId> {
 
 /// Routes one track from `req.start` toward `req.end`.
 pub fn route(doc: &Document, req: &RouteRequest) -> RouteResult {
-    if req.mode == RouteMode::Shove {
-        if let Some(result) = via_shove::route(doc, req) { return result; }
-    }
-    route_base(doc, req)
+    let _work=WorkScope::enter();
+    route_indexed(doc,req,true)
 }
 
 fn route_base(doc: &Document, req: &RouteRequest) -> RouteResult {
+    route_indexed(doc,req,false)
+}
+
+fn route_indexed(doc: &Document, req: &RouteRequest, allow_via_shove:bool) -> RouteResult {
     if req.mode == RouteMode::Ignore {
         let path = corner_path(req.start, req.end, req.corner, req.posture_flip);
         return RouteResult { tracks: tracks_of(&path, req.width, req.layer, &req.net), reached: true, moved: vec![], blocked_at: None, message: String::new() };
     }
     let ignored = routing_ignored(doc, &req.ignore);
     let mut world = World::build(doc, req.layer, &ignored);
+    if let Some(error)=world.rules.errors().first(){return RouteResult{tracks:vec![],reached:false,moved:vec![],blocked_at:Some(req.start),message:format!("Fix invalid design rules before checked routing: {error}")};}
     let net = world.net_id(&req.net);
     let excl = [net];
     let probe = Probe { hw: req.width as f64 / 2.0, net, excl: &excl };
-    let o = route_in(&mut world, &probe, req.start, req.end, req.mode, req.corner, req.posture_flip);
+    // Expensive multi-layer via displacement is needed only for a real via
+    // collision, rather than every nearby via inside a conservative search radius.
+    if allow_via_shove && req.mode==RouteMode::Shove {
+        let path=corner_path(req.start,req.end,req.corner,req.posture_flip);
+        let via_hit=path.windows(2).any(|w|world.seg_collisions(V::of(w[0]),V::of(w[1]),&probe).into_iter().any(|hit|matches!(hit,world::Hit::Ob(i) if world.obstacles[i as usize].kind==world::ObKind::Via)));
+        if via_hit {if let Some(result)=via_shove::route(doc,req){return result;}}
+    }
+    let o = escape::route(&mut world, &probe, doc, req);
     RouteResult { tracks: tracks_of(&o.path, req.width, req.layer, &req.net), reached: o.reached, moved: moved_items(o.moved), blocked_at: o.blocked_at, message: o.message }
 }
 
@@ -235,6 +253,7 @@ pub fn route_diff_pair(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
 /// Continue a pair from both accepted endpoints. The partner's old endpoint
 /// must not be recomputed from a different outgoing direction.
 pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: Coord, neg_start: Option<Point>) -> (RouteResult, RouteResult) {
+    let _work=WorkScope::enter();
     let pads:Vec<_> = super::geometry::all_pads(doc, world::board_of(doc)).into_iter().map(|pad|pad.for_layer(pos.layer)).collect();
     let source = pads.iter().find(|pad| pad.net == pos.net && pad.on_layer(pos.layer) && pad.pos == pos.start);
     let anchor_at = |at:Point| {
@@ -286,11 +305,17 @@ pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, g
     let spacing = (pos.width+gap) as f64;
     let side = separation.norm();
     let extent = source.map_or(spacing,|pad|pad.width.max(pad.height) as f64);
+    let directions=[direction,V::new(direction.x-direction.y,direction.x+direction.y).norm(),V::new(direction.x+direction.y,direction.y-direction.x).norm()];
+    for (index,direction) in directions.into_iter().enumerate() {
+    if direction.dot(V::of(pos.end)-V::of(pos.start))<=0.0 || (pos.corner==CornerStyle::Orthogonal90&&index>0){continue;}
+    let mut launch_side=V::new(direction.y,-direction.x);
+    if launch_side.dot(side)<0.0{launch_side=launch_side*-1.0;}
     for factor in [1.0,2.0,4.0] {
         let distance=extent.max(separation.len()).max(spacing)*factor;
         if distance >= (V::of(pos.end)-V::of(pos.start)).len() {continue;}
-        let launch=(V::of(pos.start)+direction*distance).round();
-        let other=(V::of(launch)+side*spacing).round();
+        let midpoint=(V::of(pos.start)+V::of(anchor))*0.5+direction*distance;
+        let launch=if index==0{(V::of(pos.start)+direction*distance).round()}else{(midpoint-launch_side*(spacing/2.0)).round()};
+        let other=if index==0{(V::of(launch)+side*spacing).round()}else{(midpoint+launch_side*(spacing/2.0)).round()};
         let mut request=pos.clone();request.mode=RouteMode::Walkaround;request.start=launch;
         let (mut p,mut n)=route_pair_corridor(doc,&request,neg_net,gap,Some(other),target);
         if !p.reached || !n.reached {continue;}
@@ -304,6 +329,7 @@ pub fn route_diff_pair_from(doc: &Document, pos: &RouteRequest, neg_net: &str, g
         // electrical clearance while transitioning from the actual pad pitch.
         let required=RuleSet::new(world::board_of(doc)).clearance(&Obj::new(ObjKind::Track,&pos.net,Some(pos.layer)),&Obj::new(ObjKind::Track,neg_net,Some(pos.layer)));
         if p.tracks.iter().all(|p|n.tracks.iter().all(|n|geom::seg_seg_dist(V::of(p.a),V::of(p.b),V::of(n.a),V::of(n.b))+4.0 >= (pos.width+required) as f64)) {return (p,n);}
+    }
     }
     result
 }
@@ -323,6 +349,7 @@ fn route_pair_corridor(doc: &Document, pos: &RouteRequest, neg_net: &str, gap: C
     let corridor = 2.0 * w as f64 + gap as f64 + miter + 4.0;
     let ignored = routing_ignored(doc, &pos.ignore);
     let mut world = World::build(doc, pos.layer, &ignored);
+    if let Some(error)=world.rules.errors().first(){return fail(&format!("Fix invalid design rules before checked routing: {error}"));}
     let pnet = world.net_id(&pos.net);
     let nnet = world.net_id(neg_net);
     let excl = [pnet, nnet];
@@ -526,21 +553,34 @@ pub(crate) fn plan_track_edit_removed(doc:&Document, replace:Vec<IdItem>, add:Ve
     let mut ids=std::collections::BTreeSet::new();let mut tracks=Vec::new();
     for entry in &replace {
         if !ids.insert(entry.id){return Err("Duplicate track in drag plan".into());}
-        let (Some(Item::Track(before)),Item::Track(after))=(doc.get(entry.id),&entry.item) else{return Err("Select straight tracks for connected dragging".into());};
-        let mut allowed=before.clone();allowed.a=after.a;allowed.b=after.b;
-        if before.locked || allowed!=*after{return Err("Locked tracks or track properties changed during drag".into());}
-        if after.a!=after.b {tracks.push(after.clone());}
+        let valid=match (doc.get(entry.id),&entry.item) {
+            (Some(Item::Track(before)),Item::Track(after))=>{let mut allowed=before.clone();allowed.a=after.a;allowed.b=after.b;!before.locked&&allowed==*after},
+            (Some(Item::ArcTrack(before)),Item::ArcTrack(after))=>{let mut allowed=before.clone();allowed.center=after.center;allowed.radius=after.radius;allowed.start_angle=after.start_angle;allowed.sweep=after.sweep;!before.locked&&allowed==*after},
+            (Some(Item::ArcTrack(before)),Item::Track(after))=>!before.locked&&!after.locked&&before.width==after.width&&before.layer==after.layer&&before.net==after.net,
+            _=>false,
+        };
+        if !valid{return Err("Locked copper or conductor properties changed during drag".into());}
+        tracks.extend(drag_capsules(&entry.item)?);
     }
     if replace.is_empty(){return Err("Select tracks to drag".into());}
-    for id in &delete {if !ids.insert(*id)||!matches!(doc.get(*id),Some(Item::Track(t))if !t.locked){return Err("Only unlocked tracks in the affected section may be removed".into());}}
-    for item in &add {let Item::Track(t)=item else{return Err("Track drag can add only joining tracks".into());};if t.a!=t.b {tracks.push(t.clone());}}
+    for id in &delete {if !ids.insert(*id)||!matches!(doc.get(*id),Some(Item::Track(t))if !t.locked)&&!matches!(doc.get(*id),Some(Item::ArcTrack(t))if !t.locked){return Err("Only unlocked tracks in the affected section may be removed".into());}}
+    for item in &add {tracks.extend(drag_capsules(item)?); }
+    // Splitting a conductor can re-express its fixed outer copper with new
+    // identities. Exact same-net, same-width coverage is unchanged geometry,
+    // not a new pusher against an unrelated pre-existing clearance finding.
+    let unchanged=|t:&Track|ids.iter().any(|id|match doc.get(*id){Some(Item::Track(old))=>same_track_coverage(t,old),_=>false});
     let mut out=super::drag::DragResult{replace,add,delete,..Default::default()};
     if mode!=RouteMode::Ignore {
         let ignored=routing_ignored(doc,&ids.iter().copied().collect::<Vec<_>>());
         let layers:std::collections::BTreeSet<_>=tracks.iter().map(|t|t.layer).collect();
         for layer in layers {
-            let mut world=World::build(doc,layer,&ignored);let mut roots=Vec::new();
-            for t in tracks.iter().filter(|t|t.layer==layer){let net=world.net_id(&t.net);roots.push(shove::Pusher{a:V::of(t.a),b:V::of(t.b),hw:t.width as f64/2.,net});}
+            let mut world=World::build(doc,layer,&ignored);if let Some(error)=world.rules.errors().first(){return Err(format!("Fix invalid design rules before checked dragging: {error}"));}let mut roots=Vec::new();
+            for t in tracks.iter().filter(|t|t.layer==layer){
+                let net=world.net_id(&t.net);
+                if unchanged(t){
+                    let key=world.track_key(net);world.added.push(world::Obstacle{core:world::Core::Seg(V::of(t.a),V::of(t.b)),r:t.width as f64/2.,net,key,kind:world::ObKind::Track,id:None,track:None});
+                }else{roots.push(shove::Pusher{a:V::of(t.a),b:V::of(t.b),hw:t.width as f64/2.,net});}
+            }
             if mode==RouteMode::Shove {
                 for (id,pieces) in shove::shove_many(&mut world,&roots)? {out.delete.push(id);out.add.extend(pieces.into_iter().map(Item::Track));out.rerouted+=1;}
             }else{for p in roots {let excl=[p.net];if !world.seg_clear(p.a,p.b,&Probe{hw:p.hw,net:p.net,excl:&excl}){return Err("Track drag is blocked; choose another position or Push mode".into());}}}
@@ -554,7 +594,7 @@ pub(crate) fn plan_track_edit_removed(doc:&Document, replace:Vec<IdItem>, add:Ve
         let touched:Vec<_>=delta.upserted.iter().map(|r|r.id).collect();
         // A pushed span must not lift away from a fixed pad, via, arc or branch.
         let removed:std::collections::HashSet<_>=out.replace.iter().map(|r|r.id).chain(out.delete.iter().copied()).collect();
-        let before=super::connectivity::Index::new(super::connectivity::build_objects(doc,world::board_of(doc),None,None));
+        let before=engine::cached_copper(doc);
         let after=super::connectivity::Index::new(super::connectivity::build_objects(check.document(),world::board_of(check.document()),None,None));
         for (i,original) in before.objs.iter().enumerate().filter(|(_,o)|removed.contains(&o.item)) {
             for j in before.tree.query(before.geos[i].bb.grow(super::connectivity::geo::TOUCH)) {
@@ -565,6 +605,29 @@ pub(crate) fn plan_track_edit_removed(doc:&Document, replace:Vec<IdItem>, add:Ve
             }
         }
 
-        if mode!=RouteMode::Ignore {if let Some(v)=super::drc::run_near(check.document(),&touched).into_iter().find(|v|v.severity==super::drc::Severity::Error){return Err(format!("Track drag blocked: {}",v.message));}}
+        if mode!=RouteMode::Ignore {let changed:Vec<_>=delta.upserted.iter().filter(|r|!matches!(&r.item,Item::Track(t)if unchanged(t))).map(|r|r.id).collect();if let Some(v)=super::drc::run_near(check.document(),&changed).into_iter().find(|v|v.severity==super::drc::Severity::Error){return Err(format!("Track drag blocked: {}",v.message));}}
     Ok(out)
+}
+
+/// Conservative collision capsules; committed curves remain exact circular arcs.
+fn drag_capsules(item:&Item)->Result<Vec<Track>,String>{
+    match item {
+        Item::Track(t) if t.a!=t.b&&t.width>0=>Ok(vec![t.clone()]),
+        Item::ArcTrack(a) if a.radius>0&&a.width>0&&a.start_angle.is_finite()&&a.sweep.is_finite()&&a.sweep.abs()>1e-8&&a.sweep.abs()<=360.=>{
+            let count=((a.sweep.abs()/3.).ceil()as usize).clamp(1,120);let step=a.sweep/count as f64;
+            let sag=(a.radius as f64*(1.-(step/2.).to_radians().cos())).ceil()as i64+2;
+            let point=|i:usize|{let angle=(a.start_angle+step*i as f64).to_radians();Point::new(a.center.x+(a.radius as f64*angle.cos()).round()as i64,a.center.y+(a.radius as f64*angle.sin()).round()as i64)};
+            Ok((0..count).map(|i|Track{a:point(i),b:point(i+1),width:a.width+2*sag,layer:a.layer,net:a.net.clone(),locked:false}).collect())
+        },
+        _=>Err("Choose nonzero tracks or finite circular arcs to drag".into()),
+    }
+}
+
+/// Exact containment of a straight copper capsule in existing source copper.
+fn same_track_coverage(part:&Track,source:&Track)->bool{
+    if part.net!=source.net||part.width!=source.width||part.layer!=source.layer||source.a==source.b{return false;}
+    let on=|p:Point|{
+        let cross=(source.b.x as i128-source.a.x as i128)*(p.y as i128-source.a.y as i128)-(source.b.y as i128-source.a.y as i128)*(p.x as i128-source.a.x as i128);
+        cross==0&&p.x>=source.a.x.min(source.b.x)&&p.x<=source.a.x.max(source.b.x)&&p.y>=source.a.y.min(source.b.y)&&p.y<=source.a.y.max(source.b.y)
+    };on(part.a)&&on(part.b)
 }

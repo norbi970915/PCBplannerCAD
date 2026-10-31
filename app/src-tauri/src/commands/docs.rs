@@ -107,14 +107,14 @@ pub fn doc_execute(state: State<AppState>, id: String, cmd: Command, enforce_via
     update(&mut ws, &id, delta)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn doc_undo(state: State<AppState>, id: String) -> Res<Update> {
     let mut ws = lock(&state);
     let delta = ws.doc_mut(&id)?.session.undo().unwrap_or_default();
     update(&mut ws, &id, delta)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn doc_redo(state: State<AppState>, id: String) -> Res<Update> {
     let mut ws = lock(&state);
     let delta = ws.doc_mut(&id)?.session.redo().unwrap_or_default();

@@ -74,7 +74,7 @@ const SCH_LIGHT: Record<string, string> = {
 
 const BG_SCH: Rgba = [0.075, 0.082, 0.098, 1];
 const BG_SCH_LIGHT: Rgba = [1, 1, 1, 1];
-const BG_PCB: Rgba = [0.035, 0.038, 0.045, 1];
+const BG_PCB: Rgba = [0, 0, 0, 1];
 
 const lerp = (c: Rgba, t: Rgba, k: number): Rgba => [c[0] + (t[0] - c[0]) * k, c[1] + (t[1] - c[1]) * k, c[2] + (t[2] - c[2]) * k, c[3]];
 export const mix = lerp;
@@ -122,7 +122,7 @@ export function boardTheme(activeLayer: LayerId, mode: LayerMode): Theme {
     color(role) {
       let c = cache.get(role);
       if (c) return c;
-      if (role === "hole") c = [0.1, 0.1, 0.11, 1];
+      if (role === "hole") c = BG_PCB;
       else if (role === "via") c = only && !isCopper(activeLayer) ? HIDDEN : singleLayer ? lerp(hexToRgba("#a4b0bb"), BG_PCB, 0.4) : hexToRgba("#c2c4c8");
       else if (role === "keepout") c = hexToRgba("#ff4fc1", 0.9);
       else if (role === "ratsnest") c = [0.65, 0.73, 0.82, 0.5];

@@ -108,10 +108,7 @@ pub(crate) fn shape_geo(s: &Shape) -> Geo {
     match s {
         Shape::Segment { a, b, width } => Geo::cap(pt(*a), pt(*b), *width as f64 / 2.0),
         Shape::Arc { arc } => {
-            let pts = geo::arc_polyline(pt(arc.center), arc.radius as f64, arc.start_angle, arc.sweep);
-            let mut prims = Vec::new();
-            geo::polyline_caps(&pts, arc.width as f64 / 2.0, false, &mut prims);
-            Geo::new(prims)
+            Geo::new(vec![Prim::Arc(geo::CircularArc{center:pt(arc.center),radius:arc.radius as f64,start:arc.start_angle,sweep:arc.sweep,half_width:arc.width as f64/2.})])
         }
         Shape::Circle { center, radius } => Geo::cap(pt(*center), pt(*center), *radius as f64),
         Shape::Polygon(pts) => Geo::new(vec![Prim::Poly(Box::new(PolyGeo::new(vec![pts.iter().map(|p| pt(*p)).collect()])))]),
@@ -122,7 +119,7 @@ pub(crate) fn shape_geo(s: &Shape) -> Geo {
     }
 }
 
-fn pad_shape(p: &WorldPad) -> Shape {
+pub(crate) fn pad_shape(p: &WorldPad) -> Shape {
     match p.shape {
         PadShape::Circle => Shape::Circle { center: p.pos, radius: p.width / 2 },
         PadShape::Oval if p.width != p.height => {
@@ -541,6 +538,14 @@ pub(crate) fn stats_of(objs: &[CopperObject], unrouted: usize) -> RoutingStats {
         pads.entry(o.net.as_str()).or_default().insert((o.item, o.pad.as_deref().unwrap_or("")));
     }
     RoutingStats { nets: pads.len(), connections: pads.values().map(|s| s.len() - 1).sum(), unrouted }
+}
+
+/// Computes the display ratsnest and completion figures from one copper analysis.
+pub fn routing_summary(doc:&Document)->(Vec<AirWire>,RoutingStats){
+    let connectivity=analyze(doc);
+    let wires:Vec<_>=airwires(&connectivity.objects,&connectivity.cluster).into_iter().map(|wire|wire.wire).collect();
+    let stats=stats_of(&connectivity.objects,wires.len());
+    (wires,stats)
 }
 
 pub fn stats(doc: &Document) -> RoutingStats {

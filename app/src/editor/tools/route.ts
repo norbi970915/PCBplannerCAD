@@ -17,7 +17,6 @@ import { ringHandles, ringLines } from "./polygon";
 import type { Tool, ToolEnv } from "./types";
 
 import { snapRouteDirection } from "../routeDirection";
-import { pairViaFanout } from "../pairVia";
 import { prospectiveLength } from "../routeLengths";
 
 const MODES: RouteMode[] = ["walkaround", "shove", "ignore"];
@@ -265,10 +264,8 @@ export function routeTool(pair = false): Tool {
           const partner=await api.pcbVia(env.docId,negativeOf(env,session.net),other,session.layer,transition.target);
           const last=tracks.filter(t=>t.net===session.net).at(-1);
           if(s!==session)return false;
-          const clearance=await api.pcbPairViaClearance(env.docId,active,partner,session.layer);
-          const fanout=pairViaFanout(active,partner,{x:transition.to.x-(last?.a.x??session.from.x),y:transition.to.y-(last?.a.y??session.from.y)},trackWidth(env,session.net,pair),clearance);
-          // Via types can span layers in either order; necks stay on the current layer.
-          tracks=[...tracks,...fanout.tracks.map(t=>({...t,layer:session.layer}))];vias=fanout.vias;
+          const fanout=await api.pcbPairViaPlan(env.docId,{positive:active,negative:partner,source:session.layer,target:transition.target,direction:{x:transition.to.x-(last?.a.x??session.from.x),y:transition.to.y-(last?.a.y??session.from.y)},width:trackWidth(env,session.net,pair),corner:useEditor.getState().placement.cornerStyle,mode:routeModeOf(useEditor.getState()),tracks,moved});
+          tracks=fanout.tracks;vias=fanout.vias;
         }else vias=[active];
         if(s!==session||env.doc().items!==items||env.doc().footprints!==footprints||env.doc().epoch!==epoch||settings()!==plannedSettings){session.message='Board or routing settings changed while planning vias; try again.';return false;}
       }
@@ -294,6 +291,9 @@ export function routeTool(pair = false): Tool {
       // Keep the freshly committed copper lit with the rest of the net.
       showNet(env, session.net);
       return true;
+    } catch(error) {
+      if(s===session){session.reached=false;session.message=String(error);report(error);env.redraw();}
+      return false;
     } finally { committing = false; }
   };
 

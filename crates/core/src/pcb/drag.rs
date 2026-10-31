@@ -26,7 +26,7 @@ pub enum MoveMode {
     PreserveAngles,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DragRequest {
     #[serde(default)]
@@ -112,6 +112,10 @@ fn drag_anchors(doc: &Document, id: ItemId, item: &Item, board: &BoardSettings) 
 /// Split tracks passing through a selected via so their two sides remain attached.
 /// The preparation lives only in the candidate; cancellation/rejection cannot split the board.
 pub fn drag_footprints(doc: &Document, req: &DragRequest) -> DragResult {
+    let _work=super::router::WorkScope::enter();
+    if req.delta==Point::default()&&req.angle==0.0&&!req.flipped {
+        return if req.ids.iter().any(|id|doc.get(*id).is_some_and(crate::command::is_locked)){rejected(DragFailure::Locked)}else{DragResult::default()};
+    }
     let plan=drag_footprints_inner(doc,req);
     if plan.failure.is_some() {return plan;}
     let mut candidate=doc.clone();
@@ -594,12 +598,14 @@ mod tests {
 
     #[test]
     fn blocked_clean_reroute_is_rejected_and_explicit_ignore_remains_available() {
-        let d = doc(vec![track(p(-30.0, -1.0), p(60.0, -1.0), "B")]);
+        let mut barrier=track(p(-30.0,-1.0),p(60.0,-1.0),"B");
+        if let Item::Track(track)=&mut barrier{track.locked=true;}
+        let d = doc(vec![barrier]);
         let before=crate::io::document_to_string(&d).unwrap();
         for mode in [RouteMode::Walkaround,RouteMode::Shove] {
             let mut request=req(vec![id_of(&d,"U2")],p(0.,-0.6),MoveMode::PreserveAngles);request.route_mode=mode;
             let plan=drag_footprints(&d,&request);
-            assert_eq!(plan.failure,Some(DragFailure::Unroutable));
+            assert_eq!(plan.failure,Some(DragFailure::Unroutable),"{mode:?}: {plan:?}");
             assert!(plan.replace.is_empty()&&plan.add.is_empty()&&plan.delete.is_empty());
             assert_eq!(crate::io::document_to_string(&d).unwrap(),before);
         }

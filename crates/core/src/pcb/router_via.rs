@@ -8,6 +8,25 @@ use crate::units::Point;
 use super::{RouteRequest, RouteResult};
 use super::geom::{corner_path, seg_seg_dist, V};
 
+/// Indexed rejection precedes expensive speculative board copies and full DRC.
+/// The authoritative final checks still cover holes, keep-outs and board edges.
+fn copper_clear(index:&crate::pcb::connectivity::Index,board:&BoardSettings,rules:&crate::pcb::query::RuleSet<'_>,replacements:&[IdItem])->bool{
+    let moving:std::collections::HashSet<_>=replacements.iter().map(|entry|entry.id).collect();
+    let sample=Document::from_item_list(crate::DocKind::Pcb,replacements.iter().map(|entry|entry.item.clone()));
+    for object in crate::pcb::connectivity::build_objects(&sample,board,None,None){
+        let geometry=object.geo();
+        for other in index.tree.query(geometry.bb.grow(rules.max_clearance() as f64+5.)){
+            let fixed=&index.objs[other];
+            if moving.contains(&fixed.item)||(!object.net.is_empty()&&object.net==fixed.net)||!object.shares_layer(fixed){continue;}
+            for layer in object.layers.iter().filter(|layer|fixed.on_layer(**layer)){
+                let clearance=rules.clearance(&object.obj(Some(*layer)),&fixed.obj(Some(*layer)));
+                if crate::pcb::connectivity::geo::gap(&geometry,&index.geos[other],clearance as f64+5.).is_some_and(|(gap,_)|gap<clearance as f64-5.){return false;}
+            }
+        }
+    }
+    true
+}
+
 pub(super) fn route(doc: &Document, req: &RouteRequest) -> Option<RouteResult> {
     let fallback = BoardSettings::default();
     let board = board_settings(doc).map_or(&fallback, |(_,b)| b);
@@ -15,12 +34,14 @@ pub(super) fn route(doc: &Document, req: &RouteRequest) -> Option<RouteResult> {
     // Conservative maximum clearance: the final DRC still decides whether a candidate is legal.
     let clearance = board.net_classes.iter().map(|c|c.clearance).max().unwrap_or(250_000).max(250_000);
     let mut attempted=0;
+    let mut index=None;
+    let rules=crate::pcb::query::RuleSet::new(board);
     for (id,item) in doc.items() {
         let Item::Via(via)=item else {continue};
         if via.locked || via.net == req.net || req.ignore.contains(&id) || !board.stackup.span(via.from_layer,via.to_layer).contains(&req.layer) {continue;}
         let radius=(via.diameter+req.width) as f64/2.0+clearance as f64;
         if !path.windows(2).any(|w|seg_seg_dist(V::of(w[0]),V::of(w[1]),V::of(via.pos),V::of(via.pos))<radius) {continue;}
-        attempted+=1; if attempted>8 {break;}
+        attempted+=1; if attempted>8||super::engine::work_exhausted() {break;}
         let span=board.stackup.span(via.from_layer,via.to_layer);
         // Vias anchored directly on fixed pads, arcs or locked tracks cannot be displaced safely.
         let anchored=doc.items().any(|(fid,i)|match i {
@@ -41,6 +62,8 @@ pub(super) fn route(doc: &Document, req: &RouteRequest) -> Option<RouteResult> {
                 let mut shifted=t.clone();if shifted.a==via.pos{shifted.a=pos;}if shifted.b==via.pos{shifted.b=pos;}
                 replacements.push(IdItem{id:tid,item:Item::Track(shifted)});
             }
+            let index=index.get_or_insert_with(||super::engine::cached_copper(doc));
+            if !copper_clear(index,board,&rules,&replacements){continue;}
             let mut work=doc.clone();
             let edits:Vec<_>=replacements.iter().map(|r|Edit{id:r.id,before:work.get(r.id).cloned(),after:Some(r.item.clone())}).collect();work.apply(&edits);
             let ids:Vec<_>=replacements.iter().map(|r|r.id).collect();

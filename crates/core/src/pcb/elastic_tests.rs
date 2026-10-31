@@ -72,6 +72,14 @@ fn request(id: ItemId, y: f64, from: f64) -> TrackRequest {
         tolerance: 10_000,
     }
 }
+
+#[test]
+fn zero_displacement_has_no_copper_edits_or_history() {
+    let (session,id,_)=fixture();let before=crate::io::document_to_string(session.document()).unwrap();
+    let result=drag_tracks(session.document(),&request(id,2.,2.)).unwrap();
+    assert!(result.replace.is_empty()&&result.delete.is_empty()&&result.add.is_empty());
+    assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+}
 fn chain_path(doc: &Document) -> Vec<Point> {
     let mut points = vec![p(0., 0.)];
     let mut used = HashSet::new();
@@ -98,6 +106,49 @@ fn chain_path(doc: &Document) -> Vec<Point> {
         "no detached loops or duplicate spurs"
     );
     points
+}
+#[test]
+fn sliding_a_diagonal_consumes_bends_without_raising_the_via_exit() {
+    for octant in 0..8 {
+    let orient = |mut at: Point| {
+        if octant>=4 {at.x=-at.x;}
+        for _ in 0..octant%4 {at=Point::new(-at.y,at.x);}
+        at
+    };
+    let unorient = |mut at: Point| {
+        for _ in 0..octant%4 {at=Point::new(at.y,-at.x);}
+        if octant>=4 {at.x=-at.x;}
+        at
+    };
+    for shift in [0.1, 0.3, 0.59, 0.6, 0.61, 0.7, 1.0] {
+        let mut s = Session::new(DocKind::Pcb);
+        let points = [p(0., 0.), p(0.4, 0.), p(0.8, -0.4), p(1.4, -0.4), p(1.8, -0.8), p(3., -0.8)].map(orient);
+        let via = |pos| Item::Via(Via { pos, diameter: 200_000, drill: 100_000,
+            from_layer: LayerId(0), to_layer: LayerId(1), net: "N".into(), locked: false });
+        let mut items = vec![Item::Board(Default::default()), via(points[0]), via(points[5])];
+        items.extend(points.windows(2).map(|v| tr(v[0], v[1])));
+        let delta = s.execute(Command::Add { items }).unwrap();
+        let id = delta.upserted[4].id;
+        let before = s.document().clone();
+        let r = drag_tracks(s.document(), &TrackRequest { ids: vec![id], point: orient(p(0.6, -0.2)),
+            delta: orient(p(shift, 0.)), mode: RouteMode::Walkaround, corner: CornerStyle::Diagonal45,
+            tolerance: 10_000 }).unwrap();
+        apply(&mut s, r);
+        let path = chain_path(s.document());
+        assert!(simple_path(&path)&&octilinear(&path));
+        let corridor: Vec<_> = path.iter().copied().map(unorient).collect();
+        assert!(corridor.iter().all(|v| v.y <= 0 && v.y >= -800_000), "invented hump at {shift}: {path:?}");
+        assert!(corridor.windows(2).all(|v| v[1].x >= v[0].x && v[1].y <= v[0].y), "reversed corridor: {path:?}");
+        assert!(path.len() <= points.len(), "accumulated bends: {path:?}");
+        assert_eq!(*path.last().unwrap(), points[5]);
+        assert_eq!(connectivity::ratsnest(s.document()).len(), 0);
+        for entry in &delta.upserted[1..3] { assert_eq!(before.get(entry.id), s.document().get(entry.id)); }
+        s.undo().unwrap();
+        assert_eq!(s.document().items().collect::<Vec<_>>(), before.items().collect::<Vec<_>>());
+        s.redo().unwrap();
+        assert_eq!(chain_path(s.document()), path);
+    }
+    }
 }
 #[test]
 fn slide_through_both_sides_of_old_bends_is_simple_and_keeps_fixed_vias() {
@@ -133,7 +184,7 @@ fn repeated_back_and_forth_dragging_does_not_accumulate_bends_or_copper() {
         }
     }
     let path = chain_path(s.document());
-    assert!((length(&path) - (2. * 8_f64.sqrt() + 4.) * 1e6).abs() < 5.);
+    assert!((length(&path) - (2. * 8_f64.sqrt() + 4.) * 1e6).abs() < 5., "{path:?}");
 }
 #[test]
 fn fixed_branch_and_locked_tracks_are_preserved() {
@@ -308,7 +359,7 @@ fn slides_work_in_every_octant_and_project_an_off_center_grab_onto_the_track() {
     req.point = p(4., 2.05);
     let result = drag_tracks(s.document(), &req).unwrap();
     let picked = result.replace.iter().find(|r| r.id == id).unwrap();
-    assert!(matches!(&picked.item,Item::Track(t)if t.a.y==3_000_000&&t.b.y==3_000_000));
+    assert!(matches!(&picked.item,Item::Track(t)if t.a.y==3_000_000&&t.b.y==3_000_000), "{result:?}");
 }
 #[test]
 fn track_motion_along_its_axis_does_not_shift_the_supporting_line() {
@@ -316,7 +367,7 @@ fn track_motion_along_its_axis_does_not_shift_the_supporting_line() {
     let mut req = request(id, 2., 2.);
     req.delta = p(3., 0.);
     let result = drag_tracks(s.document(), &req).unwrap();
-    assert!(matches!(&result.replace[0].item,Item::Track(t)if t.a.y==2_000_000&&t.b.y==2_000_000));
+    assert!(matches!(&result.replace[0].item,Item::Track(t)if t.a.y==2_000_000&&t.b.y==2_000_000), "{result:?}");
 }
 #[test]
 fn acute_spikes_reversed_segments_and_nonadjacent_touches_are_rejected() {
@@ -398,4 +449,71 @@ fn a_small_slide_changes_nearby_bends_and_preserves_the_distant_route_corridor()
             previous = y;
         }
     }
+}
+
+#[test]
+fn a_neck_inside_a_via_is_walked_to_the_real_fixed_center() {
+    let mut s=Session::new(DocKind::Pcb);
+    let delta=s.execute(Command::Add{items:vec![
+        Item::Board(Default::default()),
+        Item::Via(Via{pos:p(0.,0.),diameter:600_000,drill:300_000,from_layer:LayerId(0),to_layer:LayerId(1),net:"N".into(),locked:false}),
+        tr(p(0.,0.),p(0.,0.12)),tr(p(0.,0.12),p(0.9,1.02)),tr(p(0.9,1.02),p(0.9,3.)),
+    ]}).unwrap();
+    let id=delta.upserted[3].id;let Some(Item::Track(t))=s.document().get(id)else{unreachable!()};
+    let chain=Topology::new(s.document()).walk(t.a,t,&HashSet::from([id]));
+    assert_eq!(chain.end,p(0.,0.));assert_eq!(chain.edges,vec![delta.upserted[2].id]);
+}
+
+#[test]
+fn corner_motion_near_a_via_never_folds_across_its_retained_neck() {
+    let mut accepted=0;
+    for dx in [-1.2,-0.9,-0.6,-0.3,0.3,0.6] {for dy in [-1.,-0.6,-0.3,0.,0.3] {
+        let mut s=Session::new(DocKind::Pcb);
+        let points=[p(0.,0.),p(0.,0.12),p(0.9,1.02),p(0.9,3.),p(2.,4.1),p(2.,7.)];
+        let via=|pos|Item::Via(Via{pos,diameter:600_000,drill:300_000,from_layer:LayerId(0),to_layer:LayerId(1),net:"N".into(),locked:false});
+        let mut items=vec![Item::Board(Default::default()),via(points[0]),via(points[5])];items.extend(points.windows(2).map(|w|tr(w[0],w[1])));
+        let delta=s.execute(Command::Add{items}).unwrap();let id=delta.upserted[4].id;
+        let req=TrackRequest{ids:vec![id],point:points[2],delta:p(dx,dy),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,tolerance:10_000};
+        if let Ok(plan)=drag_tracks(s.document(),&req){
+            apply(&mut s,plan);let path=chain_path(s.document());
+            assert!(simple_path(&simplify(&path)),"fold at {dx}/{dy}: {path:?}");
+            assert_eq!(*path.last().unwrap(),points[5]);assert_eq!(connectivity::ratsnest(s.document()).len(),0);accepted+=1;
+        }
+    }}
+    assert!(accepted>=20,"too many valid via departures were rejected: {accepted}");
+}
+#[test]
+fn dragging_one_arm_of_an_unsplit_tee_keeps_the_branch_and_history(){
+    for shift in [-1.,1.] {
+        let mut s=Session::new(DocKind::Pcb);
+        let via=|pos|Item::Via(Via{pos,diameter:600_000,drill:300_000,from_layer:LayerId(0),to_layer:LayerId(1),net:"N".into(),locked:false});
+        let delta=s.execute(Command::Add{items:vec![Item::Board(Default::default()),via(p(0.,0.)),via(p(10.,0.)),via(p(5.,4.)),tr(p(0.,0.),p(10.,0.)),tr(p(5.,0.),p(5.,4.))]}).unwrap();
+        let id=delta.upserted[4].id;let branch=delta.upserted[5].id;let original=s.document().clone();
+        let plan=drag_tracks(s.document(),&TrackRequest{ids:vec![id],point:p(7.5,0.),delta:p(0.,shift),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,tolerance:10_000}).unwrap();
+        apply(&mut s,plan);
+        assert_eq!(s.document().get(branch),original.get(branch));
+        for entry in &delta.upserted[1..4]{assert_eq!(s.document().get(entry.id),original.get(entry.id));}
+        assert_eq!(connectivity::ratsnest(s.document()).len(),0);
+        assert!(s.document().items().any(|(_,item)|matches!(item,Item::Track(t)if t.a==p(0.,0.)&&t.b==p(5.,0.))));
+        let after=crate::io::document_to_string(s.document()).unwrap();s.undo().unwrap();
+        assert_eq!(s.document().items().collect::<Vec<_>>(),original.items().collect::<Vec<_>>());s.redo().unwrap();assert_eq!(crate::io::document_to_string(s.document()).unwrap(),after);
+    }
+}
+#[test]
+fn dragging_beside_an_interior_via_keeps_its_layer_transition_fixed(){
+    let mut s=Session::new(DocKind::Pcb);
+    let via=|pos|Item::Via(Via{pos,diameter:600_000,drill:300_000,from_layer:LayerId(0),to_layer:LayerId(1),net:"N".into(),locked:false});
+    let bottom=Item::Track(Track{a:p(5.,0.),b:p(5.,4.),width:250_000,layer:LayerId(1),net:"N".into(),locked:false});
+    let delta=s.execute(Command::Add{items:vec![Item::Board(Default::default()),via(p(0.,0.)),via(p(10.,0.)),via(p(5.,0.)),via(p(5.,4.)),tr(p(0.,0.),p(10.,0.)),bottom]}).unwrap();
+    let id=delta.upserted[5].id;let original=s.document().clone();
+    let plan=drag_tracks(s.document(),&TrackRequest{ids:vec![id],point:p(7.5,0.),delta:p(0.,1.),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,tolerance:10_000}).unwrap();apply(&mut s,plan);
+    for entry in &delta.upserted[1..5]{assert_eq!(s.document().get(entry.id),original.get(entry.id));}
+    assert_eq!(s.document().get(delta.upserted[6].id),original.get(delta.upserted[6].id));assert_eq!(connectivity::ratsnest(s.document()).len(),0);
+}
+#[test]
+fn invalid_rule_expressions_prevent_checked_routing_and_dragging(){
+ use crate::units::mm;
+ let (mut s,id,_)=fixture();let (bid,b)=board_settings(s.document()).unwrap();let mut b=b.clone();b.rules.insert(0,super::super::board::Rule{name:"Broken".into(),enabled:true,kind:super::super::board::RuleKind::Clearance{first:"InNet(".into(),second:"All".into(),min:mm(0.2)}});s.execute(Command::ReplaceMany{items:vec![IdItem{id:bid,item:Item::Board(b)}]}).unwrap();let before=s.document().clone();
+ let result=router::route(s.document(),&router::RouteRequest{net:"N".into(),layer:LayerId(0),start:p(10.,10.),end:p(12.,10.),width:mm(0.25),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,ignore:vec![],posture_flip:false});assert!(!result.reached&&result.tracks.is_empty());assert!(result.message.contains("invalid design rules"));
+ assert!(drag_tracks(s.document(),&request(id,2.2,2.)).unwrap_err().contains("invalid design rules"));assert_eq!(s.document(),&before);
 }

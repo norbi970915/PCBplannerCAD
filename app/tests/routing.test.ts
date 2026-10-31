@@ -680,7 +680,7 @@ test('an inconsistent pair response cannot commit one member or its shove change
   });
 });
 
-for(const outcome of ['accept','reject','cancel','scoped','clearance-cancel','clearance-edit'] as const)test('paired via transition '+outcome+' is atomic and retains both anchors',async()=>{
+for(const outcome of ['accept','reject','cancel','scoped','clearance-cancel','clearance-edit','planner-blocked'] as const)test('paired via transition '+outcome+' is atomic and retains both anchors',async()=>{
   const h=toolHarness();(h.env.doc().items.get(1) as {padNets:Record<string,string>}).padNets['1']='USB_P';
   const tool=routeTool(true);const seen:Record<string,unknown>[]=[];let undo=0,resolveVia:((v:unknown)=>void)|undefined,resolveClearance:((v:unknown)=>void)|undefined;
   useEditor.getState().setPlacement({routeViaLayer:0});
@@ -693,7 +693,16 @@ for(const outcome of ['accept','reject','cancel','scoped','clearance-cancel','cl
       if(outcome==='cancel')return new Promise(resolve=>{resolveVia=resolve;});
       return {...via,pos:args!.pos,net:args!.net,fromLayer:args!.from,toLayer:args!.to};
     }
-    if(cmd==='pcb_pair_via_clearance'){assert.equal(args!.source,1);assert.equal((args!.positive as {net:string}).net,'USB_P');assert.equal((args!.negative as {net:string}).net,'USB_N');if(outcome==='clearance-cancel'||outcome==='clearance-edit')return new Promise(resolve=>{resolveClearance=resolve;});return outcome==='scoped'?130000:250000;}
+    if(cmd==='pcb_pair_via_plan'){
+      if(outcome==='planner-blocked')throw Error('Pair transition blocked: foreign copper on Inner 2');
+      const req=args!.req as any;assert.equal(req.source,1);assert.equal(req.target,0);assert.equal(req.positive.net,'USB_P');assert.equal(req.negative.net,'USB_N');
+      const pitch=outcome==='scoped'?740000:860000;
+      const positive={...req.positive,pos:{x:req.positive.pos.x+1000000,y:req.positive.pos.y}};
+      const negative={...req.negative,pos:{x:positive.pos.x,y:positive.pos.y-pitch}};
+      const plan={tracks:[...req.tracks,{...track,net:'USB_P',layer:1,a:req.positive.pos,b:positive.pos},{...track,net:'USB_N',layer:1,a:req.negative.pos,b:negative.pos}],vias:[positive,negative]};
+      if(outcome==='clearance-cancel'||outcome==='clearance-edit')return new Promise(resolve=>{resolveClearance=()=>resolve(plan);});
+      return plan;
+    }
     assert.equal(cmd,'pcb_route_pair');seen.push(args!);const r=args!.req as RouteRequest;
     return [{...result('USB_P'),tracks:[{...track,net:'USB_P',layer:r.layer,a:r.start,b:r.end}]},
       {...result('USB_N'),tracks:[{...track,net:'USB_N',layer:r.layer,a:args!.negStart??{x:r.start.x,y:r.start.y-450000},b:{x:r.end.x,y:r.end.y-450000}}]}];
@@ -702,6 +711,7 @@ for(const outcome of ['accept','reject','cancel','scoped','clearance-cancel','cl
     tool.key!(h.env,'v',{}as never);await tick();await tick();
     if(outcome==='cancel'){assert(resolveVia);tool.cancel(h.env);resolveVia({...via,net:'USB_P'});await tick();assert.equal(h.commands.length,0);return;}
     if(outcome==='clearance-cancel'||outcome==='clearance-edit'){assert(resolveClearance);if(outcome==='clearance-cancel')tool.cancel(h.env);else h.env.doc().epoch++;resolveClearance(127000);await tick();await tick();assert.equal(h.commands.length,0);if(outcome==='clearance-edit')assert.match(tool.hint(h.env),/changed while planning/);return;}
+    if(outcome==='planner-blocked'){assert.equal(h.commands.length,0);assert.match(tool.hint(h.env),/Pair transition blocked/);return;}
     assert.equal(h.commands.length,1);const command=h.commands[0];assert.equal(command.op,'route');if(command.op!=='route')return;
     const vias=command.add.filter(i=>i.kind==='via');assert.equal(vias.length,2);assert.deepEqual(vias.map(v=>v.net),['USB_P','USB_N']);
     assert(vias.every(v=>v.fromLayer===1&&v.toLayer===0));

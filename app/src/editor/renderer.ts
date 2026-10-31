@@ -337,6 +337,13 @@ export class Renderer {
   private fillProgram: WebGLProgram;
   private gridVao: WebGLVertexArrayObject;
   private scene: GroupSet;
+  private surface: GroupSet;
+  private apertures: GroupSet;
+  private annotations: GroupSet;
+  private overlayApertures: GroupSet;
+  private overlayAnnotations: GroupSet;
+  private foreground: GroupSet;
+  private surfaceTriangles: Triangles | null = null;
   private overlay: GroupSet;
   private analysis: GroupSet;
   private highlights: HighlightTexture;
@@ -345,7 +352,7 @@ export class Renderer {
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
 
   constructor(private canvas: HTMLCanvasElement) {
-    const gl = canvas.getContext("webgl2", { antialias: true, premultipliedAlpha: true, alpha: false, preserveDrawingBuffer: false });
+    const gl = canvas.getContext("webgl2", { antialias: true, stencil: true, premultipliedAlpha: true, alpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error("WebGL2 is not available on this system.");
     this.gl = gl;
     this.gridProgram = compile(gl, GRID_VS, GRID_FS);
@@ -353,6 +360,12 @@ export class Renderer {
     this.fillProgram = compile(gl, FILL_VS, FILL_FS);
     this.gridVao = gl.createVertexArray()!;
     this.scene = new GroupSet(gl);
+    this.surface = new GroupSet(gl);
+    this.apertures = new GroupSet(gl);
+    this.annotations = new GroupSet(gl);
+    this.overlayApertures = new GroupSet(gl);
+    this.overlayAnnotations = new GroupSet(gl);
+    this.foreground = new GroupSet(gl);
     this.overlay = new GroupSet(gl);
     this.analysis = new GroupSet(gl);
     this.highlights = new HighlightTexture(gl);
@@ -372,8 +385,16 @@ export class Renderer {
     this.canvas.height = Math.max(1, Math.round(cssHeight * dpr));
   }
 
+  setBoardSurface(triangles: Triangles | null) {
+    if (triangles === this.surfaceTriangles) return;
+    this.surfaceTriangles = triangles;
+    this.surface.upload(triangles?.length ? [{rank: 0, lines: [], fills: [{tris: triangles, color: [1,1,1,1]}]}] : []);
+  }
+
   setScene(groups: readonly DrawGroup[]) {
-    this.scene.upload(groups);
+    this.scene.upload(groups.filter(group=>group.rank<900));
+    this.apertures.upload(groups.filter(group=>group.rank===900));
+    this.annotations.upload(groups.filter(group=>group.rank>900));
   }
 
   setHighlights(styles: ReadonlyMap<number, Rgba>, count: number, unmarkedTint: Rgba = [0, 0, 0, 0]) { this.highlights.set(styles, count); this.unmarkedTint = unmarkedTint; }
@@ -381,7 +402,10 @@ export class Renderer {
   setAnalysis(groups: readonly DrawGroup[]) { this.analysis.upload(groups); }
 
   setOverlay(groups: readonly DrawGroup[]) {
-    this.overlay.upload(groups);
+    this.overlay.upload(groups.filter(group=>group.rank<900));
+    this.overlayApertures.upload(groups.filter(group=>group.rank===900));
+    this.overlayAnnotations.upload(groups.filter(group=>group.rank>900&&group.rank<1e6));
+    this.foreground.upload(groups.filter(group=>group.rank>=1e6));
   }
 
   render(cam: Camera, grid: GridStyle) {
@@ -422,6 +446,33 @@ export class Renderer {
     gl.bindVertexArray(this.gridVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+    // Write board material to stencil, then shade the grid only inside it.
+    // Cutouts stay on the exterior background; neither mask nor shade is pickable.
+    if (this.surfaceTriangles?.length) {
+      const p = this.fillProgram;
+      gl.useProgram(p);
+      gl.uniform2f(this.u(p, "u_center"), cam.cx / NM_PER_MM, cam.cy / NM_PER_MM);
+      gl.uniform1f(this.u(p, "u_scale"), s * NM_PER_MM);
+      gl.uniform2f(this.u(p, "u_res"), W, H);
+      this.highlights.bind();
+      gl.enable(gl.STENCIL_TEST);
+      gl.stencilMask(0xff);
+      gl.clearStencil(0);
+      gl.clear(gl.STENCIL_BUFFER_BIT);
+      gl.stencilFunc(gl.ALWAYS, 1, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+      gl.colorMask(false, false, false, false);
+      this.surface.draw(() => {}, () => {});
+      gl.colorMask(true, true, true, true);
+      gl.stencilFunc(gl.EQUAL, 1, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+      gl.useProgram(g);
+      gl.uniform4fv(this.u(g, "u_bg"), [0.065, 0.075, 0.09, 1]);
+      gl.bindVertexArray(this.gridVao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.disable(gl.STENCIL_TEST);
+    }
+
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     for (const p of [this.lineProgram, this.fillProgram]) {
@@ -437,13 +488,26 @@ export class Renderer {
       if (current !== p) gl.useProgram((current = p));
     };
     this.scene.draw(use(this.lineProgram), use(this.fillProgram));
-    this.analysis.draw(use(this.lineProgram), use(this.fillProgram));
     this.overlay.draw(use(this.lineProgram), use(this.fillProgram));
+    // Copper, physical holes, labels, analysis and pointer graphics have
+    // separate passes so temporary routing cannot cover holes or pin numbers.
+    this.apertures.draw(use(this.lineProgram), use(this.fillProgram));
+    this.overlayApertures.draw(use(this.lineProgram), use(this.fillProgram));
+    this.annotations.draw(use(this.lineProgram), use(this.fillProgram));
+    this.overlayAnnotations.draw(use(this.lineProgram), use(this.fillProgram));
+    this.analysis.draw(use(this.lineProgram), use(this.fillProgram));
+    this.foreground.draw(use(this.lineProgram), use(this.fillProgram));
     gl.bindVertexArray(null);
   }
 
   dispose() {
     this.scene.dispose();
+    this.surface.dispose();
+    this.apertures.dispose();
+    this.annotations.dispose();
+    this.overlayApertures.dispose();
+    this.overlayAnnotations.dispose();
+    this.foreground.dispose();
     this.overlay.dispose();
     this.analysis.dispose();
     this.highlights.dispose();

@@ -1,6 +1,7 @@
 <!doctype html><html><body style="margin:0"><canvas id="canvas" width="640" height="480"></canvas>
 <script type="module">
 import {PourTriangles} from '/src/editor/pourTriangles.ts';
+import {boardSurface} from '/src/editor/boardSurface.ts';
 import {Renderer} from '/src/editor/renderer.ts';
 import {Scene,highlightDimming} from '/src/editor/scene.ts';
 import {Camera} from '/src/editor/camera.ts';
@@ -85,15 +86,37 @@ window.runRendererChecks=async()=>{
   show(33);check(matches(sample(3.8,2.8),theme.color('Z0'))&&matches(sample(3.4,2),theme.color('L15')),'inner land geometry stale or missing');
   show(0);check(matches(sample(3.8,2.8),theme.color('L15'))&&gl.getError()===gl.NO_ERROR,'returning to outer land left stale GPU geometry');
  }
+ // Material shading uses stencil, keeping the normal grid inside the outline.
+ renderer.setScene([]);renderer.setOverlay([]);renderer.setHighlights(new Map(),1);
+ const boardRect=(a,b)=>({kind:'rect',a:p(...a),b:p(...b),layer:14,width:100000,fill:'none'});
+ renderer.setBoardSurface(boardSurface([boardRect([.5,.5],[5.5,3.5]),boardRect([2.5,1.5],[3.5,2.5])]));
+ renderer.render(cam,grid);
+ const substrate=sample(1.25,2.25),cutout=sample(3,2),outside=sample(0,2);
+ check(substrate[0]>=15&&substrate[2]>=20,'board interior shade missing');
+ check(cutout.slice(0,3).every(v=>v===0)&&outside.slice(0,3).every(v=>v===0),'cutout or exterior was shaded');
+ renderer.resize(640,480,1);cam.panBy(15,-10);cam.zoomAt(320,240,1.05);renderer.render(cam,grid);
+ check(sample(1.25,2.25)[2]>=20&&sample(3,2)[2]===0&&gl.getError()===gl.NO_ERROR,'board mask failed after pan/zoom/DPI change');
+ const shadedScene=new Scene();shadedScene.update(new Map([[99,{kind:'via',pos:p(1.25,2.25),diameter:mm(.6),drill:mm(.3),fromLayer:0,toLayer:1,net:'H',locked:false}]]),context);
+ renderer.setScene(shadedScene.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),shadedScene.styleCount);renderer.render(cam,grid);
+ check(sample(1.25,2.25).slice(0,3).every(v=>v===0),'drill hole was tinted as board material');
+ renderer.setHighlights(shadedScene.highlights(theme,{selection:new Set([99]),hover:null}),shadedScene.styleCount);renderer.render(cam,grid);
+ check(sample(1.25,2.25).slice(0,3).every(v=>v===0),'selection tinted a physical drill hole');
+ renderer.setOverlay([{rank:700,lines:[{a:p(.5,2.25),b:p(2,2.25),width:mm(.2),color:[1,.4,.4,1]}],fills:[]}]);renderer.render(cam,grid);
+ check(sample(1.25,2.25).slice(0,3).every(v=>v===0),'route preview painted over a fixed drill hole');
+ const holeGroups=shadedScene.build(theme,{selection:new Set(),hover:null});
+ renderer.setScene([...holeGroups,{rank:1000,lines:[{a:p(1.22,2.25),b:p(1.28,2.25),width:mm(.04),color:[1,1,1,1]}],fills:[]}]);renderer.render(cam,grid);
+ check(sample(1.25,2.25).slice(0,3).every(v=>v>220),'physical hole pass hid its pin annotation');renderer.setOverlay([]);
+ renderer.setBoardSurface(null);renderer.setScene([]);renderer.render(cam,grid);
+ check(sample(1.25,2.25).slice(0,3).every(v=>v===0),'removed outline left a stale surface');
  const ext=gl.getExtension('WEBGL_debug_renderer_info');const device=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
- const result={checks:30,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
+ const result={checks:38,trackEditUploadBytes:editBytes,status:'passed',renderer:device,pixels:{normal,dim,hover,clear},note:'Headless WebGL rendering; does not validate native window/input or presented FPS.'};
  if(new URL(location.href).searchParams.has('fixture')){
   const data=await(await fetch('/__fixture')).json(),dense=new Scene(),entries=new Map(data.items.map(e=>[e.id,e.item]));
   const deferred=!new URL(location.href).searchParams.has('syncFills');let fallbacks=0,fillUpdates=0;
   const denseCache=new PourTriangles(()=>{fillUpdates++;dense.update(entries,denseContext);renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));},{onFallback:()=>fallbacks++});
   const denseContext={kind:'pcb',copperLayer:0,cache:data.parts??{},footprints:data.footprints??{},view:DEFAULT_VIEW,pourFills:true,...(deferred?{getFillTriangles:denseCache.read}:{})};
   denseCache.retain(new Set([...entries.values()].filter(i=>i.kind==='zone'&&!i.keepout).flatMap(i=>i.fill)));
-  const t=performance.now();dense.update(entries,denseContext);cam.fit(dense.bounds());bytes=0;uploads=0;
+  const t=performance.now();dense.update(entries,denseContext);cam.fit(dense.bounds());renderer.setBoardSurface(boardSurface(entries.values()));bytes=0;uploads=0;
   renderer.setScene(dense.build(theme,{selection:new Set(),hover:null}));renderer.setHighlights(new Map(),dense.styleCount);renderer.setOverlay([]);renderer.render(cam,grid);
   const firstSceneCpuMs=performance.now()-t,firstPending=denseCache.pendingCount;let framesWhilePreparing=0,maxFrameGapMs=0,lastFrame=performance.now();const pendingPicks=[],navigationBounds=dense.bounds(),navigationPoint={x:(navigationBounds.minX+navigationBounds.maxX)/2,y:(navigationBounds.minY+navigationBounds.maxY)/2};
   while(denseCache.pendingCount){check(performance.now()-t<60000,'dense fill preparation timed out');await new Promise(requestAnimationFrame);const now=performance.now();maxFrameGapMs=Math.max(maxFrameGapMs,now-lastFrame);lastFrame=now;framesWhilePreparing++;cam.panBy(framesWhilePreparing%2?1:-1,0);cam.zoomAt(320,240,framesWhilePreparing%2?1.001:1/1.001);

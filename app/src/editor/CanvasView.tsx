@@ -1,4 +1,5 @@
 import {reviewDrc} from "../pcb/drcApprovals";
+import { BoardSurface } from "./boardSurface";
 import { PourTriangles } from "./pourTriangles";
 import { useEffect, useRef, useState } from "react";
 import { execute, undo } from "../core/actions";
@@ -93,6 +94,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       onBusy: setDrawingPours,
       onFallback: () => st().log("warning", "Background copper preparation is unavailable; drawing fills directly.", { source: "Performance" }),
     });
+    const surface = new BoardSurface();
     const sceneCtx = (): DrawContext => ({ ...ctx(), getFillTriangles: pours.read });
 
     const frames = new InteractionFrame<{ point: { x: number; y: number }; event: PointerInfo }>(
@@ -117,6 +119,18 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       requestRender();
     };
 
+    let uploadedInputs: readonly unknown[] = [];
+    let uploadedExclusions = new Set<ItemId>();
+    const sceneInputs = () => {
+      const d = doc();
+      return [d.items,d.cache,d.footprints,d.view,d.activeLayer,d.layerMode,d.epoch,d.info.kind,symbolRef.current,st().showPourFills,useTheme.getState().resolved,isActive()];
+    };
+    const refreshToolScene = () => {
+      const inputs=sceneInputs(),excluded=tool.excluded?.();
+      const unchanged=inputs.length===uploadedInputs.length&&inputs.every((input,i)=>input===uploadedInputs[i])
+        &&(excluded?.size??0)===uploadedExclusions.size&&[...(excluded??[])].every(id=>uploadedExclusions.has(id));
+      if(unchanged) rebuildHighlights(); else rebuildScene();
+    };
     const rebuildScene = () => timings.scene(() => {
       const d = doc();
       if (!d) return;
@@ -131,7 +145,10 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       }
       pours.retain(visiblePolygons);
       scene.update(d.items, sceneCtx());
+      renderer.setBoardSurface(d.info.kind === "pcb" ? surface.read(d.items.values()) : null);
       renderer.setScene(scene.build(theme, { selection: new Set(), hover: null, excluded: tool.excluded?.() }));
+      uploadedInputs=sceneInputs();
+      uploadedExclusions=new Set(tool.excluded?.()??[]);
       rebuildHighlights();
       analysisDirty = true;
       requestRender();
@@ -285,7 +302,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       setBox,
       toWorld: (sx, sy) => cam.screenToWorld(sx, sy),
       redraw: (withScene) => {
-        if (withScene) rebuildScene();
+        if (withScene) refreshToolScene();
         rebuildOverlay();
         updateHint();
       },
@@ -306,7 +323,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
 
     const updateHover = () => {
       const kind = doc().info.kind;
-      const next = toolId === "select" ? scene.pick(raw, 5 / cam.scale, (i) => selectable(kind, i)) : null;
+      const next = toolId === "select" ? scene.pick(raw, 5 / cam.scale, (i) => selectable(kind, i, doc())) : null;
       if (next !== hover) {
         hover = next;
         rebuildHighlights();
@@ -406,7 +423,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
     /** Right-click in select mode: select what is under the pointer and offer actions. */
     const openContextMenu = (e: PointerEvent) => {
       const d = doc();
-      const hit = scene.pick(raw, 5 / cam.scale, (i) => selectable(d.info.kind, i));
+      const hit = scene.pick(raw, 5 / cam.scale, (i) => selectable(d.info.kind, i, d));
       if (hit !== null && !d.selection.has(hit)) st().patchDoc(docId, { selection: new Set([hit]) });
       useContextMenu.getState().open(e.clientX, e.clientY, docId,viewWindow);
     };
@@ -514,6 +531,11 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       if (!d) return;
       if(s.activeDocId!==prev.activeDocId&&s.activeDocId!==docId)finishViaChoice(null);
       if (d.tool !== p?.tool) ensureTool();
+      if (toolId === "select" && p && (d.activeLayer !== p.activeLayer || d.layerMode !== p.layerMode)) {
+        tool.reset?.(); hover = null;
+        const selection=[...d.selection].filter(id=>{const item=d.items.get(id);return !!item&&selectable(d.info.kind,item,d);});
+        if(selection.length!==d.selection.size)st().patchDoc(docId,{selection:new Set(selection)});
+      }
       if (s.showPourFills !== prev.showPourFills) rebuildScene();
       if (
         d.items !== p?.items ||

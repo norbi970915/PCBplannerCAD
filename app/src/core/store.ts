@@ -1,3 +1,4 @@
+import {selectableInView} from "./selectionLayers";
 import { create } from "zustand";
 import {approvalOnlyChange} from "../pcb/drcApprovals";
 import { readPreference } from "./preferences";
@@ -108,6 +109,7 @@ export interface Placement {
 }
 
 export interface MessageTarget {
+  layer?: LayerId | null;
   docId?: string;
   sheet?: string;
   items?: ItemId[];
@@ -309,7 +311,7 @@ export const useEditor = create<AppState>()((set, get) => ({
     const items = new Map(doc.items);
     for (const id of delta.removed) items.delete(id);
     for (const u of delta.upserted) items.set(u.id, u.item);
-    const selection = new Set([...doc.selection].filter((id) => items.has(id)));
+    const selection = new Set([...doc.selection].filter((id) => {const item=items.get(id);return !!item&&(doc.info.kind!=="pcb"||selectableInView(item,doc));}));
     set({ docs: { ...get().docs, [info.id]: { ...doc, items, info, selection, drcStatus: approvalOnlyChange(doc.items,items)?doc.drcStatus:"stale" } } });
   },
 
@@ -334,7 +336,14 @@ export const useEditor = create<AppState>()((set, get) => ({
 
   patchDoc: (id, patch) => {
     const doc = get().docs[id];
-    if (doc) set({ docs: { ...get().docs, [id]: { ...doc, ...patch } } });
+    if (doc) {
+      const next={...doc,...patch};
+      if(next.info?.kind==='pcb'){
+        const ids=[...next.selection].filter(id=>{const item=next.items.get(id);return !!item&&selectableInView(item,next);});
+        if(ids.length!==next.selection.size)next.selection=new Set(ids);
+      }
+      set({docs:{...get().docs,[id]:next}});
+    }
   },
 
   setActiveDoc: (activeDocId) => set({ activeDocId }),

@@ -189,6 +189,10 @@ export const api = {
     ...await invoke<Omit<ViaItem, "kind">>("pcb_via", { id, net, pos, from, to }), kind: "via",
   }),
   pcbPairViaClearance: (id:string,positive:ViaItem,negative:ViaItem,source:number)=>invoke<number>("pcb_pair_via_clearance",{id,positive,negative,source}),
+  pcbPairViaPlan: async (id:string,req:{positive:ViaItem;negative:ViaItem;source:number;target:number;direction:Point;width:number;corner:CornerStyle;mode:RouteMode;tracks:TrackItem[];moved:IdItem[]})=>{
+    const plan=await invoke<{tracks:Omit<TrackItem,'kind'>[];vias:Omit<ViaItem,'kind'>[]}>("pcb_pair_via_plan",{id,req});
+    return {tracks:plan.tracks.map(t=>({...t,kind:'track' as const})),vias:plan.vias.map(v=>({...v,kind:'via' as const}))};
+  },
   pcbObjectAt: (id: string, pos: Point, layer: number) => invoke<[ItemId, string] | null>("pcb_object_at", { id, pos, layer }),
   pcbNetItems: (id: string, net: string) => invoke<ItemId[]>("pcb_net_items", { id, net }),
   pcbNets: (id: string) => invoke<string[]>("pcb_nets", { id }),

@@ -1,0 +1,68 @@
+//! Read-only acceptance of grouped, coupled and curved copper on a board copy.
+use std::{env,fs,time::Instant,collections::{HashSet,BTreeMap}};
+use pcbplannercad_core::{io,Command,DocKind,Document,Item,ItemId,IdItem,Point,Session,LayerId,units::mm,pcb::{self,Track,ArcTrack,board::{DiffPair,Rule,RuleKind},geometry::board_settings,elastic::{Topology,TrackRequest},router::{RouteMode,CornerStyle,RoutingEngine},drc}};
+use serde_json::{json,Value};
+fn snapshot(d:&Document)->String{io::document_to_string(d).unwrap()}
+fn errors(d:&Document,ids:&[ItemId])->Vec<String>{drc::run_near(d,ids).into_iter().filter(|v|v.severity==drc::Severity::Error).map(|v|format!("{}: {} at {:?}",v.code,v.message,v.pos)).collect()}
+// A split may change a finding's representative point without changing copper.
+// Retain source findings only when every participant is exact source geometry.
+fn source_coverage(part:&Item,source:&Item)->bool{
+ if part==source{return true;}
+ let(Item::Track(a),Item::Track(b))=(part,source)else{return false;};
+ if a.net!=b.net||a.layer!=b.layer||a.width!=b.width||b.a==b.b{return false;}
+ let on=|p:Point|{let x=b.b.x as i128-b.a.x as i128;let y=b.b.y as i128-b.a.y as i128;x*(p.y as i128-b.a.y as i128)==y*(p.x as i128-b.a.x as i128)&&p.x>=b.a.x.min(b.b.x)&&p.x<=b.a.x.max(b.b.x)&&p.y>=b.a.y.min(b.b.y)&&p.y<=b.a.y.max(b.b.y)};
+ on(a.a)&&on(a.b)
+}
+fn retained(doc:&Document,after:&Document,v:&drc::DrcViolation,baseline:&[drc::DrcViolation])->bool{
+ baseline.iter().any(|old|old.code==v.code&&old.rule==v.rule&&old.layer==v.layer&&old.message.split(':').next()==v.message.split(':').next()&&old.items.len()==v.items.len()&&v.items.iter().all(|id|after.get(*id).is_some_and(|item|old.items.iter().any(|source|doc.get(*source).is_some_and(|original|source_coverage(item,original))))))
+}
+fn validate(doc:&Document,plan:pcb::drag::DragResult)->Value{
+ let baseline:Vec<_>=drc::run(doc).violations.into_iter().filter(|v|v.severity==drc::Severity::Error).collect();
+ let before=snapshot(doc);let mut s=Session::with_document(doc.clone());let now=Instant::now();let delta=s.execute_with_via_checks(Command::Route{replace:plan.replace,delete:plan.delete,add:plan.add},true).unwrap();let commit=now.elapsed().as_secs_f64()*1000.;
+ let touched:Vec<_>=delta.upserted.iter().filter(|r|matches!(r.item,Item::Track(_)|Item::ArcTrack(_)|Item::Via(_))).map(|r|r.id).collect();let all_errors:Vec<_>=drc::run_near(s.document(),&touched).into_iter().filter(|v|v.severity==drc::Severity::Error).collect();let retained_count=all_errors.iter().filter(|v|retained(doc,s.document(),v,&baseline)).count();let problems:Vec<_>=all_errors.iter().filter(|v|!retained(doc,s.document(),v,&baseline)).map(|v|format!("{}: {} at {:?}",v.code,v.message,v.pos)).collect();
+ for (id,item) in doc.items().filter(|(_,i)|matches!(i,Item::Via(_)|Item::Footprint(_))){assert_eq!(s.document().get(id),Some(item),"fixed anchor moved");}
+ let mut changed_nets=std::collections::BTreeSet::new();for record in &delta.upserted{let net=match &record.item{Item::Track(t)=>&t.net,Item::ArcTrack(a)=>&a.net,_=>continue};if !doc.items().any(|(_,source)|source_coverage(&record.item,source)){changed_nets.insert(net.clone());}}
+ let after=snapshot(s.document());s.undo().unwrap();assert_eq!(snapshot(s.document()),before);s.redo().unwrap();assert_eq!(snapshot(s.document()),after);
+ json!({"commitMs":commit,"errors":problems,"existingErrorsRetained":retained_count,"changedNets":changed_nets,"exactHistory":true,"fixedAnchors":true})
+}
+fn req(ids:Vec<ItemId>,point:Point,delta:Point)->TrackRequest{TrackRequest{ids,point,delta,mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,tolerance:1000}}
+fn track(net:&str,a:Point,b:Point,layer:LayerId)->Item{Item::Track(Track{a,b,width:mm(0.25),layer,net:net.into(),locked:false})}
+fn main(){
+ let args:Vec<_>=env::args().collect();let input=fs::read_to_string(&args[1]).unwrap();let doc=io::document_from_str(DocKind::Pcb,&input).unwrap();let original=snapshot(&doc);let topo=Topology::new(&doc);let mut engine=RoutingEngine::new(doc.clone());let mut groups=Vec::new();let mut used=HashSet::new();
+ for (id,item) in doc.items(){let Item::Track(t)=item else{continue};if t.locked||t.net.is_empty()||t.net=="GND"||!used.insert(t.net.clone()){continue;}
+  let chain=topo.walk(t.b,t,&HashSet::from([id]));if chain.edges.len()<2{used.remove(&t.net);continue;}let ids=vec![id,chain.edges[0],chain.edges[1]];let dx=(t.b.x-t.a.x)as f64;let dy=(t.b.y-t.a.y)as f64;let len=dx.hypot(dy);if len<1.{continue;}
+  for displacement in [-30_000.,30_000.]{let request=req(ids.clone(),Point::new((t.a.x+t.b.x)/2,(t.a.y+t.b.y)/2),Point::new((-dy/len*displacement).round()as i64,(dx/len*displacement).round()as i64));let now=Instant::now();let plan=engine.drag(&request);let micros=now.elapsed().as_micros();let replay=engine.drag(&request);assert_eq!(format!("{plan:?}"),format!("{replay:?}"));
+   let record=match plan{Ok(plan)=>json!({"ids":ids,"accepted":true,"planUs":micros,"validation":validate(&doc,plan)}),Err(error)=>json!({"ids":ids,"accepted":false,"planUs":micros,"message":error})};groups.push(record);
+  }if groups.len()>=24{break;}
+ }
+ // Actual parallel source conductors receive explicit temporary pair intent.
+ let source:Vec<_>=doc.items().filter_map(|(id,item)|if let Item::Track(t)=item{(!t.locked&&!t.net.is_empty()&&t.net!="GND").then_some((id,t.clone()))}else{None}).collect();let mut pairs=Vec::new();let mut nets=HashSet::new();
+ 'outer:for (id,t) in &source{let dx=(t.b.x-t.a.x)as f64;let dy=(t.b.y-t.a.y)as f64;let len=dx.hypot(dy);if len<mm(0.5)as f64{continue;}
+  for (other,u) in &source{if t.net==u.net||t.layer!=u.layer||t.width!=u.width||nets.contains(&(t.net.clone(),u.net.clone())){continue;}let ex=(u.b.x-u.a.x)as f64;let ey=(u.b.y-u.a.y)as f64;let otherlen=ex.hypot(ey);if otherlen<1.||(dx*ey-dy*ex).abs()>len*otherlen*1e-7{continue;}
+   let sep=(((u.a.x-t.a.x)as f64*dy-(u.a.y-t.a.y)as f64*dx)/len).abs();let gap=sep-t.width as f64;if gap<mm(0.1)as f64||gap>mm(0.4)as f64{continue;}
+   let project=|p:Point|((p.x-t.a.x)as f64*dx+(p.y-t.a.y)as f64*dy)/len;let x=project(u.a);let y=project(u.b);if len.min(x.max(y))-0f64.max(x.min(y))<len.min(otherlen)*0.6{continue;}
+   nets.insert((t.net.clone(),u.net.clone()));let mut work=doc.clone();let (bid,b)=board_settings(&work).unwrap();let mut b=b.clone();b.diff_pairs.push(DiffPair{name:"Temporary acceptance pair".into(),positive:t.net.clone(),negative:u.net.clone()});b.rules.insert(0,Rule{name:"Temporary acceptance gap".into(),enabled:true,kind:RuleKind::DiffPair{scope:"All".into(),width:t.width,gap:gap.round()as i64}});let mut configured=Session::with_document(work);configured.execute(Command::ReplaceMany{items:vec![IdItem{id:bid,item:Item::Board(b)}]}).unwrap();work=configured.document().clone();
+   if env::var_os("PCAD_TRACE_PAIR").is_some(){for (key,t) in [(*id,t),(*other,u)]{let selected=HashSet::from([*id,*other]);let left=topo.walk(t.a,t,&selected);let right=topo.walk(t.b,t,&selected);let points=|at:Point,chain:&pcb::elastic::Chain|{let mut path=vec![at];let mut cursor=at;for id in &chain.edges{if let Some(Item::Track(t))=doc.get(*id){cursor=if t.a==cursor{t.b}else{t.a};path.push(cursor);}}path};let mut path:Vec<_>=points(t.a,&left).into_iter().rev().collect();path.push(t.b);path.extend(points(t.b,&right).into_iter().skip(1));eprintln!("SOURCE {:?} {:?} simple={} points={:?}",id,key,pcb::elastic::simple_path(&pcb::elastic::simplify(&path)),path);}}
+   if env::var_os("PCAD_TRACE_PAIR").is_some(){eprintln!("SOURCE_ERRORS {:?}: {:?}",[id,other],errors(&work,&[*id,*other]));}
+   let mut pair_engine=RoutingEngine::new(work.clone());for amount in [-20_000.,20_000.]{let request=req(vec![*id],Point::new((t.a.x+t.b.x)/2,(t.a.y+t.b.y)/2),Point::new((-dy/len*amount).round()as i64,(dx/len*amount).round()as i64));let now=Instant::now();match pair_engine.drag(&request){Ok(plan)=>{let elapsed=now.elapsed().as_micros();let validation=validate(&work,plan);assert!(validation["changedNets"].as_array().unwrap().iter().any(|net|net==&u.net),"partner copper was silently left behind");pairs.push(json!({"ids":[id,other],"accepted":true,"planUs":elapsed,"validation":validation}));},Err(error)=>pairs.push(json!({"ids":[id,other],"accepted":false,"message":error}))}}
+   if pairs.len()>=16{break 'outer;}break;
+  }
+ }
+ // Controlled curve cases share the dense document but occupy a disposable
+ // material island; this checks real board-size/index integration, not congestion.
+ let mut s=Session::with_document(doc.clone());let layer=board_settings(&doc).unwrap().1.stackup.copper_layers()[0];let p=|x:f64,y:f64|Point::new(mm(x),mm(y));let delta=s.execute(Command::Add{items:vec![Item::Rect(pcbplannercad_core::item::Rect{a:p(70.,0.),b:p(90.,20.),width:mm(0.1),layer:pcbplannercad_core::layer::BOARD_OUTLINE,fill:pcbplannercad_core::item::FillStyle::None}),track("ACCEPTANCE_CURVE",p(72.,2.),p(76.,2.),layer),Item::ArcTrack(ArcTrack{center:p(76.,4.),radius:mm(2.),start_angle:-90.,sweep:90.,width:mm(0.25),layer,net:"ACCEPTANCE_CURVE".into(),locked:false}),track("ACCEPTANCE_CURVE",p(78.,4.),p(78.,8.),layer)]}).unwrap();let ids:Vec<_>=delta.upserted.iter().skip(1).map(|r|r.id).collect();let work=s.document().clone();let mut curve_engine=RoutingEngine::new(work.clone());let mut curves=Vec::new();
+ for delta in [p(0.1,-0.1),p(-0.1,0.1)]{let request=req(vec![ids[1]],p(77.414214,2.585786),delta);let plan=curve_engine.drag(&request).unwrap();curves.push(json!({"kind":"tangent-body","accepted":true,"validation":validate(&work,plan)}));}
+ for delta in [p(0.2,0.),p(-0.2,0.)]{let request=req(ids.clone(),p(77.414214,2.585786),delta);let plan=curve_engine.drag(&request).unwrap();curves.push(json!({"kind":"rigid-curve-group","accepted":true,"validation":validate(&work,plan)}));}
+ // Connected coupled curves and short capped curves on the dense snapshot.
+ let mut curved=Session::with_document(work.clone());let (bid,b)=board_settings(curved.document()).unwrap();let mut b=b.clone();b.diff_pairs.push(DiffPair{name:"Controlled curve pair".into(),positive:"CURVE_P".into(),negative:"CURVE_N".into()});b.rules.insert(0,Rule{name:"Controlled curve gap".into(),enabled:true,kind:RuleKind::DiffPair{scope:"All".into(),width:mm(0.25),gap:mm(0.2)}});curved.execute(Command::ReplaceMany{items:vec![IdItem{id:bid,item:Item::Board(b)}]}).unwrap();
+ let mut items=Vec::new();for (net,radius) in [("CURVE_P",2.),("CURVE_N",2.45)]{items.push(track(net,p(72.,12.-radius),p(76.,12.-radius),layer));items.push(Item::ArcTrack(ArcTrack{center:p(76.,12.),radius:mm(radius),start_angle:-90.,sweep:90.,width:mm(0.25),layer,net:net.into(),locked:false}));items.push(track(net,p(76.+radius,12.),p(76.+radius,16.),layer));}
+ let added=curved.execute(Command::Add{items}).unwrap();let arc_id=added.upserted[1].id;let pair_doc=curved.document().clone();let mut curved_engine=RoutingEngine::new(pair_doc.clone());
+ for delta in [p(0.15,-0.15),p(-0.15,0.15)]{let plan=curved_engine.drag(&req(vec![arc_id],p(77.414214,10.585786),delta)).unwrap();curves.push(json!({"kind":"attached-coupled-curves","accepted":true,"validation":validate(&pair_doc,plan)}));}
+ let added=curved.execute(Command::Add{items:vec![Item::ArcTrack(ArcTrack{center:p(85.,10.),radius:mm(0.3),start_angle:0.,sweep:45.,width:mm(0.15),layer,net:"SHORT_CURVE".into(),locked:false})]}).unwrap();let short_doc=curved.document().clone();let mut short_engine=RoutingEngine::new(short_doc.clone());let plan=short_engine.drag(&req(vec![added.upserted[0].id],p(85.277164,10.114805),p(0.01,0.005))).unwrap();curves.push(json!({"kind":"short-capped-curve","accepted":true,"validation":validate(&short_doc,plan)}));
+ let (bid,b)=board_settings(curved.document()).unwrap();let mut b=b.clone();b.diff_pairs.push(DiffPair{name:"Controlled staggered pair".into(),positive:"GATE_P".into(),negative:"GATE_N".into()});curved.execute(Command::ReplaceMany{items:vec![IdItem{id:bid,item:Item::Board(b)}]}).unwrap();
+ let mut items=vec![track("GATE_P",p(83.,3.),p(83.,4.),layer),track("GATE_P",p(83.,4.),p(83.,10.),layer),track("GATE_P",p(83.,10.),p(83.,11.),layer),track("GATE_N",p(83.45,1.),p(83.45,3.),layer),track("GATE_N",p(83.45,3.),p(83.45,11.),layer),track("GATE_N",p(83.45,11.),p(83.45,13.),layer)];for index in [0,2,3,5]{if let Item::Track(t)=&mut items[index]{t.locked=true;}}
+ let added=curved.execute(Command::Add{items}).unwrap();let gated_doc=curved.document().clone();let mut gated_engine=RoutingEngine::new(gated_doc.clone());let plan=gated_engine.drag(&req(vec![added.upserted[1].id],p(83.,7.),p(0.1,0.))).unwrap();curves.push(json!({"kind":"staggered-coupled-rails-with-fixed-tails","accepted":true,"validation":validate(&gated_doc,plan)}));
+ assert_eq!(snapshot(&doc),original);assert_eq!(snapshot(engine.document()),original);let mut categories=BTreeMap::new();categories.insert("groups",groups);categories.insert("pairsWithTemporaryIntent",pairs);categories.insert("controlledConductorCasesOnDenseBackground",curves);
+ let mut unexpected=Vec::new();for (category,cases) in &categories{for case in cases{if case["accepted"]==true&&case["validation"]["errors"].as_array().is_some_and(|e|!e.is_empty()){unexpected.push(json!({"category":category,"case":case}));}}}
+ let report=json!({"objects":doc.len(),"layers":board_settings(&doc).unwrap().1.stackup.copper_layers().len(),"sourceUnchanged":true,"cases":categories,"unexpected":unexpected});fs::write(&args[2],serde_json::to_string_pretty(&report).unwrap()).unwrap();for (category,cases) in &categories{println!("{category}: {}/{} accepted",cases.iter().filter(|c|c["accepted"]==true).count(),cases.len());}println!("unexpected findings: {}",unexpected.len());assert!(unexpected.is_empty());
+}

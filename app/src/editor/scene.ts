@@ -320,19 +320,19 @@ export class Scene {
 export function pushPrims(prims: Prims, theme: Theme, group: (rank: number) => DrawGroup, k: number, tint: Rgba, style = 0) {
   const color = (role: string) => {
     const c = theme.color(role);
-    return k ? mix(c, tint, k) : c;
+    return k && role !== "hole" ? mix(c, tint, k) : c;
   };
   for (const s of prims.segs) {
-    const line: DrawLine = { a: s.a, b: s.b, width: s.w, color: color(s.role), style };
+    const line: DrawLine = { a: s.a, b: s.b, width: s.w, color: color(s.role), style: s.role === "hole" ? 0 : style };
     group(theme.rank(s.role)).lines.push(line);
   }
   // Fills (symbol bodies, pads) get a much lighter tint so highlighted
   // objects stay readable instead of washing out.
   const fillColor = (role: string) => {
     const c = theme.color(role);
-    return k ? mix(c, tint, k * 0.3) : c;
+    return k && role !== "hole" ? mix(c, tint, k * 0.3) : c;
   };
-  for (const f of prims.fills) group(theme.rank(f.role)).fills.push({ tris: f.tris, color: fillColor(f.role), style });
+  for (const f of prims.fills) group(theme.rank(f.role)).fills.push({ tris: f.tris, color: fillColor(f.role), style: f.role === "hole" ? 0 : style });
 }
 
 /** Draws free-standing items (tool previews) into a single overlay group list. */

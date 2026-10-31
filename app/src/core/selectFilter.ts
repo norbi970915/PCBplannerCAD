@@ -2,7 +2,8 @@
 // An object is selectable when its type is enabled and it lies on an enabled layer.
 
 import { create } from "zustand";
-import { L } from "./layers";
+import { onSelectableLayer,selectableInView } from "./selectionLayers";
+export {onSelectableLayer,onActiveLayer} from "./selectionLayers";
 import { readPreference } from "./preferences";
 import { activeDoc, type DocState } from "./store";
 import type { DocKind, Item, LayerId } from "./types";
@@ -122,35 +123,6 @@ export function filterKindOf(item: Item): FilterKind | null {
   }
 }
 
-/** Copper order: top, inner layers by number, bottom. */
-const copperRank = (id: LayerId) => (id === L.topCopper ? 0 : id === L.bottomCopper ? 1000 : id - 32);
-
-/** True when the item touches at least one layer the filter allows. */
-export function onSelectableLayer(item: Item, offLayers: readonly LayerId[]): boolean {
-  if (!offLayers.length) return true;
-  const off = new Set(offLayers);
-  const anyCopper = (lo: number, hi: number) => {
-    for (const id of [L.topCopper, L.bottomCopper, ...Array.from({ length: 30 }, (_, i) => 33 + i)]) {
-      const r = copperRank(id);
-      if (r >= lo && r <= hi && !off.has(id)) return true;
-    }
-    return false;
-  };
-  if (item.kind === "via") {
-    const [a, b] = [copperRank(item.fromLayer), copperRank(item.toLayer)];
-    return anyCopper(Math.min(a, b), Math.max(a, b));
-  }
-  // Components belong to the copper layer of their side.
-  if (item.kind === "footprint") return !off.has(item.side === "bottom" ? L.bottomCopper : L.topCopper);
-  if ("layer" in item && typeof item.layer === "number") {
-    if (item.layer === L.multi) return anyCopper(0, 1000);
-    return !off.has(item.layer);
-  }
-  return true;
-}
-
-const ALL_LAYERS: LayerId[] = Array.from({ length: 63 }, (_, i) => i);
-
 /** True when the item may be picked in the given editor (filter applies to boards only). */
 export function selectable(kind: DocKind, item: Item, targetDoc:DocState|undefined = activeDoc()): boolean {
   if (kind !== "pcb") return true;
@@ -160,16 +132,7 @@ export function selectable(kind: DocKind, item: Item, targetDoc:DocState|undefin
   if (excludeLocked && "locked" in item && item.locked) return false;
   const k = filterKindOf(item);
   if ((k && !on[k]) || !onSelectableLayer(item, offLayers)) return false;
-  // "Active layer only" hides the other layers, so their objects cannot be picked either.
-  const doc = targetDoc;
-  if (!onSelectableLayer(item, doc?.view?.hiddenLayers ?? [])) return false;
-  if (doc?.view) {
-    if ((item.kind === 'track' || item.kind === 'arcTrack') && !doc.view.tracks) return false;
-    if (item.kind === 'via' && !doc.view.vias) return false;
-    if (item.kind === 'text' && !doc.view.text) return false;
-    if (filterKindOf(item) === 'graphics' && !doc.view.graphics) return false;
-  }
-  return doc?.layerMode !== "only" || onSelectableLayer(item, ALL_LAYERS.filter((id) => id !== doc.activeLayer));
+  return !targetDoc || selectableInView(item,targetDoc);
 }
 
 export const typesFiltered = (on: Record<FilterKind, boolean>) => Object.values(on).some((v) => !v);

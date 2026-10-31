@@ -15,23 +15,36 @@ pub struct Chain {
     pub edges: Vec<ItemId>,
     pub end: Point,
 }
-pub struct Topology<'a> {
-    doc: &'a Document,
+struct TopologySpan {id:ItemId,bounds:rstar::AABB<[i64;2]>}
+impl rstar::RTreeObject for TopologySpan {
+    type Envelope=rstar::AABB<[i64;2]>;
+    fn envelope(&self)->Self::Envelope{self.bounds}
+}
+pub struct Topology {
+    tracks: HashMap<ItemId, Track>,
+    joints: HashMap<ItemId,Vec<Point>>,
+    arcs: Vec<(ItemId, super::items::ArcTrack)>,
     adj: HashMap<Point, Vec<ItemId>>,
     anchors: Vec<(ItemId, String, Point, f64, Vec<LayerId>)>,
+    pads: Vec<(ItemId,String,LayerId,Point,super::connectivity::geo::Geo)>,
 }
-impl<'a> Topology<'a> {
-    pub fn new(doc: &'a Document) -> Self {
+impl Topology {
+    pub fn new(doc: &Document) -> Self {
         let fallback = BoardSettings::default();
         let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
         let mut adj: HashMap<Point, Vec<ItemId>> = HashMap::new();
+        let mut tracks=HashMap::new();
+        let mut arcs=Vec::new();
         let mut anchors = Vec::new();
+        let mut pads=Vec::new();
         for (id, item) in doc.items() {
             match item {
                 Item::Track(t) => {
+                    tracks.insert(id,t.clone());
                     adj.entry(t.a).or_default().push(id);
                     adj.entry(t.b).or_default().push(id);
                 }
+                Item::ArcTrack(a) => arcs.push((id,a.clone())),
                 Item::Via(v) => anchors.push((
                     id,
                     v.net.clone(),
@@ -42,40 +55,54 @@ impl<'a> Topology<'a> {
                 Item::Footprint(fp) => {
                     if let Some(g) = doc.cached_footprint(&fp.footprint) {
                         for p in world_pads(id, fp, g, board) {
-                            anchors.push((
-                                id,
-                                p.net,
-                                p.pos,
-                                p.width.max(p.height) as f64 / 2.,
-                                p.copper,
-                            ));
+                            for layer in &p.copper {
+                                pads.push((id,p.net.clone(),*layer,p.pos,super::connectivity::shape_geo(&super::connectivity::pad_shape(&p.for_layer(*layer)))));
+                            }
                         }
                     }
                 }
                 _ => {}
             }
         }
-        Self { doc, adj, anchors }
+        let tree=rstar::RTree::bulk_load(tracks.iter().map(|(id,t)|TopologySpan{id:*id,bounds:rstar::AABB::from_corners([t.a.x.min(t.b.x),t.a.y.min(t.b.y)],[t.a.x.max(t.b.x),t.a.y.max(t.b.y)])}).collect());
+        let mut contacts=Vec::new();
+        for (at,ids) in &adj {for id in ids {let t=&tracks[id];contacts.push((*at,t.net.clone(),t.layer));}}
+        for (_,net,at,_,layers) in &anchors {for layer in layers {contacts.push((*at,net.clone(),*layer));}}
+        for (_,net,layer,at,_) in &pads {contacts.push((*at,net.clone(),*layer));}
+        let mut joints:HashMap<ItemId,Vec<Point>>=HashMap::new();
+        for (at,net,layer) in contacts {
+            for span in tree.locate_in_envelope_intersecting(rstar::AABB::from_point([at.x,at.y])) {
+                let t=&tracks[&span.id];
+                if t.net!=net||t.layer!=layer||at==t.a||at==t.b||cross(t.a,t.b,at)!=0||!between(at,t.a,t.b){continue;}
+                let list=joints.entry(span.id).or_default();if !list.contains(&at){list.push(at);}
+                let incident=adj.entry(at).or_default();if !incident.contains(&span.id){incident.push(span.id);}
+            }
+        }
+        Self { tracks, joints, arcs, adj, anchors, pads }
     }
+    pub fn interior_joints(&self,id:ItemId)->&[Point]{self.joints.get(&id).map_or(&[],Vec::as_slice)}
     pub fn anchor(&self, p: Point, t: &Track, ignore: &HashSet<ItemId>) -> bool {
         self.anchors.iter().any(|(owner, net, at, reach, layers)| {
             !ignore.contains(owner)
                 && net == &t.net
                 && layers.contains(&t.layer)
                 && distance(p, *at) <= *reach + t.width as f64 / 2.
-        }) || self.doc.items().any(|(id, item)| {
-            !ignore.contains(&id)
-                && match item {
-                    Item::ArcTrack(a) if a.net == t.net && a.layer == t.layer => {
-                        distance(p, super::drag::nearest_on_arc(a, p))
-                            <= (a.width + t.width) as f64 / 2.
-                    }
-                    _ => false,
-                }
+        }) || self.pads.iter().any(|(owner,net,layer,_,geometry)|{
+            if ignore.contains(owner)||net!=&t.net||*layer!=t.layer{return false;}
+            let at=super::connectivity::pt(p);
+            super::connectivity::geo::gap(geometry,&super::connectivity::geo::Geo::cap(at,at,t.width as f64/2.0),super::connectivity::geo::TOUCH).is_some()
+        }) || self.arcs.iter().any(|(id,a)| {
+            !ignore.contains(id) && a.net==t.net && a.layer==t.layer
+                && distance(p,super::drag::nearest_on_arc(a,p)) <= (a.width+t.width) as f64/2.
         })
     }
+    pub fn anchor_center(&self,p:Point,t:&Track)->Option<Point>{
+        let vias=self.anchors.iter().filter(|(_,net,at,reach,layers)|net==&t.net&&layers.contains(&t.layer)&&distance(p,*at)<=*reach+t.width as f64/2.).map(|(_,_,at,_,_)|*at);
+        let pads=self.pads.iter().filter(|(_,net,layer,_,geo)|net==&t.net&&*layer==t.layer&&super::connectivity::geo::gap(geo,&super::connectivity::geo::Geo::cap(super::connectivity::pt(p),super::connectivity::pt(p),t.width as f64/2.),super::connectivity::geo::TOUCH).is_some()).map(|(_,_,_,center,_)|*center);
+        vias.chain(pads).min_by(|a,b|distance(p,*a).total_cmp(&distance(p,*b)))
+    }
     fn incident(&self, p: Point, t: &Track) -> Vec<ItemId> {
-        self.adj.get(&p).into_iter().flatten().copied().filter(|id|matches!(self.doc.get(*id),Some(Item::Track(n))if n.net==t.net&&n.layer==t.layer)).collect()
+        self.adj.get(&p).into_iter().flatten().copied().filter(|id|self.tracks.get(id).is_some_and(|n|n.net==t.net&&n.layer==t.layer)).collect()
     }
     /// Follow an unbranched section, stopping at a pad, via, curve, lock or width change.
     pub fn walk(&self, start: Point, t: &Track, excluded: &HashSet<ItemId>) -> Chain {
@@ -83,8 +110,17 @@ impl<'a> Topology<'a> {
         let mut at = start;
         let mut edges = Vec::new();
         loop {
-            if self.anchor(at, t, &HashSet::new()) {
-                break;
+            if self.anchor(at, t, excluded) {
+                // A short neck inside a land is still part of this conductor.
+                // Stopping at its outer vertex hides the real departure tangent
+                // and can fold a dragged section back across the fixed neck.
+                let center=self.anchor_center(at,t);
+                let inward:Vec<_>=self.incident(at,t).into_iter().filter(|id|!used.contains(id)).collect();
+                let can_reach_center=center.is_some_and(|center|center!=at&&inward.len()==1&&self.tracks.get(&inward[0]).is_some_and(|next|{
+                    let far=if next.a==at{next.b}else{next.a};
+                    !next.locked&&next.width==t.width&&distance(far,center)<distance(at,center)&&self.anchor_center(far,t)==Some(center)
+                }));
+                if !can_reach_center{break;}
             }
             let next: Vec<_> = self
                 .incident(at, t)
@@ -95,10 +131,10 @@ impl<'a> Topology<'a> {
                 break;
             }
             let id = next[0];
-            let Some(Item::Track(n)) = self.doc.get(id) else {
+            let Some(n) = self.tracks.get(&id) else {
                 break;
             };
-            if n.locked || n.width != t.width {
+            if n.locked || n.width != t.width || (n.a!=at&&n.b!=at) {
                 break;
             }
             used.insert(id);
@@ -120,7 +156,7 @@ impl<'a> Topology<'a> {
             .filter(|id| *id != except)
             .collect();
         if rest.len() == 1
-            && matches!(self.doc.get(rest[0]),Some(Item::Track(n))if !n.locked&&n.width==t.width)
+            && self.tracks.get(&rest[0]).is_some_and(|n|!n.locked&&n.width==t.width&&(n.a==p||n.b==p))
         {
             Some(rest[0])
         } else {
@@ -262,7 +298,7 @@ fn joins(a: Point, b: Point) -> Vec<Vec<Point>> {
     ]
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackRequest {
     pub ids: Vec<ItemId>,
@@ -300,6 +336,7 @@ fn candidate_plan(
     prototype: &Track,
     path: &[Point],
     target: Point,
+    rail: Option<((f64,f64),f64)>,
     mode: RouteMode,
 ) -> Result<DragResult, String> {
     if path.len() < 2 || !simple_path(path) || !octilinear(path) {
@@ -313,10 +350,17 @@ fn candidate_plan(
             ..prototype.clone()
         })
         .collect();
-    let keep = tracks
-        .iter()
-        .position(|t| on_segment(target, t.a, t.b))
-        .unwrap_or(0);
+    // Keep the picked identity on the moved rail, even when the cursor lies
+    // beyond a newly shortened segment. A corner can instead keep either arm.
+    let rank = |t: &Track| {
+        let parallel = cross(Point::default(), Point::new(prototype.b.x-prototype.a.x, prototype.b.y-prototype.a.y), Point::new(t.b.x-t.a.x, t.b.y-t.a.y)) == 0;
+        let gap = super::connectivity::geo::point_seg(super::connectivity::pt(target), super::connectivity::pt(t.a), super::connectivity::pt(t.b)).0;
+        let follows = parallel && rail.is_some_and(|(n,plane)| [t.a,t.b].iter().all(|p|(n.0*p.x as f64+n.1*p.y as f64-plane).abs()<=2.));
+        (if follows {0} else if on_segment(target,t.a,t.b) {1} else {2}, gap)
+    };
+    let keep = tracks.iter().enumerate().min_by(|(_,a),(_,b)| {
+        let a=rank(a); let b=rank(b); a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
+    }).map_or(0, |(i,_)|i);
     let chosen = tracks.remove(keep);
     let replace = vec![IdItem {
         id: picked,
@@ -332,10 +376,65 @@ fn candidate_plan(
     )
 }
 
-/// Rebuild a single dragged segment or a two-segment corner between actual anchors.
+/// Split a virtual junction only inside the speculative board. The source
+/// identities and all unrelated branches remain intact until one atomic commit.
+fn drag_split_track(doc:&Document,req:&TrackRequest,joints:&[Point])->Result<DragResult,String>{
+    let id=req.ids[0];let Some(Item::Track(t))=doc.get(id)else{return Err("Select a track arm to drag".into())};
+    if t.locked{return Err("Unlock this track before dragging it".into());}
+    if joints.len()>64{return Err("Choose a shorter section beside the fixed junctions".into());}
+    let mut points=vec![t.a,t.b];points.extend_from_slice(joints);
+    let projection=|p:Point|(p.x-t.a.x)as i128*(t.b.x-t.a.x)as i128+(p.y-t.a.y)as i128*(t.b.y-t.a.y)as i128;
+    points.sort_by_key(|p|projection(*p));points.dedup();
+    let picked=points.windows(2).enumerate().min_by(|(_,a),(_,b)|{
+        let gap=|w:&[Point]|super::connectivity::geo::point_seg(super::connectivity::pt(req.point),super::connectivity::pt(w[0]),super::connectivity::pt(w[1])).0;
+        gap(a).total_cmp(&gap(b))
+    }).map_or(0,|(i,_)|i);
+    let mut work=doc.clone();let mut edits=Vec::new();
+    for (i,w) in points.windows(2).enumerate(){
+        let key=if i==picked{id}else{work.alloc_id()};
+        edits.push(crate::document::Edit{id:key,before:doc.get(key).cloned(),after:Some(Item::Track(Track{a:w[0],b:w[1],..t.clone()}))});
+    }
+    work.apply(&edits);
+    let plan=drag_tracks_indexed(&work,req,&Topology::new(&work))?;let rerouted=plan.rerouted;
+    let mut edits:Vec<_>=plan.replace.into_iter().map(|entry|crate::document::Edit{id:entry.id,before:work.get(entry.id).cloned(),after:Some(entry.item)}).collect();
+    edits.extend(plan.delete.into_iter().map(|id|crate::document::Edit{id,before:work.get(id).cloned(),after:None}));work.apply(&edits);
+    let added:Vec<_>=plan.add.into_iter().map(|item|crate::document::Edit{id:work.alloc_id(),before:None,after:Some(item)}).collect();work.apply(&added);
+    let mut replace=Vec::new();let mut delete=Vec::new();let mut add=Vec::new();
+    for (id,item) in doc.items(){match work.get(id){Some(after)if after!=item=>replace.push(IdItem{id,item:after.clone()}),None=>delete.push(id),_=>{}}}
+    for (id,item) in work.items(){if doc.get(id).is_none(){add.push(item.clone());}}
+    let mut result=router::plan_track_edit_removed(doc,replace,add,delete,req.mode)?;result.rerouted+=rerouted;Ok(result)
+}
+
+#[path = "elastic_group.rs"]
+mod group;
+
+/// Rebuild connected conductors between actual anchors.
 pub fn drag_tracks(doc: &Document, req: &TrackRequest) -> Result<DragResult, String> {
+    drag_tracks_indexed(doc,req,&Topology::new(doc))
+}
+
+pub(crate) fn drag_tracks_indexed(doc: &Document, req: &TrackRequest, topo: &Topology) -> Result<DragResult, String> {
+    let _work=router::WorkScope::enter();
+    if let Some(result)=group::dispatch(doc,req,topo){return result;}
+    if req.ids.len()==1&&!topo.interior_joints(req.ids[0]).is_empty()&&req.delta!=Point::default(){
+        return drag_split_track(doc,req,topo.interior_joints(req.ids[0]));
+    }
+    if req.ids.len()==2&&req.ids.iter().any(|id|!topo.interior_joints(*id).is_empty()){
+        return Err("Drag one arm beside the fixed junction".into());
+    }
+    if req.delta==Point::default() {
+        if req.ids.is_empty()||req.ids.len()>2{return Err("Drag one track or a connected two-track corner".into());}
+        let mut tracks=Vec::new();
+        for id in &req.ids {match doc.get(*id){Some(Item::Track(t))if !t.locked=>tracks.push(t),_=>return Err("Select unlocked straight tracks to drag".into())}}
+        if tracks.len()==2 && (req.ids[0]==req.ids[1]||tracks[0].net!=tracks[1].net||tracks[0].layer!=tracks[1].layer||tracks[0].width!=tracks[1].width||![tracks[0].a,tracks[0].b].iter().any(|p|[tracks[1].a,tracks[1].b].contains(p))) {return Err("Select two tracks sharing a corner, net, layer and width".into());}
+        return Ok(DragResult::default());
+    }
     let mut first = None;
     let mut last = "No clean connected route reaches this position".to_string();
+    // Exhaust direction-preserving windows before allowing new leads at fixed
+    // anchors. Otherwise a small local window can invent a hump instead of
+    // consuming the old bend just outside it.
+    for preserve in [true, false] {
     for (left, right) in [
         (1, 1),
         (2, 1),
@@ -350,18 +449,21 @@ pub fn drag_tracks(doc: &Document, req: &TrackRequest) -> Result<DragResult, Str
         (8, 8),
         (usize::MAX, usize::MAX),
     ] {
-        match drag_window(doc, req, left, right) {
+        match drag_window(doc, topo, req, left, right, preserve) {
             Ok(result) => return Ok(result),
             Err(error) => {if first.is_none(){first=Some(error.clone());}last=error;},
         }
+    }
     }
     Err(first.unwrap_or(last))
 }
 fn drag_window(
     doc: &Document,
+    topo: &Topology,
     req: &TrackRequest,
     left_limit: usize,
     right_limit: usize,
+    preserve: bool,
 ) -> Result<DragResult, String> {
     if req.ids.is_empty() || req.ids.len() > 2 {
         return Err("Drag one track or a connected two-track corner".into());
@@ -373,7 +475,6 @@ fn drag_window(
     if t.locked {
         return Err("Unlock this track before dragging it".into());
     }
-    let topo = Topology::new(doc);
     let mut selected: HashSet<_> = req.ids.iter().copied().collect();
     let close = [t.a, t.b]
         .into_iter()
@@ -401,6 +502,7 @@ fn drag_window(
     } else {
         None
     };
+    let mut rail = None;
     let (a, b, target, raw, left_tail, right_tail) = if let Some(vertex) = vertex {
         let other_id = *selected
             .iter()
@@ -442,16 +544,31 @@ fn drag_window(
         }
         let n = (-dy / len, dx / len);
         let shift = req.delta.x as f64 * n.0 + req.delta.y as f64 * n.1;
-        let along = (((req.point.x - t.a.x) as f64 * dx + (req.point.y - t.a.y) as f64 * dy)
-            / (len * len))
-            .clamp(0., 1.);
+        let along = ((req.point.x + req.delta.x - t.a.x) as f64 * dx
+            + (req.point.y + req.delta.y - t.a.y) as f64 * dy) / (len * len);
         let target = Point::new(
             (t.a.x as f64 + along * dx + n.0 * shift).round() as i64,
             (t.a.y as f64 + along * dy + n.1 * shift).round() as i64,
         );
-        let hits = |p: Point, plane: f64| {
+        rail = Some((n, n.0 * target.x as f64 + n.1 * target.y as f64));
+        let guide = |chain: &Chain| chain.edges.last().and_then(|id| match doc.get(*id) {
+            Some(Item::Track(edge)) => {
+                let inner = if edge.a == chain.end {edge.b} else {edge.a};
+                Some(((inner.x-chain.end.x).signum(), (inner.y-chain.end.y).signum()))
+            }, _ => None,
+        });
+        let hits = |p: Point, plane: f64, chain: &Chain, tail: &[Point], forward: (i64,i64)| {
+            let direction = guide(chain);
             let mut out = Vec::new();
             for (x, y) in DIRS {
+                // Unchanged outer copper fixes the boundary tangent. At a true
+                // anchor, prefer leads within 45 degrees of the picked heading.
+                if let Some(d) = direction {
+                    if (preserve || tail.len()>1) && d != (x,y) {continue;}
+                } else if preserve {
+                    let dot=x*forward.0+y*forward.1;
+                    if dot<=0 || (dot*dot) as f64 + 1e-9 < 0.5*((x*x+y*y)*(forward.0*forward.0+forward.1*forward.1)) as f64 {continue;}
+                }
                 let den = n.0 * x as f64 + n.1 * y as f64;
                 if den.abs() < 1e-9 {
                     continue;
@@ -474,14 +591,11 @@ fn drag_window(
         // Try adjacent integer rails, within one nanometre of the pointer projection.
         for (ox, oy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
             let plane = n.0 * (target.x + ox) as f64 + n.1 * (target.y + oy) as f64;
-            for p in hits(a.end, plane) {
-                for q in hits(b.end, plane) {
-                    if p == q || !on_segment(target, p, q) {
-                        continue;
-                    }
+            for p in hits(a.end, plane, &a, &left_tail, ((t.b.x-t.a.x).signum(),(t.b.y-t.a.y).signum())) {
+                for q in hits(b.end, plane, &b, &right_tail, ((t.a.x-t.b.x).signum(),(t.a.y-t.b.y).signum())) {
                     if (q.x - p.x) as i128 * (t.b.x - t.a.x) as i128
-                        + (q.y - p.y) as i128 * (t.b.y - t.a.y) as i128
-                        <= 0
+                        + (q.y - p.y) as i128 * ((t.b.y - t.a.y) as i128)
+                        < 0
                     {
                         continue;
                     }
@@ -521,7 +635,10 @@ fn drag_window(
             }
             if !simple_path(&path)
                 || !octilinear(&path)
-                || !path.windows(2).any(|p| on_segment(target, p[0], p[1]))
+                || !match rail {
+                    Some((n,plane)) => path.iter().any(|p| (n.0*p.x as f64+n.1*p.y as f64-plane).abs()<=2.),
+                    None => path.windows(2).any(|p| on_segment(target, p[0], p[1])),
+                }
                 || !seen.insert(path.clone())
             {
                 continue;
@@ -537,14 +654,15 @@ fn drag_window(
                     .0
                 })
                 .fold(f64::INFINITY, f64::min);
-            let score = length(&path) + path.len() as f64 * 100_000. + error * 10_000.;
-            candidates.push((score, path));
+            let score = length(&path) + path.len() as f64 * 100_000. + error * if rail.is_some() {0.01} else {10_000.};
+            let rail_error = rail.map_or(0., |(n,plane)| path.iter().map(|p|(n.0*p.x as f64+n.1*p.y as f64-plane).abs()).fold(f64::INFINITY,f64::min));
+            candidates.push((if rail_error<1e-6 {0.} else {rail_error}, score, path));
         }
     }
-    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut last = "No clean connected route reaches this position".to_string();
-    for (_, path) in candidates.into_iter().take(24) {
-        match candidate_plan(doc, &old, picked, t, &path, target, req.mode) {
+    for (_, _, path) in candidates.into_iter().take(24) {
+        match candidate_plan(doc, &old, picked, t, &path, target, rail, req.mode) {
             Ok(plan) => return Ok(plan),
             Err(error) => last = error,
         }

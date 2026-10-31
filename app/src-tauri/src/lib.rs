@@ -5,6 +5,7 @@ mod workspace;
 mod local;
 mod recovery;
 mod docking;
+mod routing;
 use tauri::Manager;
 
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| { let migration=identity::migrate(app.handle()); app.manage(identity::MigrationStatus(migration)); app.manage(recovery::RecoveryState::new(app.path().app_local_data_dir()?.join("recovery")));docking::create_main(app)?;Ok(())})
         .manage(AppState { workspace: Mutex::new(ws) })
+        .manage(routing::RoutingState::default())
         .invoke_handler(tauri::generate_handler![
             legal::legal_info,
             legal::open_legal_folder,
@@ -118,6 +120,7 @@ pub fn run() {
             pcb::pcb_net_length,
             pcb::pcb_via,
             pcb::pcb_pair_via_clearance,
+            pcb::pcb_pair_via_plan,
             pcb::pcb_drag_footprints,
             pcb::pcb_drag_each,
             pcb::pcb_cleanup,

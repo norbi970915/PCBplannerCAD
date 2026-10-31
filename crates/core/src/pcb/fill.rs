@@ -40,6 +40,7 @@ pub fn fill_all(doc: &Document) -> Vec<(ItemId, Vec<ZonePolygon>)> {
 
 /// Refill a dependency-closed set in priority order, leaving unrelated pours untouched.
 pub fn fill_subset(doc: &Document, ids: Option<&std::collections::HashSet<ItemId>>) -> Vec<(ItemId, Vec<ZonePolygon>)> {
+    if ids.is_some_and(|set|set.is_empty()){return Vec::new();}
     let fallback = BoardSettings::default();
     let board = board_settings(doc).map_or(&fallback, |(_, b)| b);
     let ctx = Ctx::new(doc, board);

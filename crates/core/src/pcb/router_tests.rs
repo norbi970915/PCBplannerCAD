@@ -766,6 +766,75 @@ fn tight_pad_pitch_can_fan_out_to_pair_gap_without_relaxing_electrical_clearance
 }
 
 #[test]
+fn pad_launches_keep_centers_and_follow_rotated_long_axes() {
+    for (rotation,end) in [(0.0,pt(4.,8.)),(90.0,pt(-8.,4.))] {
+        let mut part=placed("U1",pt(0.,0.),&[("1","A")]);
+        if let Item::Footprint(fp)=&mut part{fp.rotation=rotation;}
+        let doc=board(vec![part],4.,1.);
+        let result=route(&doc,&req("A",pt(0.,0.),end,RouteMode::Walkaround));
+        assert!(result.reached,"{}",result.message);assert_connected(&result.tracks,pt(0.,0.),Some(end));assert_octilinear(&result.tracks);
+        let first=&result.tracks[0];
+        if rotation==0.0{assert_eq!(first.b.y,0);assert!(first.b.x>mm(2.));}
+        else{assert_eq!(first.b.x,0);assert!(first.b.y>mm(2.));}
+    }
+}
+
+#[test]
+fn long_pad_empty_corners_are_not_fixed_electrical_anchors() {
+    let doc=board(vec![placed("U1",pt(0.,0.),&[("1","A")])],4.,0.4);
+    let topology=crate::pcb::elastic::Topology::new(&doc);
+    let Item::Track(t)=track(pt(0.,0.),pt(5.,0.),"A") else{unreachable!()};
+    assert!(!topology.anchor(pt(0.,1.),&t,&Default::default()));
+    assert!(topology.anchor(pt(1.9,0.),&t,&Default::default()));
+}
+
+#[test]
+fn shove_uses_the_clear_side_and_reverses_without_accumulating_changes() {
+    let doc=board(vec![track(pt(-10.,0.),pt(10.,0.),"B"),placed("U1",pt(0.,-0.8),&[("1","C")])],2.,0.6);
+    let before=crate::io::document_to_string(&doc).unwrap();
+    let request=req("A",pt(-2.,0.15),pt(2.,0.15),RouteMode::Shove);
+    let first=route(&doc,&request);assert!(first.reached,"{}",first.message);assert!(!first.moved.is_empty());
+    assert!(first.moved.iter().any(|m|matches!(&m.item,Item::Track(t)if t.a.y>mm(0.4)||t.b.y>mm(0.4))));
+    let away=route(&doc,&req("A",pt(-2.,2.),pt(2.,2.),RouteMode::Shove));assert!(away.reached&&away.moved.is_empty());
+    let restored=route(&doc,&request);assert_eq!(format!("{:?}",first.moved),format!("{:?}",restored.moved));
+    assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+}
+
+fn transition_request(doc:&Document)->PairViaRequest {
+    let positive=via_between(doc,"P",pt(10.,10.),TOP,layer::BOTTOM_COPPER);
+    let negative=via_between(doc,"N",pt(10.,9.55),TOP,layer::BOTTOM_COPPER);
+    PairViaRequest{positive,negative,source:TOP,target:layer::BOTTOM_COPPER,direction:pt(1.,0.),width:mm(0.2),corner:CornerStyle::Diagonal45,mode:RouteMode::Walkaround,
+        tracks:vec![Track{a:pt(5.,10.),b:pt(10.,10.),width:mm(0.2),layer:TOP,net:"P".into(),locked:false},Track{a:pt(5.,9.55),b:pt(10.,9.55),width:mm(0.2),layer:TOP,net:"N".into(),locked:false}],moved:vec![]}
+}
+
+#[test]
+fn paired_transition_finds_an_alternate_and_keeps_both_necks_connected() {
+    let mut obstacle=placed("U1",pt(10.7,9.8),&[("1","BLOCK")]);
+    if let Item::Footprint(fp)=&mut obstacle{fp.side=Side::Bottom;}
+    let doc=board(vec![obstacle],0.6,2.);
+    let before=crate::io::document_to_string(&doc).unwrap();let request=transition_request(&doc);
+    let plan=pair_via_plan(&doc,&request).unwrap();assert_eq!(plan.vias.len(),2);
+    for via in &plan.vias{assert!(plan.tracks.iter().any(|t|t.net==via.net&&t.b==via.pos));}
+    let mut session=crate::Session::with_document(doc);
+    session.execute_with_via_checks(crate::Command::Route{delete:vec![],replace:vec![],add:plan.tracks.into_iter().map(Item::Track).chain(plan.vias.into_iter().map(Item::Via)).collect()},true).unwrap();
+    let after=crate::io::document_to_string(session.document()).unwrap();session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+}
+
+#[test]
+fn paired_transition_rejects_foreign_copper_on_every_crossed_layer() {
+    for blocked in crate::pcb::board::Stackup::with_copper(6).copper_layers(){
+        let mut blocker=track(pt(0.,10.),pt(30.,10.),"BLOCK");if let Item::Track(t)=&mut blocker{t.layer=blocked;t.width=mm(10.);}
+        let mut doc=board(vec![blocker],1.,1.);let board_id=doc.items().find_map(|(id,item)|matches!(item,Item::Board(_)).then_some(id)).unwrap();
+        let mut settings=world::board_of(&doc).clone();settings.stackup=crate::pcb::board::Stackup::with_copper(6);
+        doc.apply(&[crate::document::Edit{id:board_id,before:doc.get(board_id).cloned(),after:Some(Item::Board(settings))}]);
+        let mut request=transition_request(&doc);request.source=layer::inner_copper(1);request.target=layer::inner_copper(4);for t in &mut request.tracks{t.layer=request.source;}
+        let before=crate::io::document_to_string(&doc).unwrap();let message=pair_via_plan(&doc,&request).unwrap_err();
+        let name=world::board_of(&doc).stackup.layers.iter().find(|l|l.layer==Some(blocked)).unwrap().name.as_str();
+        assert!(message.contains(name)&&message.contains("BLOCK"),"crossed layer {}: {message}",blocked.0);assert_eq!(crate::io::document_to_string(&doc).unwrap(),before);
+    }
+}
+
+#[test]
 fn connected_track_edit_pushes_multiple_tracks_in_one_undo_step() {
     let doc=board(vec![track(pt(5.,-2.),pt(15.,-2.),"A"),track(pt(0.,0.4),pt(20.,0.4),"B"),track(pt(0.,0.85),pt(20.,0.85),"C")],1.,1.);
     let (id,item)=doc.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="A")).unwrap();let Item::Track(mut next)=item.clone() else{unreachable!()};next.a.y=0;next.b.y=0;

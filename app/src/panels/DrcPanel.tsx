@@ -15,10 +15,13 @@ import {openDialog} from '../pcb/dialogs';
 const PAGE_SIZE=100;
 export function DrcPanel({doc}:{doc:DocState}) {
   const [query,setQuery]=useState(''),[severity,setSeverity]=useState<'all'|'error'|'warning'>('all');
+  const [code,setCode]=useState(''),[layerId,setLayerId]=useState('');
   const [page,setPage]=useState(0),[approvedPage,setApprovedPage]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  useEffect(()=>{setQuery('');setSeverity('all');setPage(0);setApprovedPage(0);},[doc.drcRunId]);
+  useEffect(()=>{setQuery('');setSeverity('all');setCode('');setLayerId('');setPage(0);setApprovedPage(0);},[doc.info.id]);
   const review=useMemo(()=>reviewDrc(doc),[doc.items,doc.footprints,doc.drc]);
-  const filter={query,severity,code:'',layer:null};
+  const filter={query,severity,code,layer:layerId===''?null:Number(layerId)};
+  const codes=[...new Set([...doc.drc.map(v=>v.code),...(code?[code]:[])])].sort();
+  const layers=[...new Set([...doc.drc.flatMap(v=>v.layer===null?[]:[v.layer]),...(layerId===''?[]:[Number(layerId)])])].sort((a,b)=>a-b);
   const rows=filterDrc(review.open,doc.items,filter);
   const approved=review.approved.filter(row=>filterDrc([row.approval.finding],doc.items,filter).length);
   const pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE)),current=Math.min(page,pages-1),start=current*PAGE_SIZE;
@@ -30,7 +33,7 @@ export function DrcPanel({doc}:{doc:DocState}) {
     setBusy(true);setError('');
     try{if(!await setDrcApproval(doc.info.id,finding,value,stored))setError('The approval change was not saved. Check Messages and try again.');}finally{setBusy(false);}
   };
-  const finding=(v:DrcViolation)=><button type="button" className="grid w-full min-w-0 gap-1 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent-ink" onClick={()=>void navigateTo({docId:doc.info.id,items:v.items.filter(id=>doc.items.has(id)),pos:v.pos})}>
+  const finding=(v:DrcViolation)=><button type="button" className="grid w-full min-w-0 gap-1 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent-ink" onClick={()=>void navigateTo({docId:doc.info.id,items:v.items.filter(id=>doc.items.has(id)),pos:v.pos,layer:v.layer})}>
     <span className="flex min-w-0 items-start gap-2"><span className={v.severity==='error'?'text-err-line':'text-note-line'}>{v.severity==='error'?'Error':'Warning'}</span><span className="min-w-0 break-all font-semibold">{v.code}</span></span>
     <span className="break-words">{v.message}</span><span className="break-words text-[11px] text-muted-foreground">{[v.rule,v.layer===null?'':layer(v.layer).name,v.items.length?'#'+v.items.join(', #'):''].filter(Boolean).join(' · ')}</span>
   </button>;
@@ -44,6 +47,8 @@ export function DrcPanel({doc}:{doc:DocState}) {
     <p className="text-[11px] leading-relaxed text-muted-foreground">Click a finding to select its objects. Approvals are saved with the board and can be undone. Changed geometry or rules need approval again. Run a full check to include unrouted connections.</p>
     <Input aria-label="Search DRC findings" placeholder="Search findings, nets, components…" value={query} onChange={e=>{setQuery(e.target.value);setPage(0);setApprovedPage(0);}}/>
     <NativeSelect aria-label="DRC severity" value={severity} onChange={e=>{setSeverity(e.target.value as typeof severity);setPage(0);setApprovedPage(0);}}><NativeSelectOption value="all">All findings</NativeSelectOption><NativeSelectOption value="error">Errors</NativeSelectOption><NativeSelectOption value="warning">Warnings</NativeSelectOption></NativeSelect>
+    <NativeSelect aria-label="DRC finding type" value={code} onChange={e=>{setCode(e.target.value);setPage(0);setApprovedPage(0);}}><NativeSelectOption value="">All finding types</NativeSelectOption>{codes.map(code=><NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect>
+    <NativeSelect aria-label="DRC finding layer" value={layerId} onChange={e=>{setLayerId(e.target.value);setPage(0);setApprovedPage(0);}}><NativeSelectOption value="">All layers</NativeSelectOption>{layers.map(id=><NativeSelectOption key={id} value={id}>{layer(id).name}</NativeSelectOption>)}</NativeSelect>
     <details className="rounded border border-line p-2"><summary className="cursor-pointer font-semibold">Approved ({review.approved.length})</summary>
       <div role="list" aria-label="Approved DRC findings" className="mt-2 grid gap-2">{approved.slice(approvedStart,approvedStart+PAGE_SIZE).map(({approval,state},i)=><div role="listitem" key={approvedStart+i} className="grid gap-1 border-t border-line pt-2">{finding(approval.finding)}<p className="text-[11px] text-muted-foreground">{state==='current'?'Approved for this geometry and rules.':state==='changed'?'Board changed — this approval no longer applies.':'No matching finding in the current results.'}</p><Button size="sm" variant="outline" disabled={busy} onClick={()=>void approve(approval.finding,false,approval)}>Restore</Button></div>)}</div>
       {!approved.length&&<p className="mt-2 text-muted-foreground">{review.approved.length?'No approved findings match the filters.':'No approved findings.'}</p>}

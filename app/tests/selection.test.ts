@@ -486,6 +486,35 @@ test('pending component placement remains visible, cannot submit twice, and Esca
  }finally{clearMocks();}
 });
 
+test('returning to a reviewed shove target restores it immediately and rejects a late preview',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ const jobs:{args:any;resolve:(value:unknown)=>void}[]=[];
+ mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_drag_tracks');return new Promise(resolve=>jobs.push({args,resolve}));});
+ try{
+  const h=harness();h.move(4,4);h.tool.down!(h.env,{sx:40,sy:40,ctrl:false,shift:false,alt:false}as never);h.move(4,5);
+  const result=(y:number)=>({replace:[{id:3,item:{...track,a:p(-2,y),b:p(10,y)}}],add:[],delete:[99],blocked:0,rerouted:1});
+  jobs[0].resolve(result(5));await new Promise(r=>setImmediate(r));const original=h.tool.preview!(h.env);
+  h.move(4,6);assert.equal(jobs.length,2);h.move(4,5);assert.deepEqual(h.tool.preview!(h.env),original);
+  jobs[1].resolve(result(6));await new Promise(r=>setImmediate(r));assert.deepEqual(h.tool.preview!(h.env),original);assert.equal(jobs.length,2);
+  h.tool.up!(h.env,{sx:40,sy:50,ctrl:false,shift:false,alt:false}as never);await new Promise(r=>setImmediate(r));assert.equal(jobs.length,2);assert.equal(h.commands.length,1);
+ }finally{clearMocks();}
+});
+
+for(const kind of ['track','component'] as const)test('returning '+kind+' to its origin keeps unchanged copper visible without a history step',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let requests=0;
+ mockIPC((cmd,args)=>{
+  assert.equal(cmd,kind==='track'?'pcb_drag_tracks':'pcb_drag_footprints');requests++;
+  const delta=(args!.req as any).delta;return {replace:delta.x||delta.y?[{id:kind==='track'?3:4,item:kind==='track'?{...track,a:p(-2,5),b:p(10,5)}:{kind:'footprint'}}]:[],add:[],delete:[],blocked:0,rerouted:0};
+ });
+ try{
+  const h=kind==='track'?harness():footprintHarness(),x=kind==='track'?4:20,y=kind==='track'?4:20;
+  h.move(x,y);if(kind==='track')h.tool.down!(h.env,{sx:x*10,sy:y*10,ctrl:false,shift:false,alt:false}as never);else h.key('m');
+  h.move(x,y+1);await new Promise(r=>setImmediate(r));h.move(x,y);await new Promise(r=>setImmediate(r));
+  assert.deepEqual(h.tool.preview!(h.env),[]);assert.equal(h.tool.excluded!().size,0);h.click(x,y);await new Promise(r=>setImmediate(r));assert.deepEqual(h.commands,[]);assert.equal(requests,2);
+ }finally{clearMocks();}
+});
+
 test('live connected movement coalesces pointer changes, shows native pushed copper and reuses the accepted preview on drop',async()=>{
  const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');const previousWindow=Object.getOwnPropertyDescriptor(globalThis,'window');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
  const requests:{req:any;resolve:(value:any)=>void}[]=[];
@@ -510,13 +539,102 @@ test('Escape and source changes invalidate late native connected-move previews',
  }finally{clearMocks();if(previousWindow)Object.defineProperty(globalThis,'window',previousWindow);else Reflect.deleteProperty(globalThis,'window');}
 });
 
-test('dropping during continuous motion never commits the older visible track preview',async()=>{
+test('dropping during continuous motion places the displayed valid track without waiting for another target',async()=>{
  const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
  const jobs:{args:any;resolve:(v:any)=>void}[]=[];mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_drag_tracks');return new Promise(resolve=>jobs.push({args,resolve}));});
  try{const h=harness();h.move(4,4);h.tool.down!(h.env,{sx:40,sy:40,ctrl:false,shift:false,alt:false}as never);h.move(4,5);h.move(4,7);
   const plan=(y:number)=>({replace:[{id:3,item:{...track,a:p(-2,y),b:p(10,y)}}],delete:[],add:[],blocked:0,rerouted:0});
   jobs[0].resolve(plan(5));await new Promise(r=>setImmediate(r));assert.equal(jobs.length,2);assert(h.tool.preview!(h.env).some(i=>i.kind==='track'&&i.a.y===5e6));
-  h.tool.up!(h.env,{sx:40,sy:70}as never);assert.deepEqual(h.commands,[],'older accepted geometry cannot be placed at a newer cursor target');
-  jobs[1].resolve(plan(7));await new Promise(r=>setImmediate(r));assert.deepEqual(h.commands,[{op:'route',...{replace:plan(7).replace,delete:[],add:[]}}]);
+  h.tool.up!(h.env,{sx:40,sy:70}as never);await new Promise(r=>setImmediate(r));assert.equal(h.commands.length,1,'the displayed valid position is placed immediately');
+  jobs[1].resolve(plan(7));await new Promise(r=>setImmediate(r));assert.deepEqual(h.commands,[{op:'route',...{replace:plan(5).replace,delete:[],add:[]}}]);
  }finally{clearMocks();}
+});
+
+test('dimmed and active-only views block inactive straight and curved copper for clicks, boxes and stale selections',()=>{
+ for(const mode of ['dim','only'] as const){
+  const h=harness();useSelectFilter.getState().only('tracks');
+  h.items.set(4,{...track,a:p(0,2),b:p(8,2),layer:37} as Item);
+  h.items.set(5,{kind:'arcTrack',center:p(5,5),radius:1e6,startAngle:0,sweep:180,width:2e5,layer:1,net:'GND'});
+  useEditor.getState().patchDoc('test',{layerMode:mode,activeLayer:37});h.scene.update(h.items,h.env.ctx());
+  assert.equal(selectable('pcb',track,h.env.doc()),false);assert.equal(selectable('pcb',h.items.get(5)!,h.env.doc()),false);
+  h.click(4,4);assert.deepEqual(h.selected(),[]);h.box(10,0,-3,9);assert.deepEqual(h.selected(),[4]);
+  h.env.select([3]);h.move(4,4);h.key('m');assert.equal(h.tool.editing!(),false,'inactive stale selection cannot start dragging');
+  useEditor.getState().patchDoc('test',{layerMode:'all'});assert.equal(selectable('pcb',track,h.env.doc()),true);
+ }
+});
+
+test('picking uses the target document layer mode even when another document is active',()=>{
+ const h=harness();const d=h.env.doc();
+ useEditor.setState({docs:{test:d,other:{...d,info:{...d.info,id:'other'},layerMode:'all',activeLayer:0}},activeDocId:'other'});
+ useEditor.getState().patchDoc('test',{layerMode:'dim',activeLayer:37});h.click(4,4);assert.deepEqual(h.selected(),[]);
+});
+
+test('a blocked track release places the last checked preview and immediately frees the selection tool',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ let calls=0;const plan={replace:[{id:3,item:{...track,a:p(-2,5),b:p(10,5)}}],delete:[],add:[],blocked:0,rerouted:0};
+ mockIPC(()=>++calls===1?plan:Promise.reject('Blocked position'));
+ try{
+  const h=harness();h.move(4,4);h.key('m');h.move(4,5);await new Promise(r=>setImmediate(r));h.move(4,8);await new Promise(r=>setImmediate(r));
+  h.click(4,8);await new Promise(r=>setImmediate(r));assert.deepEqual(h.commands,[{op:'route',replace:plan.replace,delete:[],add:[]}]);assert.equal(h.tool.editing!(),false);h.click(3,3);assert.deepEqual(h.selected(),[1]);assert.equal(calls,2);
+ }finally{clearMocks();}
+});
+
+test('a drag with no valid solution releases its cursor capture and permits another selection',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});mockIPC(()=>Promise.reject('No connected solution'));
+ try{const h=harness();h.move(4,4);h.key('m');h.move(4,8);await new Promise(r=>setImmediate(r));h.click(4,8);await new Promise(r=>setImmediate(r));assert.deepEqual(h.commands,[]);assert.equal(h.tool.editing!(),false);h.click(3,3);assert.deepEqual(h.selected(),[1]);}finally{clearMocks();}
+});
+
+test('a curve body move uses checked native copper planning rather than an unchecked translation',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ const h=harness();const arc:Item={kind:'arcTrack',center:p(4,4),radius:2e6,startAngle:0,sweep:180,width:2e5,layer:0,net:'N'};h.items.set(7,arc);h.scene.update(h.items,h.env.ctx());const adjusted={...arc,radius:2.2e6};let calls=0;
+ mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_drag_tracks');assert.deepEqual((args as any).req.ids,[7]);calls++;return {replace:[{id:7,item:adjusted}],delete:[],add:[],blocked:0,rerouted:0};});
+ try{h.click(4,6);h.move(4,6);h.key('m');h.move(4,7);await new Promise(r=>setImmediate(r));h.click(4,7);await new Promise(r=>setImmediate(r));assert.equal(calls,1);assert.deepEqual(h.commands,[{op:'route',replace:[{id:7,item:adjusted}],delete:[],add:[]}]);}finally{clearMocks();}
+});
+test('the next track gesture is selectable immediately and resumes against the committed board',async()=>{
+ const {mockIPC,clearMocks}=await import('@tauri-apps/api/mocks');Object.defineProperty(globalThis,'window',{configurable:true,value:{}});
+ const h=harness();const second={...track,a:p(-2,8),b:p(10,8)} as Item;h.items.set(4,second);h.scene.update(h.items,h.env.ctx());
+ let release!:()=>void;let commits=0;const originalExec=h.env.exec;
+ h.env.exec=async cmd=>{await originalExec(cmd);if(++commits===1)await new Promise<void>(resolve=>{release=resolve;});return true;};
+ mockIPC((cmd,args)=>{assert.equal(cmd,'pcb_drag_tracks');const id=(args as any).req.ids[0];const item=id===3?{...track,a:p(-2,5),b:p(10,5)}:{...second,a:p(-2,9),b:p(10,9)};return {replace:[{id,item}],delete:[],add:[],blocked:0,rerouted:0};});
+ try{h.move(4,4);h.key('m');h.move(4,5);await new Promise(r=>setImmediate(r));h.click(4,5);await new Promise(r=>setImmediate(r));assert.equal(h.commands.length,1);
+  h.move(4,8);h.tool.down!(h.env,{sx:40,sy:80,ctrl:false,shift:false,alt:false});assert.deepEqual(h.selected(),[4],'next pick is not captured by the preceding track');h.move(4,9);h.tool.up!(h.env,{sx:40,sy:90,ctrl:false,shift:false,alt:false});assert.equal(h.commands.length,1,'no mutation against an uncommitted board');
+  release();await new Promise(r=>setImmediate(r));await new Promise(r=>setImmediate(r));assert.equal(h.commands.length,2);assert.equal(h.tool.editing!(),false);assert.deepEqual(h.selected(),[4]);
+ }finally{clearMocks();}
+});
+test('net lookup and net-copper selection respect active-layer isolation',async()=>{
+ const h=harness();h.items.set(4,{...track,layer:37} as Item);h.items.set(10,{kind:'board',stackup:{layers:[{kind:'copper',layer:0},{kind:'copper',layer:37},{kind:'copper',layer:1}]}} as unknown as Item);useEditor.getState().patchDoc('test',{activeLayer:37,layerMode:'dim'});
+ const {api}=await import('../src/core/api.ts');const {netAt,selectNetCopperAt}=await import('../src/core/pcbActions.ts');const originalHit=api.pcbObjectAt,originalItems=api.pcbNetItems;const layers:number[]=[];
+ api.pcbObjectAt=async(_id,_point,layer)=>{layers.push(layer);return layer===0?[3,'GND']:null;};api.pcbNetItems=async()=>[3,4];
+ try{assert.equal(await netAt('test',p(4,4)),null);assert.deepEqual(layers,[37]);api.pcbObjectAt=async()=>[4,'GND'];await selectNetCopperAt('test',p(4,4));assert.deepEqual(h.selected(),[4]);}finally{api.pcbObjectAt=originalHit;api.pcbNetItems=originalItems;}
+});
+test('isolated views filter text, graphics, pours, components and via spans by the active layer',()=>{
+ for(const layerMode of ['dim','only'] as const){
+  const h=harness();const text={kind:'text',pos:p(4,4),text:'Note',height:1e6,width:1e5,rotation:0,layer:2,mirror:false,align:'left'} as unknown as Item;
+  const line={kind:'line',a:p(0,0),b:p(4,4),width:1e5,layer:14} as Item;
+  const footprint={kind:'footprint',side:'top',pos:p(2,2)} as Item;
+  const zone={kind:'zone',layer:1,teardrop:false,keepout:false} as Item;
+  const buried={...via(3,3),fromLayer:33,toLayer:35} as Item;
+  useEditor.getState().patchDoc('test',{activeLayer:0,layerMode});let d=h.env.doc();
+  for(const item of [text,line,footprint,zone,buried])assert.equal(selectable('pcb',item,d),false,item.kind+' must not be selected from background layers');
+  assert.equal(selectable('pcb',track,d),true);assert.equal(selectable('pcb',via(3,3),d),true);
+  useEditor.getState().patchDoc('test',{activeLayer:2});d=h.env.doc();assert.equal(selectable('pcb',text,d),true);
+  for(const item of [track,line,footprint,zone,via(3,3),buried])assert.equal(selectable('pcb',item,d),false,item.kind+' must not leak into text-layer picking');
+  useEditor.getState().patchDoc('test',{view:{...d.view,graphics:false,text:true}});assert.equal(selectable('pcb',{...line,layer:2} as Item,h.env.doc()),false);assert.equal(selectable('pcb',text,h.env.doc()),true);
+  useEditor.getState().patchDoc('test',{activeLayer:34});assert.equal(selectable('pcb',buried,h.env.doc()),true);
+ }
+});
+
+test('text-layer click, rectangular selection and pickup ignore overlapping copper',()=>{
+ const h=harness();const text={kind:'text',pos:p(4,4),text:'LABEL',height:1e6,width:1e5,rotation:0,layer:2,mirror:false,align:'left',justify:'left'} as unknown as Item;h.items.set(6,text);
+ useEditor.getState().patchDoc('test',{activeLayer:2,layerMode:'dim',view:{...h.env.doc().view,graphics:false,text:true}});h.scene.update(h.items,h.env.ctx());
+ h.box(12,0,-3,9);assert.deepEqual(h.selected(),[6]);h.env.select([3]);assert.deepEqual(h.selected(),[],'the store rejects a background selection');h.move(4,4);h.key('m');assert(!h.selected().includes(3),'pickup cannot select the overlapping background copper');h.tool.cancel(h.env);
+});
+test('finding navigation activates its layer and obeys isolated selection rules',async()=>{
+ const h=harness();h.items.set(4,{...track,layer:37} as Item);useEditor.getState().patchDoc('test',{activeLayer:0,layerMode:'dim',view:{...h.env.doc().view,hiddenLayers:[37]}});
+ const {navigateTo}=await import('../src/core/actions.ts');await navigateTo({docId:'test',items:[3,4],pos:p(4,4),layer:37});assert.equal(h.env.doc().activeLayer,37);assert(!h.env.doc().view.hiddenLayers.includes(37));assert.deepEqual(h.selected(),[4]);assert.deepEqual(h.env.doc().focus?.pos,p(4,4));
+});
+test('document updates enforce the same layer visibility rules as pointer picking',()=>{
+ const h=harness();const text={kind:'text',pos:p(4,4),text:'Only text',height:1e6,width:1e5,rotation:0,layer:2,mirror:false,align:'left'} as unknown as Item;h.items.set(6,text);h.items.set(7,{kind:'line',a:p(0,0),b:p(2,2),width:1e5,layer:2});
+ useEditor.getState().patchDoc('test',{activeLayer:2,layerMode:'dim',view:{...h.env.doc().view,graphics:false,text:true},selection:new Set([3,6,7])});assert.deepEqual(h.selected(),[6],'programmatic picks cannot bypass the visible-layer filter');
+ useEditor.getState().applyUpdate({info:h.env.doc().info,delta:{removed:[],upserted:[{id:6,item:{...text,layer:0} as Item}]}} as never);assert.deepEqual(h.selected(),[],'changing an item layer drops an ineligible selection');
 });

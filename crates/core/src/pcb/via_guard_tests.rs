@@ -385,3 +385,12 @@ fn pair_via_clearance_rejects_invalid_spans_nets_and_source_layers() {
     negative.to_layer=target;negative.net="P".into();assert!(router::pair_via_clearance(&doc,&positive,&negative,source).is_err());
     negative.net.clear();assert!(router::pair_via_clearance(&doc,&positive,&negative,source).is_err());
 }
+
+#[test]
+fn via_guard_checks_exact_curves_on_every_crossed_layer(){
+    for copper in Stackup::with_copper(6).copper_layers(){
+        let curve=Item::ArcTrack(super::ArcTrack{center:p(9.,10.),radius:mm(1.),start_angle:-80.,sweep:160.,width:mm(0.2),layer:copper,net:"B".into(),locked:false});
+        let document=board(vec![curve]);let via=router::via_between(&document,"A",p(10.,10.),layer::TOP_COPPER,layer::inner_copper(2));let crosses=Stackup::with_copper(6).span(via.from_layer,via.to_layer).contains(&copper);let mut session=Session::with_document(document);let before=snapshot(session.document());
+        assert_eq!(session.execute_with_via_checks(place(via),true).is_err(),crosses,"curve layer {copper:?}");if crosses{assert_eq!(snapshot(session.document()),before);assert!(!session.can_undo());}
+    }
+}

@@ -185,7 +185,14 @@ fn resolve_route(doc: &mut Document, delete: Vec<ItemId>, add: Vec<Item>, replac
     // Stale teardrops go before the refill, so pours flow back into their place.
     let pruned = crate::pcb::teardrop::prune(&mut next, &edits);
     edits.extend(pruned);
-    for (id, polygons) in crate::pcb::fill::fill_all(&next) {
+    // A surface-conductor edit cannot change copper on another layer. Keep
+    // priority dependencies closed by refilling every pour on affected layers.
+    let mut layers=std::collections::HashSet::new();let mut all_layers=false;
+    for edit in &edits { for item in [&edit.before,&edit.after].into_iter().flatten() { match item {
+        Item::Track(t)=>{layers.insert(t.layer);},Item::ArcTrack(a)=>{layers.insert(a.layer);},Item::Zone(z)=>{layers.insert(z.layer);},_=>all_layers=true,
+    }}}
+    let affected:std::collections::HashSet<_>=next.items().filter_map(|(id,item)|matches!(item,Item::Zone(z)if !z.keepout&&(all_layers||layers.contains(&z.layer))).then_some(id)).collect();
+    for (id, polygons) in crate::pcb::fill::fill_subset(&next,Some(&affected)) {
         if let Some(Item::Zone(zone)) = next.get(id) {
             if zone.fill == polygons { continue; }
             let mut zone = zone.clone();

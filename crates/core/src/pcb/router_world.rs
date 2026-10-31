@@ -11,7 +11,7 @@
 //! skipped and `added` segments (shoved track pieces) are scanned linearly.
 
 use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::sync::{Arc,OnceLock};
 
 use rstar::{AABB, RTree, RTreeObject};
 
@@ -20,7 +20,7 @@ use crate::geom::rotate;
 use crate::item::{Item, PadKind, PadShape};
 use crate::layer;
 use crate::pcb::board::{BoardSettings, RuleKind};
-use crate::pcb::geometry::{all_pads, board_settings, outline_loops, WorldPad};
+use crate::pcb::geometry::{board_settings, outline_loops, WorldPad};
 use crate::pcb::items::Track;
 use crate::pcb::query::{Obj, ObjKind, RuleSet};
 use crate::units::{mm, Coord, Point};
@@ -128,6 +128,7 @@ pub(super) struct RuleKey {
     pub smd: bool,
 }
 
+#[derive(Clone)]
 struct Entry {
     env: AABB<[f64; 2]>,
     idx: u32,
@@ -156,12 +157,26 @@ pub(super) enum Hit {
     Area(u32),
 }
 
+/// Immutable spatial data shared by speculative branches of one board snapshot.
+#[derive(Clone)]
+pub(super) struct WorldIndex {
+    obstacles: Arc<Vec<Obstacle>>,
+    areas: Arc<Vec<Area>>,
+    tree: Arc<RTree<Entry>>,
+    keys: Vec<RuleKey>,
+    nets: FxMap<String,u32>,
+    net_names: Vec<String>,
+    max_clr: f64,
+    board_box: Option<(V,V)>,
+}
+
 pub(super) struct World<'a> {
+    pub doc: &'a Document,
     pub rules: RuleSet<'a>,
     pub layer: LayerId,
-    pub obstacles: Vec<Obstacle>,
-    pub areas: Vec<Area>,
-    tree: RTree<Entry>,
+    pub obstacles: Arc<Vec<Obstacle>>,
+    pub areas: Arc<Vec<Area>>,
+    tree: Arc<RTree<Entry>>,
     keys: Vec<RuleKey>,
     nets: FxMap<String, u32>,
     net_names: Vec<String>,
@@ -188,13 +203,30 @@ impl<'a> World<'a> {
     /// Indexes every copper obstacle of `layer`, skipping `ignore` (also
     /// matches footprint ids, which skips their pads).
     pub fn build(doc: &'a Document, layer_id: LayerId, ignore: &[ItemId]) -> World<'a> {
+        if let Some(index)=super::engine::cached_index(doc,layer_id,ignore) {
+            return Self::from_index(doc,layer_id,index);
+        }
+        let world=Self::build_uncached(doc,layer_id,ignore);
+        super::engine::remember_index(doc,layer_id,ignore,world.index());
+        world
+    }
+
+    fn index(&self)->WorldIndex {
+        WorldIndex {obstacles:self.obstacles.clone(),areas:self.areas.clone(),tree:self.tree.clone(),keys:self.keys.clone(),nets:self.nets.clone(),net_names:self.net_names.clone(),max_clr:self.max_clr,board_box:self.board_box}
+    }
+    fn from_index(doc:&'a Document,layer:LayerId,index:WorldIndex)->Self {
+        Self {doc,rules:RuleSet::new(board_of(doc)),layer,obstacles:index.obstacles,areas:index.areas,tree:index.tree,keys:index.keys,nets:index.nets,net_names:index.net_names,memo:RefCell::new(FxMap::default()),max_clr:index.max_clr,board_box:index.board_box,removed:FxSet::default(),added:Vec::new()}
+    }
+
+    fn build_uncached(doc: &'a Document, layer_id: LayerId, ignore: &[ItemId]) -> World<'a> {
         let board = board_of(doc);
         let mut w = World {
+            doc,
             rules: RuleSet::new(board),
             layer: layer_id,
-            obstacles: Vec::new(),
-            areas: Vec::new(),
-            tree: RTree::new(),
+            obstacles: Arc::new(Vec::new()),
+            areas: Arc::new(Vec::new()),
+            tree: Arc::new(RTree::new()),
             keys: Vec::new(),
             nets: FxMap::default(),
             net_names: Vec::new(),
@@ -215,7 +247,7 @@ impl<'a> World<'a> {
                 Item::Track(t) if t.layer == layer_id => {
                     let net = w.net_id(&t.net);
                     let key = w.simple_key(&mut simple_keys, ObjKind::Track, net);
-                    w.obstacles.push(Obstacle {
+                    Arc::make_mut(&mut w.obstacles).push(Obstacle {
                         core: Core::Seg(V::of(t.a), V::of(t.b)),
                         r: t.width as f64 / 2.0,
                         net,
@@ -237,14 +269,14 @@ impl<'a> World<'a> {
                     };
                     for i in 0..n {
                         let (p, q) = (pt(a.start_angle + step * i as f64), pt(a.start_angle + step * (i + 1) as f64));
-                        w.obstacles.push(Obstacle { core: Core::Seg(p, q), r: a.width as f64 / 2.0 + sag, net, key, kind: ObKind::Arc, id: Some(id), track: None });
+                        Arc::make_mut(&mut w.obstacles).push(Obstacle { core: Core::Seg(p, q), r: a.width as f64 / 2.0 + sag, net, key, kind: ObKind::Arc, id: Some(id), track: None });
                     }
                 }
                 Item::Via(v) if board.stackup.span(v.from_layer, v.to_layer).contains(&layer_id) => {
                     let net = w.net_id(&v.net);
                     let key = w.simple_key(&mut simple_keys, ObjKind::Via, net);
                     let p = V::of(v.pos);
-                    w.obstacles.push(Obstacle { core: Core::Seg(p, p), r: v.diameter as f64 / 2.0, net, key, kind: ObKind::Via, id: Some(id), track: None });
+                    Arc::make_mut(&mut w.obstacles).push(Obstacle { core: Core::Seg(p, p), r: v.diameter as f64 / 2.0, net, key, kind: ObKind::Via, id: Some(id), track: None });
                 }
                 Item::Zone(z) if z.keepout && (z.layer == layer_id || z.layer == layer::KEEP_OUT || z.layer == layer::MULTI_LAYER) => {
                     let key = w.special_key(ObKind::Keepout);
@@ -262,7 +294,7 @@ impl<'a> World<'a> {
                 }
                 Item::Line(l) if l.layer == layer::KEEP_OUT => {
                     let key = w.special_key(ObKind::Keepout);
-                    w.obstacles.push(Obstacle { core: Core::Seg(V::of(l.a), V::of(l.b)), r: l.width as f64 / 2.0, net: NO_NET, key, kind: ObKind::Keepout, id: Some(id), track: None });
+                    Arc::make_mut(&mut w.obstacles).push(Obstacle { core: Core::Seg(V::of(l.a), V::of(l.b)), r: l.width as f64 / 2.0, net: NO_NET, key, kind: ObKind::Keepout, id: Some(id), track: None });
                 }
                 Item::Polyline(p) if p.layer == layer::KEEP_OUT => {
                     let key = w.special_key(ObKind::Keepout);
@@ -270,13 +302,13 @@ impl<'a> World<'a> {
                     let edges = if p.closed { n } else { n.saturating_sub(1) };
                     for i in 0..edges {
                         let (a, b) = (V::of(p.points[i]), V::of(p.points[(i + 1) % n]));
-                        w.obstacles.push(Obstacle { core: Core::Seg(a, b), r: p.width as f64 / 2.0, net: NO_NET, key, kind: ObKind::Keepout, id: Some(id), track: None });
+                        Arc::make_mut(&mut w.obstacles).push(Obstacle { core: Core::Seg(a, b), r: p.width as f64 / 2.0, net: NO_NET, key, kind: ObKind::Keepout, id: Some(id), track: None });
                     }
                 }
                 _ => {}
             }
         }
-        for pad in all_pads(doc, board) {
+        for pad in super::engine::cached_pads(doc).iter() {
             if ignored.contains(&pad.owner) {
                 continue;
             }
@@ -288,10 +320,9 @@ impl<'a> World<'a> {
         let loops = outline_loops(doc, 1000);
         if !loops.is_empty() {
             let key = w.special_key(ObKind::Outline);
-            for (i, lp) in loops.iter().enumerate() {
-                w.add_area(std::slice::from_ref(lp), i == 0, NO_NET, key, ObKind::Outline, None);
-            }
-            let a = &w.areas[w.areas.len() - loops.len()];
+            // One even-odd material area handles disjoint boards and nested cutouts.
+            w.add_area(&loops, true, NO_NET, key, ObKind::Outline, None);
+            let a = w.areas.last().expect("closed board material");
             w.board_box = Some((a.lo, a.hi));
         }
         // Largest clearance any rule can produce (bounds the query envelopes).
@@ -316,7 +347,7 @@ impl<'a> World<'a> {
                 Entry { env: AABB::from_corners([lo.x - o.r, lo.y - o.r], [hi.x + o.r, hi.y + o.r]), idx: i as u32 }
             })
             .collect();
-        w.tree = RTree::bulk_load(entries);
+        w.tree = Arc::new(RTree::bulk_load(entries));
         w
     }
 
@@ -331,6 +362,15 @@ impl<'a> World<'a> {
         self.net_names.push(net.to_string());
         self.nets.insert(net.to_string(), id);
         id
+    }
+
+    pub fn track_key(&mut self, net: u32) -> u32 {
+        if let Some(index) = self.keys.iter().position(|key| key.kind == ObjKind::Track && key.net == self.net_name(net)) {
+            return index as u32;
+        }
+        let key = self.keys.len() as u32;
+        self.keys.push(RuleKey { kind: ObjKind::Track, special: None, net: self.net_name(net).into(), designator: None, footprint: None, smd: false });
+        key
     }
 
     pub fn net_name(&self, id: u32) -> &str {
@@ -371,12 +411,12 @@ impl<'a> World<'a> {
                 lo = V::new(lo.x.min(a.x), lo.y.min(a.y));
                 hi = V::new(hi.x.max(a.x), hi.y.max(a.y));
                 if a != b {
-                    self.obstacles.push(Obstacle { core: Core::Edge(a, b, ai), r: 0.0, net, key, kind, id, track: None });
+                    Arc::make_mut(&mut self.obstacles).push(Obstacle { core: Core::Edge(a, b, ai), r: 0.0, net, key, kind, id, track: None });
                 }
             }
         }
         if lo.x.is_finite() {
-            self.areas.push(Area { lo, hi, invert, net, kind });
+            Arc::make_mut(&mut self.areas).push(Area { lo, hi, invert, net, kind });
         }
     }
 
@@ -417,7 +457,7 @@ impl<'a> World<'a> {
         } else {
             (core, r)
         };
-        self.obstacles.push(Obstacle { core, r, net, key, kind: ObKind::Pad, id: Some(pad.owner), track: None });
+        Arc::make_mut(&mut self.obstacles).push(Obstacle { core, r, net, key, kind: ObKind::Pad, id: Some(pad.owner), track: None });
     }
 
     /// Clearance between an obstacle (rule key) and copper of net `qnet`.
@@ -580,6 +620,42 @@ impl<'a> World<'a> {
             false
         });
         out
+    }
+
+    /// Conservative octilinear clearance contour for a local obstacle walk.
+    /// Supporting planes enclose the actual copper plus the scoped clearance.
+    pub fn clearance_hull(&self,hit:Hit,probe:&Probe)->Option<Vec<Point>>{self.clearance_hull_with_margin(hit,probe,16.)}
+
+    pub fn clearance_hull_with_margin(&self,hit:Hit,probe:&Probe,margin:f64)->Option<Vec<Point>>{
+        let margin=margin.max(0.);
+        let (points,radius)=match hit {
+            Hit::Ob(index)|Hit::Added(index)=>{
+                let obstacle=match hit{Hit::Ob(_)=>&self.obstacles[index as usize],_=>&self.added[index as usize]};
+                let radius=obstacle.r+probe.hw+self.clr(obstacle.key,probe.net)+margin;
+                let points=match &obstacle.core{
+                    Core::Seg(a,b)=>vec![*a,*b],Core::Poly(points)=>points.clone(),
+                    Core::Edge(_,_,area)=>{
+                        let area=&self.areas[*area as usize];if area.invert{return None;}
+                        vec![area.lo,V::new(area.hi.x,area.lo.y),area.hi,V::new(area.lo.x,area.hi.y)]
+                    }
+                };(points,radius)
+            },
+            Hit::Area(index)=>{
+                let area=&self.areas[index as usize];if area.invert{return None;}
+                (vec![area.lo,V::new(area.hi.x,area.lo.y),area.hi,V::new(area.lo.x,area.hi.y)],probe.hw+self.max_clr+margin)
+            }
+        };
+        let directions=[(1.,0.),(1.,1.),(0.,1.),(-1.,1.),(-1.,0.),(-1.,-1.),(0.,-1.),(1.,-1.)];
+        let bounds:Vec<f64>=directions.iter().map(|&(x,y)|{
+            (points.iter().map(|p|p.x*x+p.y*y).fold(f64::NEG_INFINITY,f64::max)+radius*x.hypot(y)).ceil()
+        }).collect();
+        let mut hull=Vec::new();
+        for i in 0..8 {
+            let j=(i+1)%8;let (ax,ay)=directions[i];let (bx,by)=directions[j];let determinant=ax*by-ay*bx;
+            let point=V::new((bounds[i]*by-ay*bounds[j])/determinant,(ax*bounds[j]-bounds[i]*bx)/determinant).round();
+            if directions.iter().zip(&bounds).all(|(&(x,y),bound)|point.x as f64*x+point.y as f64*y<=*bound+1.)&&hull.last()!=Some(&point){hull.push(point);}
+        }
+        (hull.len()>=3).then_some(hull)
     }
 
     /// Kind name of a hit, for messages.

@@ -62,7 +62,9 @@ function NetBrowser() {
     try {
       const ids = await api.pcbNetItems(docId, net);
       if(ticket!==request.current||activeDoc()?.info.id!==docId)return;
-      useEditor.getState().patchDoc(docId, { selection: new Set(ids), marked: new Set(ids) });
+      const currentDoc=activeDoc();if(!currentDoc)return;
+      const selection=ids.filter(id=>{const item=currentDoc.items.get(id);return !!item&&selectable("pcb",item,currentDoc);});
+      useEditor.getState().patchDoc(docId, { selection: new Set(selection), marked: new Set(ids) });
       if (activeDoc()?.info.id === docId) bus.emit("view", { action: "fitSelection" });
     } catch (e) {
       report(e);

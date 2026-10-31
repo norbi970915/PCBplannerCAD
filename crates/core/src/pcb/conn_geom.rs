@@ -1,11 +1,16 @@
 //! Distance kernel for connectivity and DRC: shapes are decomposed into
-//! capsules (segment + radius; circles are zero-length capsules) and filled
+//! capsules (segment + radius; circles are zero-length capsules), exact circular
+//! arcs and filled
 //! polygons (with holes, even-odd), and [`gap`] measures the copper-to-copper
 //! distance between two such sets (negative = overlap). Large polygons get an
 //! R-tree over their edges so zone fills stay cheap.
 
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
+
+#[path="conn_arc.rs"]
+mod circular;
+pub use circular::CircularArc;
 
 pub type P = [f64; 2];
 
@@ -230,6 +235,7 @@ impl PolyGeo {
 // ---------- shapes ----------
 
 pub enum Prim {
+    Arc(CircularArc),
     Cap { a: P, b: P, r: f64 },
     Poly(Box<PolyGeo>),
 }
@@ -239,6 +245,7 @@ impl Prim {
         match self {
             Prim::Cap { a, b, r } => Bb::of(*a, *b).grow(*r),
             Prim::Poly(p) => p.bb,
+            Prim::Arc(a) => a.bounds(),
         }
     }
 }
@@ -272,6 +279,7 @@ impl Geo {
         self.prims.first().map(|(p, _)| match p {
             Prim::Cap { a, .. } => *a,
             Prim::Poly(g) => g.first_vertex(),
+            Prim::Arc(a) => a.point(a.start),
         })
     }
 
@@ -387,6 +395,9 @@ fn poly_poly(pa: &PolyGeo, pb: &PolyGeo, limit: f64) -> Option<Gap> {
 
 fn prim_gap(x: &Prim, y: &Prim, limit: f64) -> Option<Gap> {
     match (x, y) {
+        (Prim::Arc(a),Prim::Arc(b)) => circular::arc_arc(a,b,limit),
+        (Prim::Arc(arc),Prim::Cap{a,b,r}) | (Prim::Cap{a,b,r},Prim::Arc(arc)) => circular::arc_cap(arc,*a,*b,*r,limit),
+        (Prim::Arc(arc),Prim::Poly(p)) | (Prim::Poly(p),Prim::Arc(arc)) => circular::arc_poly(arc,p,limit),
         (Prim::Cap { a, b, r }, Prim::Cap { a: c, b: d, r: r2 }) => cap_cap(*a, *b, *r, *c, *d, *r2, limit),
         (Prim::Cap { a, b, r }, Prim::Poly(p)) | (Prim::Poly(p), Prim::Cap { a, b, r }) => cap_poly(*a, *b, *r, p, limit),
         (Prim::Poly(p), Prim::Poly(q)) => poly_poly(p, q, limit),

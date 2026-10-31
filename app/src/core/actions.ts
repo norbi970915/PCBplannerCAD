@@ -467,7 +467,12 @@ export async function navigateTo(t: MessageTarget) {
   if (!docId) return;
   if (!st().docs[docId]) st().loadDoc(await api.snapshot(docId));
   bus.emit("showDoc", { docId });
-  const items = new Set<ItemId>(t.items ?? []);
+  let doc=st().docs[docId];
+  if(doc.info.kind==='pcb'&&t.layer!==undefined&&t.layer!==null){
+    st().patchDoc(docId,{activeLayer:t.layer,view:{...doc.view,hiddenLayers:doc.view.hiddenLayers.filter(layer=>layer!==t.layer)}});
+    doc=st().docs[docId];
+  }
+  const items = new Set<ItemId>((t.items ?? []).filter(id=>{const item=doc.items.get(id);return !!item&&selectable(doc.info.kind,item,doc);}));
   st().patchDoc(docId, { selection: items, marked: new Set(), focus: t.pos ? { pos: t.pos, seq: Date.now() } : null });
 }
 

@@ -155,3 +155,11 @@ test('failed manual DRC keeps the inspector open and reports the failure',async(
  const {useEditor}=await import('../src/core/store.ts');const {runDrc}=await import('../src/core/pcbActions.ts');let calls=0;
  await onlineHarness(()=>{if(++calls>1)throw Error('Native DRC unavailable');return drcReport();},async flush=>{await flush();useEditor.setState({onlineDrc:false});await runDrc('test-drc');const doc=useEditor.getState().docs['test-drc'];assert.equal(doc.inspectorTab,'drc');assert.equal(doc.drcStatus,'error');assert.match(doc.drcError??'',/unavailable/);});
 });
+
+test('manual and online DRC never report a complete check when rule expressions failed',async()=>{
+ const {useEditor}=await import('../src/core/store.ts');const {runDrc}=await import('../src/core/pcbActions.ts');
+ await onlineHarness(()=>({...drcReport(),ruleErrors:['Clearance: invalid query']}),async flush=>{
+  await flush();assert.equal(useEditor.getState().docs['test-drc'].drcStatus,'error');assert.match(useEditor.getState().docs['test-drc'].drcError??'',/incomplete/);
+  useEditor.setState({onlineDrc:false});await runDrc('test-drc');const d=useEditor.getState().docs['test-drc'];assert.equal(d.drcStatus,'error');assert.equal(d.drcRuleErrors.length,1);assert.match(d.drcError??'',/rules/);
+ });
+});
