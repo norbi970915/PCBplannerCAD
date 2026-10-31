@@ -1,5 +1,5 @@
 import type { DocState, Placement } from "../../core/store";
-import type { Command, Item, ItemId, Point } from "../../core/types";
+import type { Command, Item, ItemId, Point, RoutingCleanup } from "../../core/types";
 import type { DrawContext } from "../draw";
 import type { DrawFill, DrawLine } from "../renderer";
 import type { Scene } from "../scene";
@@ -32,7 +32,7 @@ export interface ToolEnv {
   scale(): number;
   scene: Scene;
   ctx(): DrawContext;
-  exec(cmd: Command): Promise<boolean>;
+  exec(cmd: Command, cleanup?: RoutingCleanup): Promise<boolean>;
   /** Undo the latest document transaction; false when no undo is available. */
   undo(): Promise<boolean>;
   chooseRouteLayer(options:{layers:{id:number;name:string;color:string}[];current:number;suggested:number}):Promise<number|null>;

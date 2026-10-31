@@ -11,6 +11,7 @@
 
 pub mod board;
 pub mod cleanup;
+pub mod route_cleanup;
 pub mod connectivity;
 pub mod dimension;
 pub mod drag;

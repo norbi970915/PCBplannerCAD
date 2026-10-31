@@ -868,3 +868,68 @@ fn connected_track_edit_requires_a_fixed_pad_join() {
     let join=Item::Track(Track{a:pt(5.,0.),b:next.a,..next.clone()});
     let result=plan_track_edit(&doc,vec![IdItem{id,item:Item::Track(next)}],vec![join],RouteMode::Shove).unwrap();assert!(result.delete.is_empty());assert_eq!(result.add.len(),1);
 }
+
+#[test]
+fn multi_layer_track_edit_shares_local_shove_work_and_fails_without_partial_edits() {
+    let mut items=Vec::new();
+    for layer in [TOP,layer::BOTTOM_COPPER] {
+        let mut root=track(pt(-1.,2.),pt(1.,2.),"ROOT");
+        let mut neighbor=track(pt(-10.,0.),pt(10.,0.),"OTHER");
+        if let Item::Track(t)=&mut root {t.layer=layer;}
+        if let Item::Track(t)=&mut neighbor {t.layer=layer;}
+        items.extend([root,neighbor]);
+    }
+    let source=board(items,0.6,0.3);let before=crate::io::document_to_string(&source).unwrap();
+    let replace:Vec<_>=source.items().filter_map(|(id,item)|match item{
+        Item::Track(t)if t.net=="ROOT"=>{let mut moved=t.clone();moved.a.y=mm(0.2);moved.b.y=mm(0.2);Some(IdItem{id,item:Item::Track(moved)})},_=>None
+    }).collect();
+    {
+        let _work=WorkScope::enter();let _slice=WorkSlice::enter(12);
+        let error=plan_track_edit(&source,replace.clone(),vec![],RouteMode::Shove).unwrap_err();
+        assert!(error.contains("search limit"),"{error}");
+        assert!(engine::work_exhausted());
+        assert_eq!(crate::io::document_to_string(&source).unwrap(),before);
+    }
+    let plan=plan_track_edit(&source,replace,vec![],RouteMode::Shove).unwrap();
+    assert_eq!(plan.rerouted,2);
+    let mut session=crate::Session::with_document(source.clone());
+    let delta=session.execute_with_via_checks(crate::Command::Route{replace:plan.replace,delete:plan.delete,add:plan.add},true).unwrap();
+    let touched:Vec<_>=delta.upserted.iter().map(|r|r.id).collect();
+    assert!(!crate::pcb::drc::run_near(session.document(),&touched).iter().any(|v|v.severity==crate::pcb::drc::Severity::Error));
+    let after=crate::io::document_to_string(session.document()).unwrap();
+    session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+    session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+    assert_eq!(crate::io::document_to_string(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()).unwrap(),after);
+}
+
+#[test]
+fn shove_reshapes_a_clear_section_without_moving_its_interior_branch_contact() {
+    for heading in 0..3 {for turns in 0..4 {for reverse in [false,true] {
+        let rotate=|p:Point|{let mut p=match heading{0=>p,1=>Point::new(p.x-p.y,p.x+p.y),_=>Point::new(2*p.x-p.y,p.x+2*p.y)};for _ in 0..turns {p=Point::new(-p.y,p.x);}p};
+        let mut items=vec![track(pt(-10.,0.),pt(20.,0.),"BRANCH"),track(pt(0.,0.),pt(0.,-3.),"BRANCH"),track(pt(14.,0.),pt(14.,3.),"BRANCH"),track(pt(7.,2.),pt(9.,2.),"ROOT"),
+            Item::Via(Via{pos:pt(0.,0.),diameter:mm(0.6),drill:mm(0.3),from_layer:TOP,to_layer:layer::BOTTOM_COPPER,net:"BRANCH".into(),locked:false})];
+        for item in &mut items {match item{
+            Item::Track(t)=>{t.a=rotate(t.a);t.b=rotate(t.b);if reverse {std::mem::swap(&mut t.a,&mut t.b);}},
+            Item::Via(v)=>v.pos=rotate(v.pos),_=>{}
+        }}
+        let source=board(items,0.6,0.3);let before=crate::io::document_to_string(&source).unwrap();
+        let (id,item)=source.items().find(|(_,i)|matches!(i,Item::Track(t)if t.net=="ROOT")).unwrap();
+        let Item::Track(mut moved)=item.clone()else{unreachable!()};let shift=rotate(pt(0.,-1.8));
+        moved.a=Point::new(moved.a.x+shift.x,moved.a.y+shift.y);moved.b=Point::new(moved.b.x+shift.x,moved.b.y+shift.y);
+        let plan=plan_track_edit(&source,vec![IdItem{id,item:Item::Track(moved)}],vec![],RouteMode::Shove).expect("the junction is far outside the affected section");
+        assert_eq!(plan.rerouted,1);
+        let mut session=crate::Session::with_document(source.clone());
+        let delta=session.execute_with_via_checks(crate::Command::Route{replace:plan.replace,delete:plan.delete,add:plan.add},true).unwrap();
+        let touched:Vec<_>=delta.upserted.iter().map(|r|r.id).collect();
+        assert!(!crate::pcb::drc::run_near(session.document(),&touched).iter().any(|v|v.severity==crate::pcb::drc::Severity::Error));
+        for(id,item)in source.items().filter(|(_,item)|matches!(item,Item::Via(_))||matches!(item,Item::Track(t)if t.net=="BRANCH"&&[rotate(pt(0.,-3.)),rotate(pt(14.,3.))].iter().any(|p|t.a==*p||t.b==*p))) {assert_eq!(session.document().get(id),Some(item));}
+        let fixed=rotate(pt(0.,0.));
+        assert!(session.document().items().any(|(_,item)|matches!(item,Item::Track(t)if t.net=="BRANCH"&&(t.a==fixed||t.b==fixed))));
+        assert_eq!(crate::pcb::connectivity::ratsnest(session.document()),crate::pcb::connectivity::ratsnest(&source));
+        let after=crate::io::document_to_string(session.document()).unwrap();
+        session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+        session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+        assert_eq!(crate::io::document_to_string(&crate::io::document_from_str(DocKind::Pcb,&after).unwrap()).unwrap(),after);
+        assert_eq!(crate::io::document_to_string(&source).unwrap(),before);
+    }}}
+}

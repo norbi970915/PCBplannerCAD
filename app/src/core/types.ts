@@ -723,6 +723,12 @@ export interface ReportLine {
 }
 
 /** Tools ▸ Cleanup Tracks & Vias: what to remove or merge. */
+export interface RoutingCleanup {
+  protect: number[];
+  preserveNets: string[];
+  corner: CornerStyle;
+}
+
 export interface CleanupOptions {
   zeroLength: boolean;
   duplicates: boolean;
@@ -732,6 +738,8 @@ export interface CleanupOptions {
 }
 
 export interface CleanupResult {
+  original: IdItem[];
+  trimmed: number;
   delete: ItemId[];
   replace: IdItem[];
   zeroLength: number;

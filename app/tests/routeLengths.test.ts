@@ -31,3 +31,12 @@ test('split shove replacements subtract their original track once and count ever
   assert.equal(prospectiveLength(items,'P',[],moved),6e6);
   assert.equal(prospectiveLength(items,'N',[],moved),7e6);
 });
+
+test('via-owned tether previews count new copper without replacing an existing track',()=>{
+  const original:Item={kind:'via',locked:false,pos:{x:0,y:0},diameter:600000,drill:300000,fromLayer:0,toLayer:1,net:'P'};
+  const items=new Map<number,Item>([[1,t('P',10e6)],[17,original]]);
+  const moved=[{id:17,item:{...original,pos:{x:0,y:635000}} as Item},{id:17,item:t('P',635000)}];
+  for(const entries of [moved,[...moved].reverse()]) assert.equal(prospectiveLength(items,'P',[],entries),10635000);
+  assert.equal(items.get(17),original);
+  assert.equal(prospectiveLength(items,'P',[],[]),10e6);
+});

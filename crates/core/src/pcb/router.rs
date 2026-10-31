@@ -37,6 +37,8 @@ mod search;
 mod chain;
 #[path = "router_contour.rs"]
 mod contour;
+#[path = "router_backtrack.rs"]
+mod backtrack;
 #[path = "router_shove.rs"]
 mod shove;
 #[path = "router_via.rs"]
@@ -102,8 +104,8 @@ pub struct RouteResult {
     pub tracks: Vec<Track>,
     /// The end was reached without violations.
     pub reached: bool,
-    /// Shoved other-net tracks. Each entry's `id` is the *original* item it
-    /// replaces; one original may map to several entries (a detour), so apply
+    /// Shoved other-net copper. Each entry's `id` is an original source item;
+    /// one source may own several pieces, including a moved via's new tethers. Apply
     /// as `Change { delete: unique ids, add: items }`.
     pub moved: Vec<IdItem>,
     pub blocked_at: Option<Point>,
@@ -183,6 +185,8 @@ fn walk(world: &World, probe: &Probe, start: Point, end: Point, corner: CornerSt
     };
     Outcome { path: w.path, reached: w.reached, moved: vec![], blocked_at: w.blocked_at, message }
 }
+
+pub(crate) fn cleanup_corner_path(a:Point,b:Point,style:CornerStyle,flip:bool)->Vec<Point>{corner_path(a,b,style,flip)}
 
 fn tracks_of(pts: &[Point], width: Coord, layer: LayerId, net: &str) -> Vec<Track> {
     pts.windows(2).filter(|w| w[0] != w[1]).map(|w| Track { locked: false, a: w[0], b: w[1], width, layer, net: net.to_string() }).collect()
@@ -550,6 +554,7 @@ pub fn plan_track_edit(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, mode:R
     plan_track_edit_removed(doc,replace,add,vec![],mode)
 }
 pub(crate) fn plan_track_edit_removed(doc:&Document, replace:Vec<IdItem>, add:Vec<Item>, delete:Vec<ItemId>, mode:RouteMode)->Result<super::drag::DragResult,String> {
+    let _work=WorkScope::enter();
     let mut ids=std::collections::BTreeSet::new();let mut tracks=Vec::new();
     for entry in &replace {
         if !ids.insert(entry.id){return Err("Duplicate track in drag plan".into());}

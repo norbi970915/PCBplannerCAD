@@ -124,6 +124,7 @@ pub fn run() {
             pcb::pcb_drag_footprints,
             pcb::pcb_drag_each,
             pcb::pcb_cleanup,
+            pcb::pcb_cleanup_apply,
             pcb::pcb_stitch,
             pcb::pcb_teardrops,
             pcb::pcb_object_at,

@@ -167,3 +167,35 @@ fn routed_surface_copper_refills_only_its_layer_with_full_priority_dependencies(
     for (id,fill) in super::fill::fill_all(session.document()) {let Some(Item::Zone(zone))=session.document().get(id)else{panic!()};assert_eq!(zone.fill,fill,"priority-dependent fill changed");}
     let after=content(session.document());session.undo();assert_eq!(content(session.document()),before);session.redo();assert_eq!(content(session.document()),after);
 }
+#[test]
+fn automatic_via_shove_keeps_an_interior_track_contact_connected() {
+    let d=doc(vec![via(5.,0.,"B"),track((0.,0.),(10.,0.),0.2,BOTTOM_COPPER,"B")]);
+    let before=content(&d);
+    let (fixed_id,fixed)=d.items().find(|(_,item)|matches!(item,Item::Track(_))).map(|(id,item)|(id,item.clone())).unwrap();
+    let request=RouteRequest{net:"A".into(),layer:TOP_COPPER,start:Point::new(0,0),end:Point::new(mm(10.),0),width:mm(0.25),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,ignore:vec![],posture_flip:false};
+    let result=super::router::route(&d,&request);assert!(result.reached,"{}",result.message);
+    assert!(result.moved.iter().any(|r|matches!(r.item,Item::Via(_))),"the via has a clear legal displacement");
+    let delete=result.moved.iter().map(|r|r.id).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let add=result.moved.into_iter().map(|r|r.item).chain(result.tracks.into_iter().map(Item::Track)).collect();
+    let mut session=Session::with_document(d.clone());
+    session.execute_with_via_checks(Command::Route{delete,add,replace:vec![]},true).unwrap();
+    assert_eq!(session.document().get(fixed_id),Some(&fixed));
+    let moved_via=session.document().items().find(|(_,item)|matches!(item,Item::Via(v)if v.net=="B")).unwrap().0;
+    assert!(super::connectivity::analyze(session.document()).connected((moved_via,None),(fixed_id,None)),"the displaced via lost its original interior contact");
+    assert!(super::drc::run(session.document()).violations.iter().all(|v|v.severity!=super::drc::Severity::Error));
+    let after=content(session.document());session.undo().unwrap();assert_eq!(content(session.document()),before);
+    session.redo().unwrap();assert_eq!(content(session.document()),after);
+    assert_eq!(content(&crate::io::document_from_str(crate::DocKind::Pcb,&after).unwrap()),after);
+    assert_eq!(content(&d),before);
+}
+
+#[test]
+fn automatic_via_shove_does_not_detach_a_locked_interior_contact() {
+    let mut copper=track((0.,0.),(10.,0.),0.2,BOTTOM_COPPER,"B");
+    if let Item::Track(t)=&mut copper{t.locked=true;}
+    let d=doc(vec![via(5.,0.,"B"),copper]);let before=content(&d);
+    let request=RouteRequest{net:"A".into(),layer:TOP_COPPER,start:Point::new(0,0),end:Point::new(mm(10.),0),width:mm(0.25),mode:RouteMode::Shove,corner:CornerStyle::Diagonal45,ignore:vec![],posture_flip:false};
+    let result=super::router::route(&d,&request);
+    assert!(!result.moved.iter().any(|r|matches!(r.item,Item::Via(_))),"a via physically attached to locked copper must stay anchored");
+    assert_eq!(content(&d),before);
+}

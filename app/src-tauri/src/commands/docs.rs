@@ -100,9 +100,10 @@ fn ensure_editable(ws: &Workspace, id: &str) -> Res<()> {
 }
 
 #[tauri::command(async)]
-pub fn doc_execute(state: State<AppState>, id: String, cmd: Command, enforce_vias: Option<bool>) -> Res<Update> {
+pub fn doc_execute(state: State<AppState>, id: String, cmd: Command, enforce_vias: Option<bool>, cleanup:Option<pcbplannercad_core::pcb::route_cleanup::RoutingCleanup>) -> Res<Update> {
     let mut ws = lock(&state);
     ensure_editable(&ws, &id)?;
+    let cmd=if let Some(request)=cleanup{pcbplannercad_core::pcb::route_cleanup::prepare(ws.doc(&id)?.session.document(),cmd,&request).map_err(|e|e.to_string())?}else{cmd};
     let delta = ws.doc_mut(&id)?.session.execute_with_via_checks(cmd, enforce_vias.unwrap_or(true)).map_err(|e| e.to_string())?;
     update(&mut ws, &id, delta)
 }

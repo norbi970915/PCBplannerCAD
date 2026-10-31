@@ -26,23 +26,27 @@ pub(super) struct Pusher {
     pub net: u32,
 }
 
-enum Detour {
+pub(super) enum Detour {
     NotNeeded,
     Points(Vec<Point>),
 }
 
 /// Raised detour of track `a`–`b` clearing every pusher (`(a, b, required
 /// centerline distance)`), or `None` when it cannot fit inside the segment.
-fn detour(a: Point, b: Point, pushers: &[(V, V, f64)]) -> Option<Detour> {
+pub(super) fn detour(a: Point, b: Point, pushers: &[(V, V, f64)]) -> Option<Detour> {
     detour_side(a,b,pushers,None)
 }
 
-fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -> Option<Detour> {
+pub(super) fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -> Option<Detour> {
     let (av, bv) = (V::of(a), V::of(b));
     let len = (bv - av).len();
     if len < 1.0 {
         return None;
     }
+    // Charge batches of pusher scans, including repeated window growth and
+    // candidate verification. Local detours share the walkaround allowance.
+    let scan = || super::engine::consume_work(pushers.len().div_ceil(32).max(1));
+    if !scan() { return None; }
     let conflicts: Vec<&(V, V, f64)> = pushers.iter().filter(|p| seg_seg_dist(av, bv, p.0, p.1) < p.2).collect();
     if conflicts.is_empty() {
         return Some(Detour::NotNeeded);
@@ -71,6 +75,7 @@ fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -
             // (or within clearance below it) remains unaccounted for.
             for _ in 0..12 {
                 let (mut nlo, mut nhi, mut nd) = (lo, hi, d);
+                if !scan() { return None; }
                 for p in pushers {
                     if let Some((c0, c1)) = clip_box(local(p.0), local(p.1), lo - p.2 - d, hi + p.2 + d, -p.2 + 0.5, f64::INFINITY) {
                         nlo = nlo.min(c0.x.min(c1.x));
@@ -91,6 +96,7 @@ fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -
             let tb = hi + 0.5 * req_max + 3.0;
             let pts = if oct { lattice_points(a, b, sigma, ta, tb, dd) } else { float_points(av, u, n, len, ta, tb, dd) };
             let Some(pts) = pts else { break };
+            if !scan() { return None; }
             let clear = pts.windows(2).all(|w| pushers.iter().all(|p| seg_seg_dist(V::of(w[0]), V::of(w[1]), p.0, p.1) >= p.2));
             if clear {
                 if best.as_ref().is_none_or(|b| dd < b.0) {
@@ -104,6 +110,36 @@ fn detour_side(a: Point, b: Point, pushers: &[(V, V, f64)], side: Option<f64>) -
         }
     }
     best.map(|b| Detour::Points(b.1))
+}
+
+/// Treat every interior contact as an exact endpoint of independent subspans.
+/// A free section may deform while fixed branch, pad and via centers stay put.
+pub(super) fn anchored_detour(a:Point,b:Point,joints:&[Point],pushers:&[(V,V,f64)],side:Option<f64>)->Option<Detour>{
+    if joints.is_empty(){return match side{None=>detour(a,b,pushers),_=>detour_side(a,b,pushers,side)};}
+    let mut anchors=joints.to_vec();
+    let dx=b.x as i128-a.x as i128;let dy=b.y as i128-a.y as i128;
+    anchors.sort_by(|p,q|if dx.abs()>=dy.abs(){p.x.cmp(&q.x)}else{p.y.cmp(&q.y)});
+    if (if dx.abs()>=dy.abs(){dx}else{dy})<0 {anchors.reverse();}
+    anchors.dedup();anchors.insert(0,a);anchors.push(b);
+    let mut path=vec![a];let mut changed=false;
+    for span in anchors.windows(2) {
+        match detour_side(span[0],span[1],pushers,side)? {
+            Detour::NotNeeded=>path.push(span[1]),
+            Detour::Points(points)=>{changed=true;path.extend(points.into_iter().skip(1));}
+        }
+    }
+    if !changed{return Some(Detour::NotNeeded);}
+    // Separate subspans must not fold back across each other.
+    crate::pcb::elastic::simple_path(&path).then_some(Detour::Points(path))
+}
+
+/// Generate each direction only when the preceding candidate was rejected.
+pub(super) fn alternatives<'a>(a:Point,b:Point,joints:&'a [Point],pushers:&'a [(V,V,f64)],mut nearest:Option<Detour>,alternate:bool)->impl Iterator<Item=Vec<Point>>+'a {
+    let mut order=[0,1,2];if alternate{order.reverse();}
+    order.into_iter().filter_map(move |choice|{
+        let candidate=match choice{0=>nearest.take(),1=>anchored_detour(a,b,joints,pushers,Some(-1.)),_=>anchored_detour(a,b,joints,pushers,Some(1.))};
+        match candidate{Some(Detour::Points(points))=>Some(points),_=>None}
+    })
 }
 
 /// Detour points for an octilinear track using exact integer 45° steps.
@@ -145,19 +181,25 @@ pub(super) fn shove(world: &mut World, probe: &Probe, path: &[Point]) -> Result<
 
 /// Plan all selected conductors together so pushed tracks clear the entire drag.
 pub(super) fn shove_many(world: &mut World, roots: &[Pusher]) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
+    let _work=super::engine::WorkScope::enter();
     let removed=world.removed.clone();let added=world.added.clone();
-    let first=shove_attempt(world,roots,false);
+    let first={let _quick=super::engine::WorkSlice::reserving(128);shove_attempt(world,roots,false)};
     if first.is_ok(){return first;}
     world.removed=removed.clone();world.added=added.clone();
-    let second=shove_attempt(world,roots,true);
+    let second={let _quick=super::engine::WorkSlice::reserving(128);shove_attempt(world,roots,true)};
     if second.is_ok(){return second;}
     world.removed=removed;world.added=added;
-    first
+    let alternative=super::backtrack::solve(world,roots);
+    match alternative{
+        Ok(moves)=>Ok(moves),
+        Err(super::backtrack::Failure::Limit)=>Err("Routing search limit reached while reconsidering shove dependencies".into()),
+        Err(super::backtrack::Failure::Blocked)=>first,
+    }
 }
 
 fn shove_attempt(world: &mut World, roots: &[Pusher], alternate: bool) -> Result<Vec<(ItemId, Vec<Track>)>, String> {
     let topology=super::engine::cached_topology(world.doc).unwrap_or_else(||std::sync::Arc::new(crate::pcb::elastic::Topology::new(world.doc)));
-    let movable=|world:&World,index:u32|world.obstacles[index as usize].track.is_some()&&world.obstacles[index as usize].id.is_some_and(|id|topology.interior_joints(id).is_empty());
+    let movable=|world:&World,index:u32|world.obstacles[index as usize].track.is_some();
     let mut pushers = roots.to_vec();
     let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
     let mut queued: FxSet<u32> = FxSet::default();
@@ -188,13 +230,11 @@ fn shove_attempt(world: &mut World, roots: &[Pusher], alternate: bool) -> Result
         let ob = world.obstacles[i as usize].clone();
         let track = ob.track.clone().ok_or("locked track cannot be pushed")?;
         let reqs: Vec<(V, V, f64)> = pushers.iter().filter(|p| p.net != ob.net || p.net == super::world::NO_NET).map(|p| (p.a, p.b, ob.r + p.hw + world.clr(ob.key, p.net))).collect();
-        let nearest=detour(track.a,track.b,&reqs);
+        let joints=ob.id.map_or(&[][..],|id|topology.interior_joints(id));
+        let nearest=anchored_detour(track.a,track.b,joints,&reqs,None);
         if matches!(nearest,Some(Detour::NotNeeded)){continue;}
-        let mut options=vec![nearest,detour_side(track.a,track.b,&reqs,Some(-1.0)),detour_side(track.a,track.b,&reqs,Some(1.0))];
-        if alternate{options.reverse();}
         let excluded=[ob.net];let candidate_probe=Probe{hw:ob.r,net:ob.net,excl:&excluded};
-        let local=options.into_iter().flatten().find_map(|option|{
-            let Detour::Points(points)=option else{return None};
+        let local=alternatives(track.a,track.b,joints,&reqs,nearest,alternate).find_map(|points|{
             // Fixed copper rules out this side before propagating neighboring tracks.
             let clear=points.windows(2).all(|w|world.seg_collisions(V::of(w[0]),V::of(w[1]),&candidate_probe).into_iter().all(|hit|matches!(hit,Hit::Ob(j)if movable(world,j)&&!world.removed.contains(&j))));
             clear.then_some(points)
@@ -262,4 +302,101 @@ mod tests {
             assert!(octant(w[1].x - w[0].x, w[1].y - w[0].y).is_some());
         }
     }
+    #[test]
+    fn independent_shove_dependencies_need_mixed_corridor_choices() {
+        use crate::{Command,DocKind,Item,Session,LayerId,units::mm};
+        let p=|x:f64,y:f64|Point::new(mm(x),mm(y));
+        let track=|net:&str,a,b|Item::Track(Track{a,b,width:mm(0.25),layer:LayerId(0),net:net.into(),locked:false});
+        let mut session=Session::new(DocKind::Pcb);
+        session.execute(Command::Add{items:vec![Item::Board(Default::default()),
+            track("LEFT",p(-10.,0.),p(-2.,0.)),track("RIGHT",p(2.,0.),p(10.,0.)),
+            track("LOWER_STOP",p(-6.2,-0.6),p(-5.8,-0.6)),track("UPPER_STOP",p(5.8,1.),p(6.2,1.))
+        ]}).unwrap();
+        let source=session.document().clone();let before=crate::io::document_to_string(&source).unwrap();
+        let mut world=World::build(&source,LayerId(0),&[]);let net=world.net_id("ROOT");
+        let roots=[Pusher{a:V::of(p(-7.,0.2)),b:V::of(p(-5.,0.2)),hw:mm(0.25)as f64/2.,net},Pusher{a:V::of(p(5.,0.2)),b:V::of(p(7.,0.2)),hw:mm(0.25)as f64/2.,net}];
+        let moved=shove_many(&mut world,&roots).expect("each independent dependency has a clear side");
+        assert!(moved.iter().flat_map(|(_,tracks)|tracks).any(|t|t.net=="LEFT"&&(t.a.y>mm(0.4)||t.b.y>mm(0.4))));
+        assert!(moved.iter().flat_map(|(_,tracks)|tracks).any(|t|t.net=="RIGHT"&&(t.a.y<0||t.b.y<0)));
+        let delete=moved.iter().map(|(id,_)|*id).collect();
+        let mut add:Vec<_>=moved.into_iter().flat_map(|(_,tracks)|tracks.into_iter().map(Item::Track)).collect();
+        add.extend(roots.iter().map(|r|track("ROOT",r.a.round(),r.b.round())));
+        let delta=session.execute_with_via_checks(Command::Route{replace:vec![],delete,add},true).unwrap();
+        let touched:Vec<_>=delta.upserted.iter().map(|r|r.id).collect();
+        let errors:Vec<_>=crate::pcb::drc::run_near(session.document(),&touched).into_iter().filter(|v|v.severity==crate::pcb::drc::Severity::Error).collect();
+        assert!(errors.is_empty(),"{errors:?}");
+        let after=crate::io::document_to_string(session.document()).unwrap();
+        session.undo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),before);
+        session.redo().unwrap();assert_eq!(crate::io::document_to_string(session.document()).unwrap(),after);
+    }
+    #[test]
+    fn simple_shove_cannot_bypass_an_exhausted_operation_allowance() {
+        use crate::{DocKind,Document,Item,LayerId,units::mm};
+        let p=|x:f64,y:f64|Point::new(mm(x),mm(y));
+        let source=Document::from_item_list(DocKind::Pcb,[
+            Item::Board(Default::default()),
+            Item::Track(Track{a:p(-10.,0.),b:p(10.,0.),width:mm(0.25),layer:LayerId(0),net:"OTHER".into(),locked:false})
+        ]);
+        let original=crate::io::document_to_string(&source).unwrap();
+        let mut world=World::build(&source,LayerId(0),&[]);
+        let net=world.net_id("ROOT");
+        let roots=[Pusher{a:V::of(p(-1.,0.2)),b:V::of(p(1.,0.2)),hw:mm(0.25)as f64/2.,net}];
+        {
+            let _work=super::super::engine::WorkScope::enter();
+            assert!(super::super::engine::consume_work(6000));
+            let error=shove_many(&mut world,&roots).expect_err("even an easy shove must honor the enclosing allowance");
+            assert!(error.contains("search limit"),"{error}");
+            assert!(world.removed.is_empty());assert!(world.added.is_empty());
+            assert!(!super::super::engine::consume_work(1));
+        }
+        assert!(!shove_many(&mut world,&roots).unwrap().is_empty(),"a fresh preview gets its own allowance");
+        assert_eq!(crate::io::document_to_string(&source).unwrap(),original);
+    }
+
+    #[test]
+    fn local_shove_limit_rolls_back_completed_prefixes_and_keeps_caller_copper() {
+        use crate::{DocKind,Document,Item,LayerId,units::mm};
+        let p=|x:f64,y:f64|Point::new(mm(x),mm(y));
+        let source=Document::from_item_list(DocKind::Pcb,[
+            Item::Board(Default::default()),
+            Item::Track(Track{a:p(-20.,0.),b:p(-2.,0.),width:mm(0.25),layer:LayerId(0),net:"LEFT".into(),locked:false}),
+            Item::Track(Track{a:p(2.,0.),b:p(20.,0.),width:mm(0.25),layer:LayerId(0),net:"RIGHT".into(),locked:false})
+        ]);
+        let original=crate::io::document_to_string(&source).unwrap();
+        let mut world=World::build(&source,LayerId(0),&[]);let net=world.net_id("ROOT");let key=world.track_key(net);
+        let roots=[(-12.,-10.),(10.,12.)].map(|(a,b)|Pusher{a:V::of(p(a,0.2)),b:V::of(p(b,0.2)),hw:mm(0.25)as f64/2.,net});
+        world.added.push(Obstacle{core:Core::Seg(V::of(p(50.,50.)),V::of(p(51.,50.))),r:mm(0.25)as f64/2.,net,key,kind:ObKind::Track,id:None,track:None});
+        let removed=world.removed.clone();let added=format!("{:?}",world.added);
+        {
+            let _work=super::super::engine::WorkScope::enter();let _slice=super::super::engine::WorkSlice::enter(12);
+            assert!(shove_attempt(&mut world,&roots,false).is_err());
+            assert!(!world.removed.is_empty(),"the first independent conductor must have been displaced before failure");
+        }
+        world.removed=removed.clone();world.added.truncate(1);
+        {
+            let _work=super::super::engine::WorkScope::enter();let _slice=super::super::engine::WorkSlice::enter(12);
+            let error=shove_many(&mut world,&roots).unwrap_err();
+            assert!(error.contains("search limit"),"{error}");
+            assert_eq!(world.removed,removed);assert_eq!(format!("{:?}",world.added),added);
+            assert!(super::super::engine::work_exhausted());
+        }
+        assert_eq!(shove_many(&mut world,&roots).unwrap().len(),2);
+        assert_eq!(crate::io::document_to_string(&source).unwrap(),original);
+    }
+
+    #[test]
+    fn an_accepted_local_corridor_leaves_work_for_later_candidates() {
+        use crate::{DocKind,Document,Item,LayerId,units::mm};
+        let p=|x:f64,y:f64|Point::new(mm(x),mm(y));
+        let source=Document::from_item_list(DocKind::Pcb,[
+            Item::Board(Default::default()),
+            Item::Track(Track{a:p(-10.,0.),b:p(10.,0.),width:mm(0.25),layer:LayerId(0),net:"OTHER".into(),locked:false})
+        ]);
+        let mut world=World::build(&source,LayerId(0),&[]);let net=world.net_id("ROOT");
+        let roots=[Pusher{a:V::of(p(-1.,0.2)),b:V::of(p(1.,0.2)),hw:mm(0.25)as f64/2.,net}];
+        let _work=super::super::engine::WorkScope::enter();let _slice=super::super::engine::WorkSlice::enter(12);
+        assert_eq!(shove_many(&mut world,&roots).unwrap().len(),1);
+        assert!(super::super::engine::consume_work(1),"unused directions must not spend the rest of the candidate allowance");
+    }
+
 }

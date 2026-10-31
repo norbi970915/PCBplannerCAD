@@ -24,6 +24,12 @@ pub(crate) fn consume_work(amount:usize)->bool{WORK.with(|work|{
 pub(crate) struct WorkSlice {saved:Option<(usize,usize)>}
 impl WorkSlice {pub(crate) fn enter(limit:usize)->Self{
  let saved=WORK.with(|work|{let mut work=work.borrow_mut();let parent=(*work)?;let allowed=parent.min(limit);*work=Some(allowed);Some((parent,allowed))});Self{saved}
+}
+/// Keep work available for a dependency fallback. Cheap local corridors still
+/// get a small complete attempt when the enclosing allowance is already small.
+pub(super) fn reserving(reserve:usize)->Self {
+ let limit=WORK.with(|work|(*work.borrow()).map(|parent|parent.saturating_sub(reserve).div_ceil(2).max(8))).unwrap_or(usize::MAX);
+ Self::enter(limit)
 }}
 impl Drop for WorkSlice {fn drop(&mut self){if let Some((parent,allowed))=self.saved{WORK.with(|work|{let mut work=work.borrow_mut();let spent=allowed.saturating_sub(work.unwrap_or(0));*work=Some(parent.saturating_sub(spent));});}}}
 pub(crate) fn work_exhausted()->bool{WORK.with(|work|matches!(*work.borrow(),Some(0)))}

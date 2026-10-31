@@ -288,7 +288,7 @@ export function CanvasView({ docId, symbol }: { docId: string; symbol?: LibSymbo
       scale: () => cam.scale,
       scene,
       ctx,
-      exec: (cmd) => execute(docId, cmd),
+      exec: (cmd, cleanup) => execute(docId, cmd, cleanup),
       undo: async () => { if (!doc().info.canUndo) return false; await undo(docId, true); return true; },
       chooseRouteLayer: options=>new Promise(resolve=>{
         finishViaChoice(null);viaChoice.current=resolve;

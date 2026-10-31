@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,14 +13,15 @@ import type { CleanupOptions, CleanupResult, Item, ItemId, TeardropOptions, ViaI
 import { formatLength, NM_PER_MM } from "../core/units";
 import { Dialog, useModal } from "../shell/modal";
 import { boardStats } from "./boardTools";
+import { cleanupSource, cleanupReviewCurrent, type CleanupReview } from "./cleanupReview";
 import { VIA_KIND_LABEL, type ViaKind } from "./vias";
 
 const close = () => useModal.getState().close();
 
-function Check({ checked, onChange, label, count }: { checked: boolean; onChange: (v: boolean) => void; label: string; count?: number }) {
+function Check({ checked, onChange, label, count, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; count?: number; disabled?: boolean }) {
   return (
     <label className="flex items-center gap-2 py-0.5">
-      <Checkbox className="size-3.5" checked={checked} onCheckedChange={(v) => onChange(v === true)} />
+      <Checkbox className="size-3.5" disabled={disabled} checked={checked} onCheckedChange={(v) => onChange(v === true)} />
       <span className="flex-1">{label}</span>
       {count !== undefined && <span className={count ? "font-mono text-ink" : "font-mono text-faint"}>{count}</span>}
     </label>
@@ -33,48 +34,63 @@ const CLEANUP_LABELS: [keyof CleanupOptions, string, keyof CleanupResult][] = [
   ["mergeCollinear", "Merge collinear segments", "merged"],
   ["duplicates", "Delete redundant (overlapping) segments", "duplicates"],
   ["zeroLength", "Delete zero-length segments", "zeroLength"],
-  ["dangling", "Delete tracks unconnected at one end", "dangling"],
+  ["dangling", "Remove open stubs and trim free tails", "dangling"],
   ["unconnectedVias", "Delete vias connected on one layer or none", "vias"],
 ];
 
 export function CleanupDialog({ docId }: { docId: string }) {
   const doc = useEditor((s) => s.docs[docId]);
   const [opts, setOpts] = useState<CleanupOptions>({ mergeCollinear: true, duplicates: true, zeroLength: true, dangling: true, unconnectedVias: false });
-  const [plan, setPlan] = useState<CleanupResult | null>(null);
+  const [review, setReview] = useState<CleanupReview | null>(null);
+  const [applying,setApplying]=useState(false);
+  const [error,setError]=useState<string|null>(null);
+  const [refresh,setRefresh]=useState(0);
+  const mounted=useRef(false);const currentDocId=useRef(docId);currentDocId.current=docId;
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  useEffect(()=>setError(null),[docId,opts,doc?.items,doc?.footprints,doc?.epoch]);
   useEffect(() => {
-    let live = true;
-    setPlan(null);
-    api.pcbCleanup(docId, opts).then((r) => live && setPlan(r), report);
-    return () => {
-      live = false;
-    };
-  }, [docId, opts, doc?.items]);
-  const changes = plan ? plan.delete.length + plan.replace.length : 0;
-
-  const run = async () => {
-    if (!plan) return;
-    if (await execute(docId, { op: "route", delete: plan.delete, add: [], replace: plan.replace })) {
-      scheduleAnalysis(docId, 0);
-      toast.success(`Cleanup: ${plan.delete.length} removed, ${plan.merged} merged`);
-      close();
-    }
+    let live=true;setReview(null);
+    const source=cleanupSource(docId,opts,doc);
+    if(source) api.pcbCleanup(docId,opts).then(
+      plan=>{if(live)setReview({source,plan});},
+      e=>{if(live){setError(String(e));report(e);}}
+    );
+    return()=>{live=false;};
+  },[docId,opts,doc?.items,doc?.footprints,doc?.epoch,refresh]);
+  const plan=cleanupReviewCurrent(review,docId,opts,doc)?review!.plan:null;
+  const changes=plan?plan.delete.length+plan.replace.length:0;
+  const run=async()=>{
+    if(applying)return;
+    setApplying(true);setError(null);
+    try{
+      const state=useEditor.getState();
+      if(state.activeDocId!==docId||!cleanupReviewCurrent(review,docId,opts,state.docs[docId])||!plan)
+        throw new Error("Board changed; wait for the current cleanup preview");
+      const update=await api.pcbCleanupApply(docId,opts,plan);
+      useEditor.getState().applyUpdate(update);
+      scheduleAnalysis(docId,0);
+      toast.success("Cleanup: "+plan.delete.length+" removed, "+plan.trimmed+" trimmed, "+plan.merged+" merged");
+      if(mounted.current&&currentDocId.current===docId)close();
+    }catch(e){
+      report(e);
+      if(mounted.current&&currentDocId.current===docId){setError(String(e));setReview(null);setRefresh(n=>n+1);}
+    }finally{if(mounted.current&&currentDocId.current===docId)setApplying(false);}
   };
   return (
-    <Dialog
-      title="Cleanup tracks & vias"
-      description="Tidies routing without changing connectivity. Counts update as you pick options; one undo step."
-      footer={
-        <>
-          <Button variant="outline" onClick={close}>Cancel</Button>
-          <Button disabled={!changes} onClick={() => void run()}>{plan ? `Apply (${changes})` : "Checking…"}</Button>
-        </>
-      }
-    >
+    <Dialog title="Cleanup tracks & vias"
+      description="Tidies routing while preserving useful connections and locked copper. Counts update as you pick options; one undo step."
+      footer={<>
+        <Button variant="outline" disabled={applying} onClick={close}>Cancel</Button>
+        <Button disabled={applying||!changes} onClick={()=>void run()}>{applying?"Applying…":plan?"Apply ("+changes+")":"Checking…"}</Button>
+      </>}>
       <div className="grid">
-        {CLEANUP_LABELS.map(([k, label, count]) => (
-          <Check key={k} label={label} checked={opts[k]} onChange={(v) => setOpts({ ...opts, [k]: v })} count={opts[k] && plan ? (plan[count] as number) : undefined} />
+        {CLEANUP_LABELS.map(([k,label,count])=>(
+          <Check key={k} label={label} disabled={applying} checked={opts[k]} onChange={v=>setOpts({...opts,[k]:v})}
+            count={opts[k]&&plan?k==="dangling"?plan.dangling+plan.trimmed:plan[count] as number:undefined}/>
         ))}
-        <p className="mt-2 text-[11px] text-muted-foreground">Dangling tracks are removed repeatedly, so a whole stub chain goes. Vias touching a pour count as connected on that layer.</p>
+        {plan&&plan.trimmed>0&&<p className="mt-1 text-[11px] text-muted-foreground">{plan.trimmed} useful tracks will have free tails trimmed.</p>}
+        {error&&<p role="alert" className="mt-2 text-[11px] text-danger">{error}</p>}
+        <p className="mt-2 text-[11px] text-muted-foreground">Open stub chains are removed; useful tracks keep their connections and exact heading. Vias touching a same-net pour count as connected on that layer.</p>
       </div>
     </Dialog>
   );

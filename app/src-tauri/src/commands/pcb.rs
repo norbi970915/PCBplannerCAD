@@ -316,11 +316,19 @@ pub fn pcb_drag_footprints(state: State<AppState>, engines:State<RoutingState>, 
     engines.solve(&id,doc,|engine|engine.parts(&req))
 }
 
-/// Plans Cleanup Tracks & Vias; the frontend commits it as a `route` command.
+/// Plans cleanup on an immutable snapshot; applying rechecks the reviewed result.
 #[tauri::command(async)]
 pub fn pcb_cleanup(state: State<AppState>, id: String, opts: pcbplannercad_core::pcb::cleanup::CleanupOptions) -> Res<pcbplannercad_core::pcb::cleanup::CleanupResult> {
-    let ws = lock(&state);
-    Ok(pcbplannercad_core::pcb::cleanup::cleanup(pcb_doc(&ws, &id)?, &opts))
+    let doc=pcb_doc(&lock(&state),&id)?.clone();
+    Ok(pcbplannercad_core::pcb::cleanup::cleanup(&doc,&opts))
+}
+
+/// Recomputes cleanup and commits the reviewed plan under the same document lock.
+#[tauri::command(async)]
+pub fn pcb_cleanup_apply(state:State<AppState>,id:String,opts:pcbplannercad_core::pcb::cleanup::CleanupOptions,expected:pcbplannercad_core::pcb::cleanup::CleanupResult)->Res<DocUpdate>{
+    let mut ws=lock(&state);
+    let command=pcbplannercad_core::pcb::cleanup::cleanup_command(pcb_doc(&ws,&id)?,&opts,&expected)?;
+    run(&mut ws,&id,command)
 }
 
 /// Plans stitching vias for a filled pour; the frontend commits them as a `route` command.

@@ -20,8 +20,17 @@ fn boundary(doc:&crate::Document, start:Point, chain:&Chain, limit:usize)->(Poin
 /// Expand a collision window only as far as necessary. All candidate changes
 /// live in the overlay and are restored before returning a proposal.
 pub(super) fn displace(world:&mut World, index:u32, pushers:&[Pusher], alternate:bool)->Option<(Vec<u32>,Vec<Point>)>{
+    let mut result=None;
+    visit_displacements(world,index,pushers,alternate,|_,indices,path|{result=Some((indices,path));true});
+    result
+}
+
+/// Visit alternatives lazily so a blocked descendant can roll back and choose
+/// another connected corridor without precomputing expensive fallbacks.
+/// The callback returns true to stop; it retains any accepted result itself.
+pub(super) fn visit_displacements(world:&mut World,index:u32,pushers:&[Pusher],alternate:bool,mut visit:impl FnMut(&mut World,Vec<u32>,Vec<Point>)->bool)->bool{
     let obstacle=world.obstacles[index as usize].clone();
-    let track=obstacle.track.as_ref()?;let id=obstacle.id?;
+    let Some(track)=obstacle.track.as_ref()else{return false;};let Some(id)=obstacle.id else{return false;};
     let topology=super::engine::cached_topology(world.doc).unwrap_or_else(||std::sync::Arc::new(Topology::new(world.doc)));let mut used=HashSet::from([id]);
     let left=topology.walk(track.a,track,&used);used.extend(left.edges.iter().copied());
     let right=topology.walk(track.b,track,&used);
@@ -35,12 +44,14 @@ pub(super) fn displace(world:&mut World, index:u32, pushers:&[Pusher], alternate
         if !attempted.insert(ids.clone()){continue;}
         let indices:Option<Vec<_>>=ids.iter().map(|id|lookup.get(id).copied()).collect();
         let Some(indices)=indices else{continue};
-        if indices.iter().any(|i|world.removed.contains(i)){continue;}
+        // A connected window must not absorb an interior fixed junction.
+        // Those tracks use independent anchored subspan detours instead.
+        if indices.iter().any(|i|world.removed.contains(i)||world.obstacles[*i as usize].id.is_some_and(|id|!topology.interior_joints(id).is_empty())){continue;}
         let removed=world.removed.clone();let added=world.added.clone();
         // Unmoved tracks remain candidates for recursive displacement. Existing
         // overlay tracks and all fixed copper continue to constrain this search.
         for (i,other) in world.obstacles.iter().enumerate(){
-            if other.track.is_some()&&other.id.is_some_and(|id|topology.interior_joints(id).is_empty()){world.removed.insert(i as u32);}
+            if other.track.is_some(){world.removed.insert(i as u32);}
         }
         let first_pusher=world.added.len();
         for p in pushers.iter().filter(|p|p.net!=obstacle.net||p.net==super::world::NO_NET){
@@ -74,13 +85,16 @@ pub(super) fn displace(world:&mut World, index:u32, pushers:&[Pusher], alternate
             // Never trade a connected-chain movement for a collision with fixed
             // copper or an already displaced conductor.
             let clear=path.windows(2).all(|w|world.seg_collisions(V::of(w[0]),V::of(w[1]),&probe).into_iter().all(|hit|{
-                matches!(hit,super::world::Hit::Ob(i) if world.obstacles[i as usize].track.is_some()&&world.obstacles[i as usize].id.is_some_and(|id|topology.interior_joints(id).is_empty())&&!world.removed.contains(&i))
+                matches!(hit,super::world::Hit::Ob(i) if world.obstacles[i as usize].track.is_some()&&!world.removed.contains(&i))
             }));
-            if clear{return Some((indices,path));}
+            if clear{
+                if visit(world,indices.clone(),path){return true;}
+                world.removed=removed.clone();world.added=added.clone();
+            }
         }
         }
     }
-    None
+    false
 }
 
 /// Preserve every source identity in the existing route-edit protocol without
@@ -126,4 +140,21 @@ mod tests{
         }}
         session.undo().unwrap();assert_eq!(session.document().items().collect::<Vec<_>>(),source.items().collect::<Vec<_>>());
     }
+    #[test]
+    fn rejected_connected_candidates_restore_every_caller_overlay(){
+        let mut session=Session::new(DocKind::Pcb);let points=[p(0.,0.),p(2.,0.),p(3.,1.),p(3.,4.),p(8.,4.)];
+        let mut items=vec![Item::Board(Default::default())];
+        items.extend(points.windows(2).map(|w|Item::Track(Track{a:w[0],b:w[1],width:mm(0.25),layer:crate::LayerId(0),net:"B".into(),locked:false})));
+        session.execute(Command::Add{items}).unwrap();let source=session.document().clone();
+        let before=crate::io::document_to_string(&source).unwrap();let _work=super::super::engine::WorkScope::enter();
+        let mut world=World::build(&source,crate::LayerId(0),&[]);let net=world.net_id("A");
+        let root=Pusher{a:V::of(p(2.3,-1.)),b:V::of(p(2.3,2.)),hw:mm(0.25)as f64/2.,net};
+        let index=world.obstacles.iter().position(|o|o.track.as_ref().is_some_and(|t|t.a==p(2.,0.))).unwrap()as u32;
+        let key=world.track_key(net);world.added.push(Obstacle{core:Core::Seg(V::of(p(50.,50.)),V::of(p(51.,50.))),r:0.,net,key,kind:ObKind::Track,id:None,track:None});
+        let removed=world.removed.clone();let added=format!("{:?}",world.added);let mut visited=0;
+        let stopped=visit_displacements(&mut world,index,&[root],false,|world,_,_|{visited+=1;world.removed.insert(u32::MAX);world.added.clear();false});
+        assert!(!stopped);assert!(visited>0);assert_eq!(world.removed,removed);assert_eq!(format!("{:?}",world.added),added);
+        assert_eq!(crate::io::document_to_string(&source).unwrap(),before);
+    }
+
 }

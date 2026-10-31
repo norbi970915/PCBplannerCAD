@@ -271,7 +271,8 @@ export function routeTool(pair = false): Tool {
       }
       seq++;
       pending = null;
-      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...vias] });
+      const cleanup=routeModeOf(useEditor.getState())==="ignore"?undefined:{protect:tracks.map((_,i)=>moved.length+i),preserveNets:pair?[...new Set(tracks.map(t=>t.net))]:[],corner:useEditor.getState().placement.cornerStyle};
+      const ok = await env.exec({ op: "route", delete: [...new Set(moved.map(m => m.id))], add: [...moved.map(m => m.item), ...tracks, ...vias] }, cleanup);
       if (s !== session) return false;
       if (!ok) {
         if (transition) {

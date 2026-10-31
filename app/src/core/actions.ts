@@ -5,7 +5,7 @@ import { bus } from "./bus";
 import { selectable } from "./selectFilter";
 import { scheduleAnalysis } from "./pcbActions";
 import { activeDoc, useEditor, type MessageTarget } from "./store";
-import type { Command, DocKind, ItemId, Point } from "./types";
+import type { Command, DocKind, ItemId, Point, RoutingCleanup } from "./types";
 
 const st = () => useEditor.getState();
 
@@ -29,9 +29,9 @@ export async function showSnapshotDoc(id: string) {
   afterEdit(id);
 }
 
-export async function execute(docId: string, cmd: Command): Promise<boolean> {
+export async function execute(docId: string, cmd: Command, cleanup?: RoutingCleanup): Promise<boolean> {
   try {
-    const u = await api.execute(docId, cmd, st().drcEnforce);
+    const u = await api.execute(docId, cmd, st().drcEnforce, cleanup);
     st().applyUpdate(u);
     if (u.touchedLibrary) libraryTouched(u.touchedLibrary);
     afterEdit(docId);

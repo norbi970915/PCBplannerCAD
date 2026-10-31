@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import { api } from '../src/core/api.ts';
-import type { Command, RouteRequest } from '../src/core/types.ts';
+import type { Command, RouteRequest, RoutingCleanup } from '../src/core/types.ts';
 
 const req: RouteRequest = {
   net: 'GND', layer: 0, start: { x: 0, y: 0 }, end: { x: 4e6, y: 0 },
@@ -109,9 +109,9 @@ function toolHarness() {
   const fp = {kind:'footprint' as const,pos:{x:10000000,y:10000000},rotation:90,side:'bottom' as const,footprint:'F',padNets:{'1':'SIGNAL'},designator:'U1',value:'',component:'',locked:false,parameters:{}};
   const pad = {kind:'pad' as const,number:'1',pos:{x:1000000,y:0},width:1000000,height:1000000,rotation:0,shape:'rect' as const,padKind:'smd' as const,layer:0,drill:null,cornerRatio:0};
   const doc={items:new Map([[1,fp]]),footprints:{F:{items:[pad]}},activeLayer:1};
-  const commands:Command[]=[];
-  const env={docId:'board',doc:()=>doc,cursor:()=>cursor,raw:()=>cursor,scale:()=>1e-5,placement:()=>useEditor.getState().placement,redraw:()=>{},setPlacement:(p:object)=>useEditor.getState().setPlacement(p),exec:async(cmd:Command)=>{commands.push(cmd);return true;}} as unknown as import('../src/editor/tools/types.ts').ToolEnv;
-  return {env,commands,tool:routeTool(),move:(x:number,y:number)=>{cursor={x,y};},center:{x:10000000,y:9000000}};
+  const commands:Command[]=[];const cleanups:(RoutingCleanup|undefined)[]=[];
+  const env={docId:'board',doc:()=>doc,cursor:()=>cursor,raw:()=>cursor,scale:()=>1e-5,placement:()=>useEditor.getState().placement,redraw:()=>{},setPlacement:(p:object)=>useEditor.getState().setPlacement(p),exec:async(cmd:Command,cleanup?:RoutingCleanup)=>{commands.push(cmd);cleanups.push(cleanup);return true;}} as unknown as import('../src/editor/tools/types.ts').ToolEnv;
+  return {env,commands,cleanups,tool:routeTool(),move:(x:number,y:number)=>{cursor={x,y};},center:{x:10000000,y:9000000}};
 }
 
 test('routing from an off-center click anchors to a rotated bottom pad center', () => {
@@ -639,6 +639,8 @@ test('pair routing retains the partner endpoint for previews and restores it on 
     h.move(endpoint.x,endpoint.y);tool.move!(h.env,{} as never);await tick();
     tool.down!(h.env,{} as never);await tick();await tick();
     assert.equal(h.commands.length,1);
+    assert.deepEqual(h.cleanups[0]?.preserveNets,["USB_P","USB_N"]);
+    assert.deepEqual(h.cleanups[0]?.protect,[0,1]);
     h.move(16e6,11e6);tool.move!(h.env,{} as never);await tick();
     assert.deepEqual(seen.at(-1)!.negStart,{x:endpoint.x,y:endpoint.y-4e5});
     tool.key!(h.env,'Backspace',{} as never);await tick();await tick();
@@ -781,4 +783,70 @@ test('routing width inheritance ignores other nets and layers and avoids guessin
 test('cancelling a pending track lookup cannot change the routing width afterwards',async()=>{
  const h=toolHarness();h.env.doc().items.set(2,{kind:'track',a:h.center,b:{x:14000000,y:9000000},width:254000,layer:1,net:'SIGNAL'});useEditor.getState().setPlacement({trackWidth:400000});let reply!:(v:unknown)=>void;
  try{await withIPC(cmd=>{assert.equal(cmd,'pcb_object_at');return new Promise(resolve=>reply=resolve);},async()=>{h.tool.down!(h.env,{}as never);h.tool.cancel(h.env);reply([2,'SIGNAL']);await tick();assert.equal(useEditor.getState().placement.trackWidth,400000);assert.deepEqual(h.tool.preview!(h.env),[]);});}finally{useEditor.getState().setPlacement({trackWidth:null});}
+});
+
+test('a moved via and its new tether preview and commit under one source deletion',async()=>{
+  const h=toolHarness();
+  const movedVia={kind:'via' as const,locked:false,pos:{x:14000000,y:9635000},diameter:600000,drill:300000,fromLayer:0,toLayer:1,net:'OTHER'};
+  const tether={kind:'track' as const,locked:false,a:{x:14000000,y:9000000},b:movedVia.pos,width:200000,layer:0,net:'OTHER'};
+  const moved=[{id:17,item:movedVia},{id:17,item:tether}];
+  await withIPC((cmd,args)=>{
+    if(cmd==='pcb_object_at')return[1,'SIGNAL'];
+    if(cmd==='pcb_net_items')return[];
+    assert.equal(cmd,'pcb_route');
+    const req=args!.req as RouteRequest;
+    return{...result('SIGNAL'),tracks:[{...track,a:req.start,b:req.end,net:'SIGNAL'}],moved};
+  },async()=>{
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    h.move(16000000,9000000);h.tool.move!(h.env,{}as never);await tick();await tick();
+    assert.deepEqual([...h.tool.excluded!(h.env)],[17]);
+    assert(h.tool.preview!(h.env).some(item=>item.kind==='via'));
+    assert(h.tool.preview!(h.env).some(item=>item.kind==='track'&&item.net==='OTHER'));
+    h.tool.down!(h.env,{}as never);await tick();await tick();
+    assert.equal(h.commands.length,1);
+    const command=h.commands[0];assert.equal(command.op,'route');
+    if(command.op==='route'){
+      assert.deepEqual(command.delete,[17]);
+      assert.deepEqual(h.cleanups[0]?.protect,[2],"the moved via and tether must not be mistaken for the new routing");
+      assert.deepEqual(h.cleanups[0]?.preserveNets,[]);
+      assert(command.add.some(item=>item.kind==='via'&&item.net==='OTHER'));
+      assert(command.add.some(item=>item.kind==='track'&&item.net==='OTHER'));
+      assert(command.add.some(item=>item.kind==='track'&&item.net==='SIGNAL'));
+    }
+    h.tool.cancel(h.env);
+  });
+});
+
+test('checked routing opts into local cleanup while explicit Ignore routing leaves geometry alone',async()=>{
+  const previous=useEditor.getState().drcEnforce;
+  try{
+    for(const enabled of [true,false]){
+      useEditor.setState({drcEnforce:enabled});
+      const h=toolHarness();
+      await withIPC((command,args)=>{
+        if(command==='pcb_object_at')return[1,'SIGNAL'];if(command==='pcb_net_items')return[];
+        assert.equal(command,'pcb_route');const req=args!.req as RouteRequest;
+        return{...result('SIGNAL'),tracks:[{...track,a:req.start,b:req.end,layer:req.layer,net:'SIGNAL'}]};
+      },async()=>{
+        h.tool.down!(h.env,{}as never);await tick();await tick();
+        h.move(16000000,9000000);h.tool.move!(h.env,{}as never);await tick();
+        h.tool.down!(h.env,{}as never);await tick();await tick();
+        assert.equal(h.commands.length,1);
+        if(enabled){assert.deepEqual(h.cleanups[0]?.protect,[0]);assert.deepEqual(h.cleanups[0]?.preserveNets,[]);}
+        else assert.equal(h.cleanups[0],undefined);
+        h.tool.cancel(h.env);
+      });
+    }
+  }finally{useEditor.setState({drcEnforce:previous});}
+});
+test('automatic cleanup travels with the atomic routing request and is absent from ordinary edits',async()=>{
+  const command:Command={op:'route',delete:[],replace:[],add:[]};
+  const cleanup:RoutingCleanup={protect:[2],preserveNets:['P','N'],corner:'any'};
+  let calls=0;
+  await withIPC((name,args)=>{
+    assert.equal(name,'doc_execute');
+    assert.deepEqual(args,calls++===0?{id:'board',cmd:command,enforceVias:true,cleanup}:{id:'board',cmd:{op:'add',items:[]},enforceVias:true});
+    return null;
+  },async()=>{await api.execute('board',command,true,cleanup);await api.execute('board',{op:'add',items:[]});});
+  assert.equal(calls,2);
 });

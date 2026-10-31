@@ -3,6 +3,7 @@ import type {
   AirWire,
   IdItem,
   CleanupOptions,
+  RoutingCleanup,
   CleanupResult,
   TeardropOptions,
   BoardModel3d,
@@ -91,7 +92,7 @@ export const api = {
   snapshot: (id: string) => invoke<Snapshot>("doc_snapshot", { id }),
   newDocument: (kind: DocKind) => invoke<Snapshot>("doc_new", { kind }),
   open: (path: string) => invoke<Snapshot>("doc_open", { path }),
-  execute: (id: string, cmd: Command, enforceVias = true) => invoke<Update>("doc_execute", { id, cmd, enforceVias }),
+  execute: (id: string, cmd: Command, enforceVias = true, cleanup?: RoutingCleanup) => invoke<Update>("doc_execute", { id, cmd, enforceVias, ...(cleanup ? {cleanup} : {}) }),
   undo: (id: string) => invoke<Update>("doc_undo", { id }),
   redo: (id: string) => invoke<Update>("doc_redo", { id }),
   save: (id: string, path: string | null) => invoke<DocInfo>("doc_save", { id, path }),
@@ -160,10 +161,10 @@ export const api = {
   /** Moving footprints with their tracks kept connected, as a `route` command plan. */
   pcbDragFootprints: (id: string, req: { ids: ItemId[]; delta: Point; angle?: number; flipped?: boolean; center?: Point; mode: "disconnect" | "free" | "preserveAngles"; routeMode: RouteMode; corner: CornerStyle }) =>
     invoke<PcbDragPlan>("pcb_drag_footprints", { id, req }),
-  /** Cleanup Tracks & Vias plan; commit it as a `route` command. */
   /** Teardrop regeneration plan (replaces all teardrops); commit it as a `route` command. */
   pcbTeardrops: (id: string, opts: TeardropOptions) => invoke<{ delete: ItemId[]; add: Item[]; vias: number; pads: number }>("pcb_teardrops", { id, opts }),
   pcbCleanup: (id: string, opts: CleanupOptions) => invoke<CleanupResult>("pcb_cleanup", { id, opts }),
+  pcbCleanupApply: (id:string,opts:CleanupOptions,expected:CleanupResult)=>invoke<Update>("pcb_cleanup_apply",{id,opts,expected}),
   /** Stitching vias for a filled pour (tagged as items); commit them as a `route` command. */
   pcbStitch: async (id: string, req: { zone: ItemId; pitch: number; stagger: boolean; bothSides: boolean }) => {
     const r = await invoke<{ vias: Omit<ViaItem, "kind">[]; candidates: number; rejected: number }>("pcb_stitch", { id, req });
